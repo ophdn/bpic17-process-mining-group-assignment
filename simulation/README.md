@@ -1,5 +1,3 @@
-# bpic17-process-mining-group-assignment
-
 # Business Process Simulation Engine — Core
 
 > TUM · Business Process Prediction, Simulation & Optimization · Group Assignment
