@@ -143,18 +143,21 @@ You can register **multiple components for the same event type** — they are ca
 
 ## How to run
 
+From the repo root, inside the virtualenv:
+
 ```bash
-cd simulation/
-PYTHONPATH=.. python main.py
+.venv/bin/python -m simulation.main --mode distribution      # fitted distributions (default)
+.venv/bin/python -m simulation.main --mode ml_model           # contextual point-estimate ML
+.venv/bin/python -m simulation.main --mode ml_probabilistic   # contextual probabilistic ML
 ```
 
-Output will be saved to `simulation/output/event_log.csv`.
+Output is saved to `output/event_log.csv` (relative to the current directory).
+The `ml_*` modes need a trained artifact — see **[Processing-Time Models
+(Section 1.3)](simulation/PROCESSING_TIMES.md)** for setup, training, mode
+details and reference statistics.
 
-To enable verbose event-by-event output (useful for debugging):
-
-```python
-engine = SimulationEngine(sim_duration=..., verbose=True)
-```
+To enable verbose event-by-event output (useful for debugging), set
+`verbose=True` when constructing `SimulationEngine` in `main.py`.
 
 ---
 
@@ -191,7 +194,7 @@ engine = SimulationEngine(..., start_datetime=datetime(2017, 1, 1))
 |---|---|---|
 | **1.1** Simulation Engine Core | ✅ Done | `core/engine.py`, `core/events.py`, `core/logger.py` |
 | **1.2** Case Arrivals | 🟡 Stub (Exponential) | `components/stubs.py → ArrivalComponent` |
-| **1.3** Processing Times | 🟡 Stub (Exponential) | `components/stubs.py → ProcessComponent` |
+| **1.3** Processing Times | ✅ Done (3 modes: distribution / ml_model / ml_probabilistic) | `simulation/components/process.py`, `train_processing_time_model.py` — see [PROCESSING_TIMES.md](simulation/PROCESSING_TIMES.md) |
 | **1.4** Process Model | 🟡 Stub (linear sequence) | Replace `ProcessComponent` with Petri net / BPMN |
 | **1.5** Branching Decisions | ❌ Missing | Add XOR gateway logic to the process component |
 | **1.6** Resource Availabilities | ❌ Missing | New `ResourceComponent`, handles `RESOURCE_AVAILABLE` |
