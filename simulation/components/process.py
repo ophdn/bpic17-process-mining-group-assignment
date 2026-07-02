@@ -18,9 +18,15 @@ Upgrade path:
 
 import math
 import random
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from ..core.events import SimEvent, EventType
+
+# Default anchor for t=0 (overridden by main.py's start_datetime). Used to
+# derive day_of_week / hour_of_day features from the simulation clock.
+_DEFAULT_ANCHOR = datetime(2016, 1, 1)
 
 
 # ── Terminal activities: after these the case ends ──────────────────────────
@@ -300,10 +306,91 @@ class ProcessComponent:
         EventType.ACTIVITY_COMPLETE: None,
     }
 
-    def __init__(self, seed: Optional[int] = 42):
+    # Recognised processing-time modes
+    _MODES = ("distribution", "ml_model", "ml_probabilistic")
+
+    def __init__(
+        self,
+        seed: Optional[int] = 42,
+        mode: str = "distribution",
+        model_path: Optional[str] = None,
+        start_datetime: Optional[datetime] = None,
+        resource_component=None,
+    ):
+        """
+        Parameters
+        ----------
+        mode : {"distribution", "ml_model", "ml_probabilistic"}
+            - "distribution"     : fitted scipy distributions (Section 1.3 Basic).
+            - "ml_model"         : contextual point-estimate GBR (Basic option 2).
+            - "ml_probabilistic" : quantile-GBR curve, stochastic draw (Advanced I).
+        model_path : str, optional
+            Path to the joblib artifact from train_processing_time_model.py.
+            Required (lazy-loaded) when mode != "distribution".
+        start_datetime : datetime, optional
+            Real-world anchor for t=0, used to derive day_of_week / hour_of_day
+            features. Should match the engine/logger anchor.
+        resource_component : ResourceComponent, optional
+            If provided, its resource is released on ACTIVITY_COMPLETE (via the
+            component's own ``release()`` API). Without this the resource pool
+            saturates permanently, leaving the ML resource feature degenerate.
+        """
+        if mode not in self._MODES:
+            raise ValueError(f"mode must be one of {self._MODES}, got {mode!r}")
+
         self._rng = random.Random(seed)
+        self.mode = mode
+        self._model_path = model_path
+        self._anchor = start_datetime or _DEFAULT_ANCHOR
+        self._resources = resource_component
+
+        # Lazily-loaded ML artifact (only when mode != "distribution")
+        self._artifact: Optional[dict] = None
+        self._model = None
+        self._quantile_models: Optional[dict] = None
+        self._quantiles: Optional[list] = None
+        self._encoders: Optional[dict] = None
+        self._encoder_classes: Dict[str, set] = {}
+        self._feature_names: Optional[list] = None
+
         # case_id -> {activity: repeat_count}
         self._repeat_counts: Dict[str, Dict[str, int]] = {}
+        # case_id -> {start_t, position, prev_act}  (context for ML features)
+        self._ctx: Dict[str, dict] = {}
+
+    # ------------------------------------------------------------------
+    # Lazy model loading
+    # ------------------------------------------------------------------
+
+    def _ensure_model(self) -> None:
+        """Load the joblib artifact the first time an ML duration is needed."""
+        if self._artifact is not None:
+            return
+        if not self._model_path:
+            raise ValueError(
+                f"mode={self.mode!r} requires model_path to a trained "
+                f"joblib artifact (run train_processing_time_model.py)."
+            )
+        import joblib
+        self._artifact = joblib.load(self._model_path)
+        self._model = self._artifact["model"]
+        self._encoders = self._artifact["encoders"]
+        self._feature_names = self._artifact["feature_names"]
+        self._encoder_classes = {
+            name: set(le.classes_) for name, le in self._encoders.items()
+        }
+        sentinels = self._artifact.get("sentinels", {})
+        self._unknown = sentinels.get("unknown", "__UNKNOWN__")
+        self._no_prev = sentinels.get("no_prev", "__START__")
+
+        if self.mode == "ml_probabilistic":
+            self._quantile_models = self._artifact.get("quantile_models")
+            self._quantiles = self._artifact.get("quantiles")
+            if not self._quantile_models:
+                raise ValueError(
+                    "mode='ml_probabilistic' needs quantile models — retrain "
+                    "with `--probabilistic`."
+                )
 
     # ------------------------------------------------------------------
     # Event handlers
@@ -315,12 +402,28 @@ class ProcessComponent:
         # Sentinel: initialise case and start with A_Create Application
         if event.activity == "__PROCESS_START__":
             self._repeat_counts[case_id] = {}
+            self._ctx[case_id] = {
+                "start_t": engine.now,   # case age is measured from here
+                "position": 0,           # activities started so far
+                "prev_act": None,        # previous activity (None => first)
+            }
             self._fire_start(engine, case_id, "A_Create Application")
             return
 
-        # Normal start: sample duration, schedule ACTIVITY_COMPLETE
+        # Normal start: sample duration (context-aware in ML modes), then
+        # schedule ACTIVITY_COMPLETE. Context is read *before* this activity
+        # is folded in, so the features describe the state at its start.
         activity = event.activity
-        duration = self._sample_duration(activity)
+        ctx = self._ctx.get(case_id) or {
+            "start_t": engine.now, "position": 0, "prev_act": None
+        }
+        duration = self._duration(engine, event, ctx)
+
+        # Fold this activity into the case context for the next sample.
+        ctx["position"] += 1
+        ctx["prev_act"] = activity
+        self._ctx[case_id] = ctx
+
         engine.schedule(SimEvent(
             timestamp=engine.now + duration,
             priority=5,
@@ -334,6 +437,12 @@ class ProcessComponent:
         case_id  = event.case_id
         activity = event.activity
 
+        # Free the resource that ran this activity so the pool doesn't saturate
+        # (uses ResourceComponent's documented release() API; high-priority
+        # RESOURCE_AVAILABLE fires before the next activity's allocation).
+        if self._resources is not None and event.resource:
+            self._resources.release(engine, event.resource)
+
         # Track repeats for loop-guard
         counts = self._repeat_counts.get(case_id, {})
         counts[activity] = counts.get(activity, 0) + 1
@@ -342,6 +451,7 @@ class ProcessComponent:
         # Decide termination
         if self._should_terminate(case_id, activity, counts):
             self._repeat_counts.pop(case_id, None)
+            self._ctx.pop(case_id, None)
             engine.schedule(SimEvent(
                 timestamp=engine.now,
                 priority=20,
@@ -355,6 +465,7 @@ class ProcessComponent:
         if next_act is None:
             # No outgoing edge defined — treat as terminal
             self._repeat_counts.pop(case_id, None)
+            self._ctx.pop(case_id, None)
             engine.schedule(SimEvent(
                 timestamp=engine.now,
                 priority=20,
@@ -411,6 +522,78 @@ class ProcessComponent:
                 return next_act
         # Floating-point safety: return last option
         return options[-1][0]
+
+    # ------------------------------------------------------------------
+    # Duration dispatch (distribution vs. ML)
+    # ------------------------------------------------------------------
+
+    def _duration(self, engine, event: SimEvent, ctx: dict) -> float:
+        """Route to the configured processing-time model."""
+        if self.mode == "distribution":
+            return self._sample_duration(event.activity)
+
+        self._ensure_model()
+        features = self._build_features(engine, event, ctx)
+        if self.mode == "ml_model":
+            return self._sample_duration_ml(features)
+        return self._sample_duration_ml_prob(features)   # ml_probabilistic
+
+    def _encode(self, name: str, value, fallback: str) -> int:
+        """Label-encode *value*, falling back to a sentinel for unseen labels."""
+        value = str(value)
+        if value not in self._encoder_classes[name]:
+            value = fallback
+        return int(self._encoders[name].transform([value])[0])
+
+    def _build_features(self, engine, event: SimEvent, ctx: dict) -> List[float]:
+        """
+        Reconstruct the 8-feature vector (in the artifact's feature order)
+        for the activity that is about to start.
+
+        NOTE(Advanced II): the duration this feeds ultimately conflates
+        post-assignment queueing with service time (see training script).
+        """
+        # Wall-clock derived features come from the run's start anchor.
+        wall = self._anchor + timedelta(seconds=engine.now)
+        prev_act = ctx.get("prev_act") or self._no_prev
+        resource = event.resource or self._unknown
+        position = ctx.get("position", 0)
+        case_age = max(0.0, engine.now - ctx.get("start_t", engine.now))
+
+        values = {
+            "activity_enc":           self._encode("activity", event.activity, self._unknown),
+            "resource_enc":           self._encode("resource", resource, self._unknown),
+            "previous_activity_enc":  self._encode("previous_activity", prev_act, self._no_prev),
+            "day_of_week":            wall.weekday(),
+            "hour_of_day":            wall.hour,
+            "case_position":          position,
+            "case_age_seconds":       case_age,
+            "n_previous_activities":  position,
+        }
+        return [float(values[name]) for name in self._feature_names]
+
+    def _sample_duration_ml(self, features: List[float]) -> float:
+        """Point-estimate: predict log-duration, invert log1p, clamp to ≥ 1s."""
+        import numpy as np
+        pred_log = self._model.predict(np.asarray(features, dtype=float).reshape(1, -1))[0]
+        return max(1.0, float(np.expm1(pred_log)))
+
+    def _sample_duration_ml_prob(self, features: List[float]) -> float:
+        """
+        Probabilistic (Advanced I): predict the conditional quantile curve,
+        enforce monotonicity, draw u ~ Uniform(0,1) and interpolate — this
+        restores the variance a point estimate discards.
+        """
+        import numpy as np
+        x = np.asarray(features, dtype=float).reshape(1, -1)
+        qs = self._quantiles
+        preds_log = np.array([self._quantile_models[q].predict(x)[0] for q in qs])
+        # Clip quantile crossings so the curve is non-decreasing.
+        preds_log = np.maximum.accumulate(preds_log)
+        u = self._rng.random()
+        # np.interp clamps u outside [qs[0], qs[-1]] to the edge predictions.
+        dur_log = float(np.interp(u, qs, preds_log))
+        return max(1.0, float(np.expm1(dur_log)))
 
     def _sample_duration(self, activity: str) -> float:
         """
