@@ -161,10 +161,11 @@ def build_instances(df: pd.DataFrame) -> pd.DataFrame:
     activity) sequence number (cumcount) so start #k pairs with complete #k —
     a plain merge on (case, activity) would explode combinatorially.
 
-    NOTE(Advanced II): the (complete - start) delta below conflates post-
-    assignment queueing/waiting with actual service time. Splitting the two
-    needs separate assign/start/complete transitions and is out of scope here.
-    Advanced II should refine THIS duration definition.
+    NOTE: the (complete - start) delta below is the full activity duration and
+    includes any post-assignment queueing/waiting as well as service time. The
+    probabilistic (Advanced I) model targets this combined duration directly, so
+    its predicted distribution already reflects that variability — splitting the
+    two (Advanced II) is an optional refinement, not required for Advanced I.
     """
     df = df.sort_values(["case_id", "timestamp"]).reset_index(drop=True)
 

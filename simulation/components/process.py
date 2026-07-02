@@ -550,8 +550,9 @@ class ProcessComponent:
         Reconstruct the 8-feature vector (in the artifact's feature order)
         for the activity that is about to start.
 
-        NOTE(Advanced II): the duration this feeds ultimately conflates
-        post-assignment queueing with service time (see training script).
+        NOTE: the sampled duration is the full start→complete time (service +
+        any waiting). The probabilistic (Advanced I) model captures this
+        directly; splitting service vs. waiting (Advanced II) is optional.
         """
         # Wall-clock derived features come from the run's start anchor.
         wall = self._anchor + timedelta(seconds=engine.now)
