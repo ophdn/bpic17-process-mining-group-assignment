@@ -66,8 +66,8 @@ From the repo root, with the venv:
 .venv/bin/python -m simulation.main --mode ml_probabilistic
 ```
 
-Each writes `output/event_log.csv` (relative to the current directory),
-**overwriting** the previous run. To keep logs side by side:
+Each writes `<repo_root>/output/event_log.csv`, **overwriting** the
+previous run. To keep logs side by side:
 
 ```bash
 .venv/bin/python -m simulation.main --mode ml_model

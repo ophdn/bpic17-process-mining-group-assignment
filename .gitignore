@@ -2,8 +2,12 @@
 # Raw event log (~550 MB) supplied per-environment, not version-controlled
 *.xes
 *.xes.gz
-# Trained ML models (regenerate via train_processing_time_model.py)
-simulation/models/
+# simulation/models/ holds engine input artifacts. Trained ML models
+# (regenerate via train_processing_time_model.py) are excluded by default;
+# the discovered BPMN process model is small and can't be regenerated
+# without the raw log, so it's tracked explicitly.
+simulation/models/*
+!simulation/models/bpic17_process.bpmn
 *.joblib
 
 # Byte-compiled / optimized / DLL files
