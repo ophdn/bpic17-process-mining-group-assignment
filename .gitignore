@@ -1,3 +1,11 @@
+# ── BPIC-17 assignment: large data & trained artifacts (never commit) ────────
+# Raw event log (~550 MB) supplied per-environment, not version-controlled
+*.xes
+*.xes.gz
+# Trained ML models (regenerate via train_processing_time_model.py)
+simulation/models/
+*.joblib
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
