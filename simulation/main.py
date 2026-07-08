@@ -18,6 +18,7 @@ from pathlib import Path
 
 from simulation.core.engine import SimulationEngine
 from simulation.components.arrival import ArrivalComponent
+from simulation.components.arrival_mdn import MDNArrivalComponent
 from simulation.components.process import ProcessComponent
 from simulation.components.resource import ResourceComponent
 
@@ -36,6 +37,11 @@ DEFAULT_MODEL_PATH = Path(__file__).resolve().parent / "models" / "processing_ti
 
 RANDOM_SEED = 42   # Fix for reproducibility — required by assignment grading!
 
+# Arrival-Modell wählen:
+#   False = parametrisch (LogNormal, Section 1.2 Basic)
+#   True  = MDN, zeitabhängig (Section 1.2 Advanced) — Gewichte aus train_arrival_mdn.py
+USE_MDN_ARRIVALS = False
+
 # ── Build & run ───────────────────────────────────────────────────────────────
 
 def main(mode: str = "distribution", model_path: str | None = None):
@@ -45,7 +51,11 @@ def main(mode: str = "distribution", model_path: str | None = None):
         verbose=False,   # set True to print every event (slow for large runs)
     )
 
-    arrivals  = ArrivalComponent(seed=RANDOM_SEED)
+    if USE_MDN_ARRIVALS:
+        arrivals = MDNArrivalComponent(seed=RANDOM_SEED, start_datetime=START_DATETIME)
+    else:
+        arrivals = ArrivalComponent(seed=RANDOM_SEED)
+    process   = ProcessComponent(seed=RANDOM_SEED)
     resources = ResourceComponent(capacity_per_resource=3, seed=RANDOM_SEED)
     process   = ProcessComponent(
         seed=RANDOM_SEED,

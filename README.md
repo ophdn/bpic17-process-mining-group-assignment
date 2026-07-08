@@ -215,3 +215,39 @@ Each team member can implement their component independently and register it wit
 
 **Why are simulation times in seconds?**
 Seconds are the natural base unit for `datetime` arithmetic in Python. The logger converts them to real datetimes transparently.
+
+---
+
+## Arrival models: parametric vs. MDN (Section 1.2)
+
+Two interchangeable case-arrival components exist:
+
+| Datei | Modell | Inter-Arrival-Verteilung |
+|---|---|---|
+| `components/arrival.py` | **Parametrisch** (Basic) | eine feste LogNormal, zeit-unabhängig |
+| `components/arrival_mdn.py` | **MDN** (Advanced) | zeitabhängig — bedingt auf Tageszeit/Wochentag/Saison |
+
+Das **MDN** (Mixture Density Network, Log-Normal-Mischung) ist ein intensitätsfreier
+Temporal Point Process: ein kleines neuronales Netz gibt — abhängig von der aktuellen
+Sim-Uhrzeit — die Verteilung der nächsten Inter-Arrival-Time aus. Damit bildet es die
+reale Struktur ab (nachts ~0.6 Ankünfte/h, Kern 12–18h ~7.6/h; Mo ≈ 3× So; Sommer +35 %),
+die eine statische Verteilung prinzipiell nicht erfassen kann.
+
+**Umschalten** in `main.py`:
+```python
+USE_MDN_ARRIVALS = True   # False = parametrische LogNormal (Default)
+```
+
+**Laufzeit braucht kein PyTorch** — die Komponente lädt vortrainierte Gewichte
+(`components/arrival_mdn_weights.npz`) und wertet sie als reinen NumPy-Forward-Pass aus.
+
+**Gewichte neu trainieren** (einmaliger Offline-Schritt, benötigt PyTorch):
+```bash
+uv add torch      # nur fürs Training
+python train_arrival_mdn.py \
+    --arrivals path/to/arrivals.parquet \
+    --out simulation/components/arrival_mdn_weights.npz
+```
+`arrivals.parquet` braucht nur eine Spalte `arrival` mit dem Zeitstempel des ersten
+Events je Fall. Wichtig: `START_DATETIME` in `main.py` muss den Wochentag korrekt
+verankern (BPIC-17 startet 2016-01-01, ein Freitag), damit Wochentag/Tageszeit aligned sind.
