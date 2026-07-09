@@ -1,30 +1,99 @@
 """
-resource.py — Resource Component (Sections 1.6, 1.7, 1.8 Basic)
-================================================================
-Implements:
-  - Section 1.7 Basic: resource permissions based on which resources
-    have historically performed each activity (from BPIC-17 data)
-  - Section 1.8:       pluggable allocation policies among permitted
-    resources (random / least_loaded / round_robin / specialization)
-  - Section 1.6 Basic: simple availability model — each resource has
-    a fixed capacity (max parallel tasks); tasks queue if all busy.
+resource.py — Resource Component (Sections 1.6, 1.7, 1.8)
+=========================================================
+Implements the **Role-Based Allocation** creation pattern (R-RBA,
+Pattern 2 of Russell et al. 2005) as the resource-allocation heuristic:
+
+  - Section 1.7 Basic (R-RBA): a work item may only be allocated to a
+    resource whose "role" qualifies it for the task.  In the absence of
+    an explicit organisational model for BPIC-17, a resource's role is
+    operationalised as the set of activities it has historically been
+    observed performing in the log (`RESOURCE_PERMISSIONS`).  This
+    yields the inverse candidate map `_ACTIVITY_TO_RESOURCES`.  R-RBA
+    defers the actual choice of *which* qualified resource to runtime;
+    among the qualified-and-available candidates a uniform random pick
+    is made (the project's default selection behaviour).
+  - Section 1.8 (Distribution on Enablement, R-DE — Pattern 19): when
+    every qualified resource is busy, the work item is deferred onto a
+    FIFO ``_waiting`` queue and (re)allocated the instant a qualified
+    resource frees up.
+  - Section 1.6 Basic: simple availability model — each resource has a
+    fixed capacity (max parallel tasks); tasks queue if all busy.
+
+Execution gating (ACTIVITY_ENABLED → ACTIVITY_START)
+----------------------------------------------------
+Resource seizure genuinely gates execution.  The process emits
+``ACTIVITY_ENABLED`` when an activity becomes ready; this component tries
+to seize a qualified resource and only *then* emits the logged
+``ACTIVITY_START`` (carrying the resource) that begins service.  If no
+resource is free the activity waits, so contention actually delays the
+case — which is what makes the allocation heuristic affect cycle and
+waiting time rather than only relabelling who did the work.
+
+Reference
+---------
+Nick Russell, Wil M.P. van der Aalst, Arthur H.M. ter Hofstede, and
+David Edmond.  *Workflow Resource Patterns: Identification,
+Representation and Tool Support.*  In O. Pastor and J. Falcão e Cunha
+(Eds.): CAiSE 2005, LNCS 3520, pp. 216–232, Springer, 2005.
+(PDF: docs/papers/optimization_1.1/base resource allocation heuristics.pdf)
+
+----------------------------------------------------------------------------
+Design decisions for *uncertain resource availabilities*
+----------------------------------------------------------------------------
+A resource's future availability is **not known in advance** in this
+engine, because service times are stochastic (fitted distributions or a
+probabilistic quantile ML model).  The classic Russell R-RBA pattern was
+written for workflow systems with deterministic queues; to adapt it to
+this uncertain-availability setting we make the following decisions:
+
+1. **Allocate against live load, never against a prediction.**
+   Allocation reads the current `_busy` counter at the precise moment an
+   activity is *enabled*, rather than relying on a queue-length forecast.
+   Under stochastic service times the live `_busy` is the only honest
+   signal of who is actually free.
+
+2. **Capacity > 1 generalises the paper's single-task resource.**
+   `capacity_per_resource` parallel slots are allowed.  A candidate is
+   considered "available" when `_busy < capacity`, i.e. it has at least
+   one free slot, not only when it is completely idle.
+
+3. **Saturation path = Distribution on Enablement (R-DE).**
+   When all qualified candidates are busy, the work item is pushed onto
+   a `_waiting` queue rather than rejected.  On every
+   `RESOURCE_AVAILABLE` event the just-freed resource is offered to the
+   *first* (FIFO) waiting item it is qualified to perform — the resource
+   that just became idle is reused for backlog (O(1) per release).  This
+   matches R-DE's "distribute as soon as a resource is available".
+
+4. **Seizure and service are separated, so allocation runs once.**
+   Allocation happens exactly once per activity, on `ACTIVITY_ENABLED`.
+   Whether a resource is seized immediately or after a wait, the seized
+   resource is handed to a *fresh* `ACTIVITY_START` (see
+   `_start_activity`); the enable event is never re-scheduled, so there
+   is no re-allocation and no busy-slot double-counting.
+
+5. **Deterministic pick under the fixed seed.**
+   The uniform random pick uses a seeded `random.Random`, so R-RBA is
+   fully reproducible given `RANDOM_SEED=42` — required by the
+   assignment's grading.
+
+6. **No a-priori deadline / urgency ordering.**
+   R-RBA is workload/permission-only; more advanced timing variants
+   (R-ED Early / R-LD Late Distribution) and push *selection* patterns
+   (R-RMA random, R-RRA round-robin, R-SHQ shortest-queue) and detour
+   patterns (escalation, delegation) are deliberately out of scope and
+   left as the upgrade path.  Deferred items are served strictly FIFO.
 
 The resource_activity_map is derived directly from the BPIC-17 log.
 Only the top-20 resources (by event count) are included for performance;
 extend RESOURCE_POOL with additional users as needed.
 
-Allocation policies (Section 1.8) — selectable via ``policy=``:
-  - "random"         : uniform among available permitted resources (baseline).
-  - "least_loaded"   : fewest active tasks first (load balancing).
-  - "round_robin"    : deterministic rotation (maximally even distribution).
-  - "specialization" : most-experienced resource first, where experience is
-                       the historical event volume (RESOURCE_EXPERIENCE). This
-                       concentrates work on senior staff — a deliberate
-                       efficiency-vs-fairness contrast for the evaluation.
-
 Upgrade path:
   - Section 1.6 Advanced: calendar-based availability (shift patterns)
   - Section 1.7 Advanced: role-discovery (e.g. OrdinoR)
+  - Section 1.8 Advanced: push selection patterns (R-RMA/R-RRA/R-SHQ)
+    and detour patterns (R-D/R-E/R-SD/R-PR/R-UR)
 """
 
 import random
@@ -35,7 +104,7 @@ from ..core.events import SimEvent, EventType
 
 
 # ── Resource permission map (from BPIC-17 resource_activity_map) ─────────────
-# resource -> set of activities it is allowed to perform
+# resource -> set of activities it is allowed to perform (R-RBA "role")
 # Only top-20 resources included; all have been observed performing these activities.
 RESOURCE_PERMISSIONS: Dict[str, Set[str]] = {
     "User_1": {
@@ -164,40 +233,29 @@ RESOURCE_PERMISSIONS: Dict[str, Set[str]] = {
     },
 }
 
-# ── Resource experience (from BPIC-17 top_20_by_events) ─────────────────────
-# resource -> total number of events historically performed. Used as a
-# seniority / experience proxy by the "specialization" allocation policy.
-RESOURCE_EXPERIENCE: Dict[str, int] = {
-    "User_1": 148404, "User_2": 19134, "User_3": 26342, "User_5": 22900,
-    "User_27": 18806, "User_29": 20860, "User_30": 21272, "User_49": 21134,
-    "User_68": 17581, "User_75": 15955, "User_87": 22498, "User_100": 20651,
-    "User_113": 16151, "User_116": 17423, "User_118": 16005, "User_121": 18726,
-    "User_123": 20909,
-}
-
-# Precompute inverse map: activity -> list of permitted resources
+# Precompute inverse map: activity -> list of permitted resources (R-RBA)
+# Order is deterministic (insertion order of the dict above) so the random
+# pick has a stable candidate ordering per activity for reproducibility.
 _ACTIVITY_TO_RESOURCES: Dict[str, List[str]] = defaultdict(list)
 for _res, _acts in RESOURCE_PERMISSIONS.items():
     for _act in _acts:
         _ACTIVITY_TO_RESOURCES[_act].append(_res)
-# Deterministic candidate order (round_robin / tie-breaks depend on it).
-for _act in _ACTIVITY_TO_RESOURCES:
-    _ACTIVITY_TO_RESOURCES[_act].sort()
 
 
 class ResourceComponent:
     """
     Assigns resources to activities and manages basic availability.
 
-    Section 1.7 Basic: only resources that have historically performed
-    an activity are candidates (from BPIC-17 resource_activity_map).
+    Section 1.7 Basic (R-RBA): only resources that have historically
+    performed an activity are candidates (from BPIC-17 resource_activity_map).
+    Among the available qualified candidates a uniform random pick is made
+    — the runtime decision R-RBA defers to.
 
-    Section 1.8: pluggable allocation among available permitted resources.
-    See module docstring / ``POLICIES`` for the available strategies.
+    Section 1.8 (R-DE): if all qualified resources are busy, the task is
+    queued and retried when a resource becomes free (FIFO on the freeing
+    resource).
 
     Section 1.6 Basic: each resource has a capacity (default: 1 parallel task).
-    If all permitted resources are busy, the task is queued and retried
-    when a resource becomes free.
     """
 
     HANDLES = {
@@ -205,30 +263,14 @@ class ResourceComponent:
         EventType.RESOURCE_AVAILABLE: None,
     }
 
-    # Available allocation strategies (Section 1.8).
-    POLICIES = ("random", "least_loaded", "round_robin", "specialization")
-
-    def __init__(
-        self,
-        capacity_per_resource: int = 1,
-        seed: Optional[int] = 42,
-        policy: str = "random",
-    ):
-        if policy not in self.POLICIES:
-            raise ValueError(
-                f"policy must be one of {self.POLICIES}, got {policy!r}"
-            )
+    def __init__(self, capacity_per_resource: int = 1, seed: Optional[int] = 42):
         self._capacity = capacity_per_resource
         self._rng = random.Random(seed)
-        self.policy = policy
 
         # resource -> current number of active tasks
         self._busy: Dict[str, int] = {r: 0 for r in RESOURCE_PERMISSIONS}
 
-        # activity -> rotation cursor (round_robin policy only)
-        self._rr_cursor: Dict[str, int] = defaultdict(int)
-
-        # Queue of (engine, event) waiting for a free resource
+        # Queue of (engine, event) waiting for a free resource (R-DE fallback)
         self._waiting: List[tuple] = []
 
     # ------------------------------------------------------------------
@@ -237,10 +279,11 @@ class ResourceComponent:
 
     def on_activity_enabled(self, engine, event: SimEvent) -> None:
         """
-        An activity became ready. Try to seize a permitted resource; on success
-        emit the ACTIVITY_START that begins service. If none is free, the
-        activity waits in the queue until a resource frees up (Section 1.6) —
-        so contention actually delays execution.
+        An activity became ready. Try to seize a qualified resource (R-RBA);
+        on success emit the ACTIVITY_START that begins service. If none is
+        free, defer the work item onto the FIFO wait queue (R-DE) until a
+        qualified resource frees up (Section 1.6) — so contention actually
+        delays execution.
         """
         if event.activity == "__PROCESS_START__":
             return  # sentinel — no resource needed
@@ -250,20 +293,27 @@ class ResourceComponent:
             self._busy[resource] = self._busy.get(resource, 0) + 1
             self._start_activity(engine, event, resource)
         else:
-            # All permitted resources busy → queue and wait
+            # All permitted resources busy → queue and wait (R-DE)
             self._waiting.append((engine, event))
 
     def on_resource_available(self, engine, event: SimEvent) -> None:
-        """When a resource frees up, hand it to the first waiting task it can do."""
+        """When a resource frees up, hand it to the first waiting task it can do.
+
+        Deferred-allocation policy (R-DE): the just-freed resource is
+        offered to the *first* (FIFO) waiting work item it is permitted
+        to perform.  This localises the decision to the freeing resource
+        (O(1) per release) and aligns with R-DE's "distribute as soon as
+        a resource is available".
+        """
         resource = event.resource
         self._busy[resource] = max(0, self._busy.get(resource, 0) - 1)
 
-        # FIFO scan: give this resource to the first queued activity it is
-        # permitted for (and has spare capacity for).
+        # Only re-busy this resource if it actually has spare capacity.
+        if self._busy[resource] >= self._capacity:
+            return
+
         permitted = RESOURCE_PERMISSIONS.get(resource, set())
         for i, (eng, waiting_event) in enumerate(self._waiting):
-            if self._busy.get(resource, 0) >= self._capacity:
-                break
             if waiting_event.activity in permitted:
                 self._waiting.pop(i)
                 self._busy[resource] = self._busy.get(resource, 0) + 1
@@ -288,9 +338,8 @@ class ResourceComponent:
 
     def _allocate(self, activity: str) -> Optional[str]:
         """
-        Pick an available permitted resource for this activity according to
-        the configured allocation policy (Section 1.8).
-        Returns None if all permitted resources are busy.
+        R-RBA runtime pick: uniformly random among available qualified
+        resources for this activity.  Returns None if all are busy.
         """
         candidates = _ACTIVITY_TO_RESOURCES.get(activity, [])
         available = [
@@ -299,41 +348,6 @@ class ResourceComponent:
         ]
         if not available:
             return None
-
-        policy = self.policy
-
-        if policy == "random":
-            return self._rng.choice(available)
-
-        if policy == "least_loaded":
-            # Fewest active tasks first; break ties randomly for fairness.
-            min_load = min(self._busy.get(r, 0) for r in available)
-            least = [r for r in available if self._busy.get(r, 0) == min_load]
-            return self._rng.choice(least)
-
-        if policy == "round_robin":
-            # Deterministic rotation over the (sorted) candidate list. The
-            # cursor walks the full candidate order so load spreads evenly
-            # even when some candidates are momentarily busy.
-            n = len(candidates)
-            start = self._rr_cursor[activity]
-            for offset in range(n):
-                idx = (start + offset) % n
-                res = candidates[idx]
-                if self._busy.get(res, 0) < self._capacity:
-                    self._rr_cursor[activity] = idx + 1
-                    return res
-            return None  # unreachable: available was non-empty
-
-        if policy == "specialization":
-            # Most-experienced available resource first (seniority proxy).
-            # Deterministic; name as final tie-break for reproducibility.
-            return max(
-                available,
-                key=lambda r: (RESOURCE_EXPERIENCE.get(r, 0), r),
-            )
-
-        # Defensive: validated in __init__, should never reach here.
         return self._rng.choice(available)
 
     def release(self, engine, resource: str) -> None:
