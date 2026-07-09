@@ -68,6 +68,7 @@ def main(
     model_path: str | None = None,
     process_model: str = "advanced",
     bpmn_path: str | None = None,
+    policy: str = "random",
 ):
     engine = SimulationEngine(
         sim_duration=SIM_DURATION_SECONDS,
@@ -80,7 +81,9 @@ def main(
     else:
         arrivals = ArrivalComponent(seed=RANDOM_SEED)
     process   = ProcessComponent(seed=RANDOM_SEED)
-    resources = ResourceComponent(capacity_per_resource=3, seed=RANDOM_SEED)
+    resources = ResourceComponent(
+        capacity_per_resource=3, seed=RANDOM_SEED, policy=policy
+    )
 
     process_kwargs = dict(
         seed=RANDOM_SEED,
@@ -140,10 +143,16 @@ if __name__ == "__main__":
         "--bpmn-path", default=str(DEFAULT_BPMN_PATH),
         help="Path to the .bpmn file (--process-model advanced only).",
     )
+    parser.add_argument(
+        "--policy", default="random",
+        choices=["random", "least_loaded", "round_robin", "specialization"],
+        help="Section 1.8 resource-allocation policy (default: random).",
+    )
     args = parser.parse_args()
     main(
         mode=args.mode,
         model_path=args.model_path,
         process_model=args.process_model,
         bpmn_path=args.bpmn_path,
+        policy=args.policy,
     )

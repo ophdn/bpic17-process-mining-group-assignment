@@ -113,7 +113,7 @@ class MDNArrivalComponent:
         engine.schedule(SimEvent(
             timestamp=engine.now,
             priority=5,
-            event_type=EventType.ACTIVITY_START,
+            event_type=EventType.ACTIVITY_ENABLED,
             case_id=event.case_id,
             activity="__PROCESS_START__",
             payload=event.payload or {},

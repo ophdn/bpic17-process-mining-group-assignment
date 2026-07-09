@@ -15,7 +15,8 @@ class EventType(Enum):
     CASE_COMPLETE = auto()      # A case has finished all activities
 
     # Activity lifecycle
-    ACTIVITY_START = auto()     # An activity starts executing
+    ACTIVITY_ENABLED = auto()   # An activity is ready to run (awaiting a resource)
+    ACTIVITY_START = auto()     # An activity starts executing (resource seized)
     ACTIVITY_COMPLETE = auto()  # An activity finishes executing
 
     # Resource lifecycle

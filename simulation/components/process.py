@@ -302,6 +302,7 @@ class ProcessComponent:
     """
 
     HANDLES = {
+        EventType.ACTIVITY_ENABLED:  None,
         EventType.ACTIVITY_START:    None,
         EventType.ACTIVITY_COMPLETE: None,
     }
@@ -396,23 +397,33 @@ class ProcessComponent:
     # Event handlers
     # ------------------------------------------------------------------
 
-    def on_activity_start(self, engine, event: SimEvent) -> None:
-        case_id = event.case_id
-
-        # Sentinel: initialise case and start with A_Create Application
-        if event.activity == "__PROCESS_START__":
-            self._repeat_counts[case_id] = {}
-            self._ctx[case_id] = {
-                "start_t": engine.now,   # case age is measured from here
-                "position": 0,           # activities started so far
-                "prev_act": None,        # previous activity (None => first)
-            }
-            self._fire_start(engine, case_id, "A_Create Application")
+    def on_activity_enabled(self, engine, event: SimEvent) -> None:
+        """
+        An activity is ready to run. The ResourceComponent (registered for the
+        same event) tries to seize a resource and, on success, emits the
+        ACTIVITY_START that actually begins service. The process only needs to
+        act on the case-start sentinel here — real activities are driven to
+        ACTIVITY_START by the resource layer, which is what gates execution on
+        resource availability (Section 1.6).
+        """
+        if event.activity != "__PROCESS_START__":
             return
 
-        # Normal start: sample duration (context-aware in ML modes), then
-        # schedule ACTIVITY_COMPLETE. Context is read *before* this activity
-        # is folded in, so the features describe the state at its start.
+        case_id = event.case_id
+        self._repeat_counts[case_id] = {}
+        self._ctx[case_id] = {
+            "start_t": engine.now,   # case age is measured from here
+            "position": 0,           # activities started so far
+            "prev_act": None,        # previous activity (None => first)
+        }
+        self._fire_start(engine, case_id, "A_Create Application")
+
+    def on_activity_start(self, engine, event: SimEvent) -> None:
+        # A resource has been seized (event.resource is set): begin service.
+        # Sample duration (context-aware in ML modes), then schedule
+        # ACTIVITY_COMPLETE. Context is read *before* this activity is folded
+        # in, so the features describe the state at its start.
+        case_id = event.case_id
         activity = event.activity
         ctx = self._ctx.get(case_id) or {
             "start_t": engine.now, "position": 0, "prev_act": None
@@ -481,10 +492,15 @@ class ProcessComponent:
     # ------------------------------------------------------------------
 
     def _fire_start(self, engine, case_id: str, activity: str) -> None:
+        # Emit ACTIVITY_ENABLED, not ACTIVITY_START: the activity is only
+        # *ready*. The ResourceComponent seizes a resource and then emits the
+        # actual ACTIVITY_START (with the resource attached). If no resource is
+        # free the activity waits — this is what makes allocation policy affect
+        # cycle/waiting time (Sections 1.6/1.8).
         engine.schedule(SimEvent(
             timestamp=engine.now,
             priority=5,
-            event_type=EventType.ACTIVITY_START,
+            event_type=EventType.ACTIVITY_ENABLED,
             case_id=case_id,
             activity=activity,
             resource=None,   # ResourceComponent will fill this (Section 1.8)
@@ -646,6 +662,7 @@ class ProcessComponent:
 
 
 ProcessComponent.HANDLES = {
+    EventType.ACTIVITY_ENABLED:  ProcessComponent.on_activity_enabled,
     EventType.ACTIVITY_START:    ProcessComponent.on_activity_start,
     EventType.ACTIVITY_COMPLETE: ProcessComponent.on_activity_complete,
 }
