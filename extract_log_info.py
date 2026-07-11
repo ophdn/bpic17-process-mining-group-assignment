@@ -87,6 +87,36 @@ def load_log(path: Path) -> pd.DataFrame:
     return df
 
 
+def filter_to_complete(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    One row per real activity occurrence, not per lifecycle transition.
+
+    BPIC-17 (and similar transactional logs) record multiple lifecycle
+    events per activity instance (schedule/start/suspend/resume/complete/
+    ...). Treating every row as a separate occurrence — e.g. for
+    basic_stats/branching_probs/process_variants — massively inflates
+    self-loop counts (consecutive lifecycle events of the *same* instance
+    look like the activity following itself) and case lengths. So: keep
+    the 'complete' event where an activity has one, and fall back to
+    'start' only for activities that are never recorded as 'complete' in
+    this log (e.g. cases still open when the log was cut).
+    """
+    if "lifecycle" not in df.columns:
+        return df
+
+    lifecycle_lower = df["lifecycle"].str.lower()
+    has_complete = (
+        df.assign(_lc=lifecycle_lower)
+        .groupby("activity")["_lc"]
+        .apply(lambda s: (s == "complete").any())
+    )
+    fallback_activities = set(has_complete[~has_complete].index)
+
+    is_complete = lifecycle_lower == "complete"
+    is_fallback_start = df["activity"].isin(fallback_activities) & (lifecycle_lower == "start")
+    return df[is_complete | is_fallback_start].copy()
+
+
 def fit_best_distribution(data_seconds: np.ndarray) -> dict:
     """Fit several distributions, return the best by AIC."""
     data = data_seconds[data_seconds > 0]
@@ -271,6 +301,80 @@ def extract_branching(df: pd.DataFrame) -> dict:
     return result
 
 
+def extract_case_attributes(df: pd.DataFrame) -> dict:
+    """
+    Section 1.5 Advanced I input: distributions for the case/runtime data
+    attributes used as features for the decision-point classifiers.
+
+    Two groups, mirroring when the attribute is actually known during a case:
+
+    - spawn attributes (case:ApplicationType, case:LoanGoal,
+      case:RequestedAmount): constant per case, present from
+      A_Create Application onward, so every decision point can use them
+      (verified: exactly 1 distinct value per case in the log).
+      LoanGoal and RequestedAmount are learned conditional on
+      ApplicationType, since their distributions differ noticeably between
+      "New credit" and "Limit raise" cases.
+
+    - offer attributes (OfferedAmount, NumberOfTerms, MonthlyCost,
+      FirstWithdrawalAmount, CreditScore): only set once an offer exists,
+      i.e. on O_Create Offer (verified: 100% of non-null values for these
+      columns occur on that activity). Decision points reached before the
+      first O_Create Offer of a case won't have these yet.
+      CreditScore and FirstWithdrawalAmount have a large point mass at 0
+      (~65% / ~30% of offers) that isn't part of the continuous spread, so
+      they're modelled as (probability of 0) + (fitted distribution on the
+      nonzero remainder).
+
+    Deliberately excluded: "Accepted" / "Selected" (also written at
+    O_Create Offer) — these record the outcome of the very decisions
+    (O_Accepted/O_Cancelled/O_Refused) we want to predict, so using them as
+    input features would leak the label.
+    """
+    case_level = df.drop_duplicates("case_id")
+
+    application_type = {
+        k: round(float(v), 4)
+        for k, v in case_level["case:ApplicationType"].value_counts(normalize=True).items()
+    }
+
+    loan_goal_given_type = {}
+    requested_amount_given_type = {}
+    for app_type, grp in case_level.groupby("case:ApplicationType"):
+        loan_goal_given_type[app_type] = {
+            k: round(float(v), 4)
+            for k, v in grp["case:LoanGoal"].value_counts(normalize=True).items()
+        }
+        requested_amount_given_type[app_type] = fit_best_distribution(
+            grp["case:RequestedAmount"].dropna().values
+        )
+
+    offers = df[df["activity"] == "O_Create Offer"]
+
+    def fit_with_zero_mass(series: pd.Series) -> dict:
+        zero_prob = round(float((series == 0).mean()), 4)
+        nonzero = series[series != 0].dropna().values
+        return {"zero_prob": zero_prob, "nonzero": fit_best_distribution(nonzero)}
+
+    offer_attributes = {
+        "OfferedAmount":          fit_best_distribution(offers["OfferedAmount"].dropna().values),
+        "NumberOfTerms":          fit_best_distribution(offers["NumberOfTerms"].dropna().values),
+        "MonthlyCost":            fit_best_distribution(offers["MonthlyCost"].dropna().values),
+        "FirstWithdrawalAmount":  fit_with_zero_mass(offers["FirstWithdrawalAmount"]),
+        "CreditScore":            fit_with_zero_mass(offers["CreditScore"]),
+    }
+
+    return {
+        "spawn_attributes": {
+            "ApplicationType":              application_type,
+            "LoanGoal_given_ApplicationType":       loan_goal_given_type,
+            "RequestedAmount_given_ApplicationType": requested_amount_given_type,
+        },
+        "offer_attributes_set_at": "O_Create Offer",
+        "offer_attributes": offer_attributes,
+    }
+
+
 def extract_resources(df: pd.DataFrame) -> dict:
     if "resource" not in df.columns:
         return {"note": "No resource column found in log."}
@@ -319,28 +423,38 @@ def main():
     if not log_path.exists():
         sys.exit(f"[ERROR] File not found: {log_path}")
 
-    print(f"[1/7] Loading log from '{log_path}' ...")
+    print(f"[1/8] Loading log from '{log_path}' ...")
     df = load_log(log_path)
     print(f"      → {len(df):,} events, {df['case_id'].nunique():,} cases loaded")
 
-    print("[2/7] Basic statistics ...")
-    basic = extract_basic_stats(df)
+    # One row per real activity occurrence (not per lifecycle transition) —
+    # see filter_to_complete(). basic_stats/branching_probs/process_variants
+    # and arrival_rate all describe activity-level or case-level behaviour,
+    # so they must run on this, not the raw multi-lifecycle event stream.
+    df_complete = filter_to_complete(df)
+    print(f"      → {len(df_complete):,} events after filtering to one-per-activity-occurrence")
 
-    print("[3/7] Activity frequencies ...")
-    activities = extract_activities(df)
+    print("[2/8] Basic statistics ...")
+    basic = extract_basic_stats(df_complete)
 
-    print("[4/7] Processing times (fitting distributions) ...")
-    proc_times = extract_processing_times(df)
+    print("[3/8] Activity frequencies ...")
+    activities = extract_activities(df_complete)
 
-    print("[5/7] Arrival rates ...")
-    arrivals = extract_arrival_rate(df)
+    print("[4/8] Processing times (fitting distributions) ...")
+    proc_times = extract_processing_times(df)  # needs raw start/complete pairs
 
-    print("[6/7] Process variants + branching probabilities ...")
-    variants  = extract_process_variants(df)
-    branching = extract_branching(df)
+    print("[5/8] Arrival rates ...")
+    arrivals = extract_arrival_rate(df_complete)
 
-    print("[7/7] Resources ...")
+    print("[6/8] Process variants + branching probabilities ...")
+    variants  = extract_process_variants(df_complete)
+    branching = extract_branching(df_complete)
+
+    print("[7/8] Resources ...")
     resources = extract_resources(df)
+
+    print("[8/8] Case attributes (Section 1.5 Advanced I) ...")
+    case_attributes = extract_case_attributes(df)
 
     output = {
         "log_file":         log_path.name,
@@ -352,6 +466,7 @@ def main():
         "process_variants": variants,
         "branching_probs":  branching,
         "resources":        resources,
+        "case_attributes":  case_attributes,
     }
 
     out_path = Path(args.out)

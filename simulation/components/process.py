@@ -290,6 +290,83 @@ BRANCHING_PROBS: Dict[str, List[Tuple[str, float]]] = {
 }
 
 
+# ── Case/runtime attributes for data-based branching (Section 1.5 Advanced I) ─
+# From BPIC-17 (case_attributes in simulation_inputs.json, produced by
+# extract_log_info.py::extract_case_attributes). Only consumed by
+# PetriNetProcessComponent when constructed with branching_mode="rules" —
+# sampling these has no effect on the branching_mode="probs" (Basic) path.
+#
+# ApplicationType/LoanGoal/RequestedAmount are case-level: constant for the
+# whole case, known from A_Create Application onward (verified: exactly one
+# distinct value per case in the log). The offer attributes below are only
+# known once a case's first O_Create Offer has fired.
+APPLICATION_TYPE_PROBS: List[Tuple[str, float]] = [
+    ("New credit",  0.8924),
+    ("Limit raise", 0.1076),
+]
+
+LOAN_GOAL_GIVEN_APPLICATION_TYPE: Dict[str, List[Tuple[str, float]]] = {
+    "New credit": [
+        ("Car",                     0.301),
+        ("Home improvement",        0.236),
+        ("Existing loan takeover",  0.19),
+        ("Other, see explanation",  0.0922),
+        ("Unknown",                 0.0663),
+        ("Not speficied",           0.0367),
+        ("Remaining debt home",     0.0293),
+        ("Extra spending limit",    0.0163),
+        ("Caravan / Camper",        0.0115),
+        ("Motorcycle",              0.0089),
+        ("Boat",                    0.0064),
+        ("Tax payments",            0.0045),
+        ("Business goal",           0.0009),
+        ("Debt restructuring",      0.0001),
+    ],
+    "Limit raise": [
+        ("Home improvement",        0.3048),
+        ("Car",                     0.2549),
+        ("Unknown",                 0.1475),
+        ("Other, see explanation",  0.1154),
+        ("Existing loan takeover",  0.0758),
+        ("Extra spending limit",    0.0496),
+        ("Caravan / Camper",        0.0139),
+        ("Not speficied",           0.0097),
+        ("Tax payments",            0.0077),
+        ("Motorcycle",              0.0074),
+        ("Boat",                    0.0062),
+        ("Remaining debt home",     0.0056),
+        ("Business goal",           0.0015),
+    ],
+}
+
+# (distribution_name, params) — same scipy.stats convention as
+# PROCESSING_TIME_PARAMS, sampled via ProcessComponent._sample_scipy_like.
+REQUESTED_AMOUNT_GIVEN_APPLICATION_TYPE: Dict[str, Tuple[str, tuple]] = {
+    "New credit":  ("lognorm", (0.7108, 0.0, 13393.0654)),
+    "Limit raise": ("lognorm", (0.5829, 0.0, 19823.0638)),
+}
+
+OFFER_ATTRIBUTE_PARAMS: Dict[str, Tuple[str, tuple]] = {
+    "OfferedAmount":  ("lognorm",     (0.6926, 0.0, 14557.0165)),
+    "NumberOfTerms":  ("weibull_min", (2.4819, 0.0, 93.7695)),
+    "MonthlyCost":    ("lognorm",     (0.6083, 0.0, 233.7704)),
+}
+
+# These two have a large point mass at 0 (no value recorded) alongside a
+# continuous spread on the remainder, so they're sampled as
+# Bernoulli(zero_prob) ? 0.0 : draw-from-dist, not a single distribution.
+OFFER_ATTRIBUTE_ZERO_MASS_PARAMS: Dict[str, dict] = {
+    "FirstWithdrawalAmount": {
+        "zero_prob": 0.2974,
+        "dist": ("weibull_min", (1.0951, 0.0, 12356.8172)),
+    },
+    "CreditScore": {
+        "zero_prob": 0.6451,
+        "dist": ("weibull_min", (10.345, 0.0, 941.6136)),
+    },
+}
+
+
 class ProcessComponent:
     """
     Routes cases through the BPIC-17 loan application process using

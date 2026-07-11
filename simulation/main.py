@@ -7,6 +7,9 @@ Components used:
   - PetriNetProcessComponent (Section 1.4 Advanced): loads a .bpmn file, converts
     it to a Petri net, and enforces control-flow via Petri net firing rules
     instead of the flat next-activity graph. Toggle with --process-model.
+    Branching at each decision point is either BRANCHING_PROBS (--branching-mode
+    probs, default) or a decision-point classifier trained on case/runtime data
+    attributes (--branching-mode rules, Section 1.5 Advanced I).
   - ResourceComponent (Section 1.7+1.8 Basic): permission map + random allocation
   - EventLogger       (Section 1.1 Basic): built-in, outputs CSV
 
@@ -14,6 +17,7 @@ Usage:
     cd simulation/
     PYTHONPATH=.. python main.py
     PYTHONPATH=.. python main.py --process-model basic
+    PYTHONPATH=.. python main.py --branching-mode rules
 """
 
 import argparse
@@ -54,6 +58,10 @@ DEFAULT_MODEL_PATH = REPO_ROOT / "simulation" / "models" / "processing_time_mode
 # enforce control-flow (see simulation/components/petri_process.py).
 DEFAULT_BPMN_PATH = REPO_ROOT / "simulation" / "models" / "bpic17_process.bpmn"
 
+# Section 1.5 Advanced I: decision-point classifiers trained on case/runtime
+# data attributes (see train_decision_rules.py / petri_process.py).
+DEFAULT_DECISION_RULES_PATH = REPO_ROOT / "simulation" / "models" / "decision_rules.joblib"
+
 RANDOM_SEED = 42   # Fix for reproducibility — required by assignment grading!
 
 # Arrival-Modell wählen:
@@ -68,6 +76,8 @@ def main(
     model_path: str | None = None,
     process_model: str = "advanced",
     bpmn_path: str | None = None,
+    branching_mode: str = "probs",
+    decision_rules_path: str | None = None,
 ):
     engine = SimulationEngine(
         sim_duration=SIM_DURATION_SECONDS,
@@ -91,9 +101,17 @@ def main(
     )
     if process_model == "advanced":
         process = PetriNetProcessComponent(
-            bpmn_path=bpmn_path or str(DEFAULT_BPMN_PATH), **process_kwargs
+            bpmn_path=bpmn_path or str(DEFAULT_BPMN_PATH),
+            branching_mode=branching_mode,
+            decision_rules_path=decision_rules_path or str(DEFAULT_DECISION_RULES_PATH),
+            **process_kwargs,
         )
     else:
+        if branching_mode == "rules":
+            raise ValueError(
+                "--branching-mode rules requires --process-model advanced: "
+                "decision points are only meaningful on the Petri net."
+            )
         process = ProcessComponent(**process_kwargs)
 
     # Register ResourceComponent BEFORE ProcessComponent: both handle
@@ -111,6 +129,7 @@ def main(
 
     print("\n--- Simulation Statistics ---")
     print(f"  process_model: {process_model}")
+    print(f"  branching_mode: {branching_mode}")
     print(f"  processing_time_mode: {mode}")
     for k, v in engine.stats.items():
         print(f"  {k}: {v}")
@@ -140,10 +159,24 @@ if __name__ == "__main__":
         "--bpmn-path", default=str(DEFAULT_BPMN_PATH),
         help="Path to the .bpmn file (--process-model advanced only).",
     )
+    parser.add_argument(
+        "--branching-mode", default="probs",
+        choices=["probs", "rules"],
+        help="Section 1.5: 'probs' (default) uses BRANCHING_PROBS; 'rules' "
+             "(Advanced I, --process-model advanced only) predicts each "
+             "branch from case/runtime data attributes via a decision-point "
+             "classifier trained by train_decision_rules.py.",
+    )
+    parser.add_argument(
+        "--decision-rules-path", default=str(DEFAULT_DECISION_RULES_PATH),
+        help="Path to the trained joblib artifact (--branching-mode rules only).",
+    )
     args = parser.parse_args()
     main(
         mode=args.mode,
         model_path=args.model_path,
         process_model=args.process_model,
         bpmn_path=args.bpmn_path,
+        branching_mode=args.branching_mode,
+        decision_rules_path=args.decision_rules_path,
     )
