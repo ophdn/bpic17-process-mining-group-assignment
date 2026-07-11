@@ -92,6 +92,13 @@ ist seit dem Pull vom 11.07. da — offen ist nur noch die KPI-Validierung
 > aussagekräftig wird. Reihenfolge = Priorität.
 
 **A1. Terminierungsproblem im Advanced-Modell (Blocker)**
+- **Entschieden (12.07., Evidenz in `output/validation/bpmn_source_comparison/`):**
+  Das Signavio-BPMN bleibt Simulationsbasis. Ein Inductive-Miner-Modell
+  (noise 0.2) fittet das echte Log nur marginal besser (73,6 % vs. 68,8 %
+  voll passende Traces), ist aber deutlich unpräziser (Precision 0,49 vs.
+  0,78; TVD 0,57 vs. 0,24) — und terminiert **identisch schlecht** (2 %).
+  ⇒ Die Nicht-Terminierung liegt am memorylosen Branching an
+  Schleifen-Exits, nicht an der Modellquelle. Genau das fixt A1.
 - Schritte: Schleifen-Exits analysieren (welche Decision Points erzeugen die
   75er-Traces?); `--branching-mode rules` gegen `probs` benchmarken;
   falls nötig historien-abhängige Branching-Wahrscheinlichkeiten
