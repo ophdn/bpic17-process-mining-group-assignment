@@ -25,6 +25,7 @@ from datetime import datetime
 from pathlib import Path
 
 from simulation.core.engine import SimulationEngine
+from simulation.core.events import EventType
 from simulation.components.arrival import ArrivalComponent
 from simulation.components.arrival_mdn import MDNArrivalComponent
 from simulation.components.process import ProcessComponent
@@ -63,6 +64,28 @@ DEFAULT_BPMN_PATH = REPO_ROOT / "simulation" / "models" / "bpic17_process.bpmn"
 DEFAULT_DECISION_RULES_PATH = REPO_ROOT / "simulation" / "models" / "decision_rules.joblib"
 
 RANDOM_SEED = 42   # Fix for reproducibility — required by assignment grading!
+
+
+class CaseCompletionTracker:
+    """Records which cases reach CASE_COMPLETE (finish naturally instead of
+    being cut off by the simulation horizon). Every evaluation must filter
+    the event log to these cases first — horizon-truncated cases would bias
+    cycle time, case length and duration downwards. The ids are written to
+    output/completed_cases.txt so downstream tools (scripts/opt_metrics.py,
+    scripts/metrics.py callers) can apply the filter without re-running."""
+
+    HANDLES = {EventType.CASE_COMPLETE: None}
+
+    def __init__(self):
+        self.completed_case_ids = set()
+
+    def on_case_complete(self, engine, event):
+        self.completed_case_ids.add(event.case_id)
+
+
+CaseCompletionTracker.HANDLES = {
+    EventType.CASE_COMPLETE: CaseCompletionTracker.on_case_complete
+}
 
 # Arrival-Modell wählen:
 #   False = parametrisch (LogNormal, Section 1.2 Basic)
@@ -121,11 +144,18 @@ def main(
     engine.register(arrivals)
     engine.register(resources)
     engine.register(process)
+    tracker = CaseCompletionTracker()
+    engine.register(tracker)
 
     arrivals.bootstrap(engine)
     engine.run()
 
     engine.logger.save(OUTPUT_PATH)
+    completed_path = OUTPUT_PATH.parent / "completed_cases.txt"
+    completed_path.write_text(
+        "\n".join(sorted(tracker.completed_case_ids)), encoding="utf-8")
+    print(f"[main] {len(tracker.completed_case_ids)} naturally-completed case "
+          f"ids -> {completed_path}")
 
     print("\n--- Simulation Statistics ---")
     print(f"  process_model: {process_model}")

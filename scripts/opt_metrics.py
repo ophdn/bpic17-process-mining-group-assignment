@@ -200,19 +200,43 @@ def evaluate(
     arrival_times: Optional[Mapping[str, pd.Timestamp]] = None,
     availability_seconds: Optional[Mapping[str, float]] = None,
     fairness_weights: Optional[Mapping[str, float]] = None,
+    completed_case_ids=None,
 ) -> dict:
-    """All three slide-21 metrics on one simulated event log."""
+    """All three slide-21 metrics on one simulated event log.
+
+    `completed_case_ids`: ids of cases that finished naturally (from
+    output/completed_cases.txt, written by simulation.main). Cycle time is
+    only defined on FINISHED instances (slide 21: "mean time to finish a
+    process instance") — horizon-truncated cases would bias it downwards,
+    so always pass this for simulated logs. Busy time for the occupation
+    metric intentionally keeps all cases: truncated cases did occupy
+    resources during the horizon.
+    """
+    n_total = df["case:concept:name"].nunique()
+    df_completed = df
+    if completed_case_ids is not None:
+        df_completed = df[df["case:concept:name"].isin(set(completed_case_ids))]
+
     occ = average_resource_occupation(df, availability_seconds)
     return {
-        "cycle_time": average_cycle_time(df, arrival_times),
+        "cycle_time": average_cycle_time(df_completed, arrival_times),
         "occupation": occ,
         "fairness": resource_fairness(occ["per_resource"], fairness_weights),
+        "case_filter": {
+            "n_cases_in_log": int(n_total),
+            "n_cases_completed": int(df_completed["case:concept:name"].nunique()),
+            "filtered_to_completed": completed_case_ids is not None,
+        },
     }
 
 
 def print_report(label: str, m: dict) -> None:
     ct, oc, fa = m["cycle_time"], m["occupation"], m["fairness"]
-    print(f"\n=== {label} ({ct['n_cases']} cases) ===")
+    cf = m.get("case_filter", {})
+    filt = ("completed cases only"
+            if cf.get("filtered_to_completed")
+            else "ALL cases — cycle time biased low, pass completed_case_ids!")
+    print(f"\n=== {label} ({ct['n_cases']} of {cf.get('n_cases_in_log', '?')} cases; {filt}) ===")
     print(f"  avg cycle time:          {ct['avg_cycle_time_s']:>14,.1f} s "
           f"({ct['avg_cycle_time_s']/86400:.2f} d)   [start basis: {ct['start_basis']}]")
     print(f"  p95 cycle time:          {ct['p95_cycle_time_s']:>14,.1f} s "
@@ -231,4 +255,14 @@ if __name__ == "__main__":
     path = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_LOG_PATH
     df = pd.read_csv(path)
     df["time:timestamp"] = pd.to_datetime(df["time:timestamp"])
-    print_report(path.name, evaluate(df))
+
+    # simulation.main writes the naturally-completed case ids next to the
+    # log — pick them up automatically so the CLI never reports the biased
+    # all-cases cycle time by accident.
+    completed_file = path.parent / "completed_cases.txt"
+    completed = (set(completed_file.read_text(encoding="utf-8").splitlines())
+                 if completed_file.exists() else None)
+    if completed is None:
+        print(f"WARNING: {completed_file} not found — evaluating ALL cases "
+              f"(cycle time biased low). Re-run simulation.main to create it.")
+    print_report(path.name, evaluate(df, completed_case_ids=completed))
