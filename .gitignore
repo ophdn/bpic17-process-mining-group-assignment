@@ -239,3 +239,4 @@ pyproject.toml
 
 # generated data
 *.csv
+output/completed_cases.txt
