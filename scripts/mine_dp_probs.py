@@ -65,10 +65,24 @@ def bucket_of(k: int) -> str:
 
 
 def mine(df_complete, comp: PetriNetProcessComponent):
-    """counts[dp_key][bucket][label] and counts[dp_key]["all"][label]."""
+    """counts[dp_key][bucket][label] and counts[dp_key]["all"][label].
+
+    A decision is recorded whenever the case has more than one option:
+    several enabled visible labels, and/or the choice to STOP (final
+    marking tau-reachable → pseudo-label "__END__"). Recording where real
+    traces end is what lets the simulation escape structural loops such as
+    the [O_Cancelled] singleton frontier, where "continue" is the only
+    visible label but real cases overwhelmingly stop.
+    """
     counts: dict = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
     replay_key = "__mine__"
     n_fitting = n_nonfitting = 0
+
+    def record(dp_visits, frontier, chosen: str) -> None:
+        dp_key = " | ".join(sorted(frontier.keys()))
+        dp_visits[dp_key] += 1
+        counts[dp_key][bucket_of(dp_visits[dp_key])][chosen] += 1
+        counts[dp_key]["all"][chosen] += 1
 
     for case_id, case_df in df_complete.groupby("case_id", sort=False):
         case_df = case_df.sort_values("timestamp")
@@ -82,13 +96,18 @@ def mine(df_complete, comp: PetriNetProcessComponent):
             if act not in frontier:
                 fits = False
                 break
-            if len(frontier) > 1:
-                dp_key = " | ".join(sorted(frontier.keys()))
-                dp_visits[dp_key] += 1
-                counts[dp_key][bucket_of(dp_visits[dp_key])][act] += 1
-                counts[dp_key]["all"][act] += 1
+            can_end = comp._final_reachable_by_tau(marking)
+            if len(frontier) + (1 if can_end else 0) > 1:
+                record(dp_visits, frontier, act)
             comp._markings[replay_key] = frontier[act]
             comp._fire_activity(replay_key, act)
+
+        if fits:
+            # Trace exhausted: the real case chose to stop here.
+            marking = comp._markings[replay_key]
+            frontier = comp._visible_frontier(marking)
+            if frontier and comp._final_reachable_by_tau(marking):
+                record(dp_visits, frontier, "__END__")
 
         comp._markings.pop(replay_key, None)
         n_fitting += fits

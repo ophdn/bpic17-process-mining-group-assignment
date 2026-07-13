@@ -92,6 +92,13 @@ VISIT_BUCKET_MAX = 3  # buckets "1", "2", "3+" — keep in sync with extract_log
 DP_PROBS_PATH = Path(__file__).resolve().parent.parent / "models" / "dp_branching_probs.json"
 DP_VISIT_BUCKET_MAX = 5  # buckets "1".."4", "5+" — keep in sync with mine_dp_probs
 
+# Pseudo-label for "the case ends here": at many markings the final marking
+# is reachable via tau transitions ONLY — but a visible loop-back label stays
+# enabled too (e.g. the [O_Cancelled] self-loop). Checking marking == fm
+# alone therefore never terminates such cases: ending must be an explicit,
+# data-driven *choice* mined from where real traces stop (mine_dp_probs.py).
+END_LABEL = "__END__"
+
 
 class PetriNetProcessComponent(ProcessComponent):
     """
@@ -133,6 +140,7 @@ class PetriNetProcessComponent(ProcessComponent):
         bpmn_model = pm4py.read_bpmn(bpmn_path)
         self.net, self.im, self.fm = pm4py.convert_to_petri_net(bpmn_model)
         self._markings: Dict[str, Marking] = {}
+        self._fm_reach_cache: Dict[tuple, bool] = {}
 
         self.branching_mode = branching_mode
 
@@ -313,9 +321,42 @@ class PetriNetProcessComponent(ProcessComponent):
             return None
 
         labels = sorted(frontier.keys())
-        chosen = self._weighted_choice(case_id, current_activity, labels)
+        allow_end = self._final_reachable_by_tau(marking)
+        chosen = self._weighted_choice(case_id, current_activity, labels,
+                                       allow_end=allow_end)
+        if chosen == END_LABEL:
+            return None  # caller ends the case (final marking is tau-reachable)
         self._markings[case_id] = frontier[chosen]
         return chosen
+
+    def _final_reachable_by_tau(self, marking: Marking) -> bool:
+        """True if the net's final marking can be reached from *marking* by
+        firing only invisible (tau) transitions — i.e. the case could
+        legally stop here. Memoised: the reachable-marking set is small."""
+        key = tuple(sorted((p.name, count) for p, count in marking.items()))
+        cached = self._fm_reach_cache.get(key)
+        if cached is not None:
+            return cached
+
+        seen = {key}
+        stack = [marking]
+        result = False
+        while stack:
+            m = stack.pop()
+            if m == self.fm:
+                result = True
+                break
+            for t in semantics.enabled_transitions(self.net, m):
+                if t.label is not None:
+                    continue
+                nm = semantics.execute(t, self.net, m)
+                nkey = tuple(sorted((p.name, c) for p, c in nm.items()))
+                if nkey not in seen:
+                    seen.add(nkey)
+                    stack.append(nm)
+
+        self._fm_reach_cache[key] = result
+        return result
 
     def _visible_frontier(
         self, marking: Marking, _visited: Optional[set] = None
@@ -356,27 +397,46 @@ class PetriNetProcessComponent(ProcessComponent):
         return frontier
 
     def _weighted_choice(
-        self, case_id: str, current_activity: Optional[str], labels: List[str]
+        self, case_id: str, current_activity: Optional[str], labels: List[str],
+        allow_end: bool = False,
     ) -> str:
         """
-        Pick one of the net-enabled activities. In "rules" mode, tries the
-        trained decision-point classifier first (falls back to "probs" if
-        this exact decision point wasn't covered by the training data —
-        e.g. too few real examples, see MIN_SAMPLES_PER_DECISION_POINT in
-        train_decision_rules.py). "probs" mode (and the fallback) weighs by
-        the empirical branching probabilities for *current_activity*, with
-        a small residual weight for options BRANCHING_PROBS doesn't cover
-        so every legal transition stays reachable.
+        Pick one of the net-enabled activities — or END_LABEL if *allow_end*
+        (final marking tau-reachable) and the mined decision-point data says
+        real cases stop here.
+
+        Order of preference:
+        1. END decision: P(end | decision point, visit bucket) from the
+           mined dp table (mine_dp_probs.py). Without mined data the case
+           never ends here (END gets no residual weight — ending must be
+           evidenced, not accidental).
+        2. "rules" mode: decision-point classifier on case attributes.
+        3. dp table over the remaining labels, then activity-visit table
+           ("visit" mode), then global BRANCHING_PROBS, with residual weight
+           so every legal transition stays reachable.
         """
-        if self.branching_mode == "rules":
+        options_n = len(labels) + (1 if allow_end else 0)
+        if options_n == 1:
+            return labels[0] if labels else END_LABEL
+
+        dp_dist = self._dp_conditioned_probs(case_id, labels)
+
+        if allow_end and dp_dist:
+            p_end = dp_dist.get(END_LABEL, 0.0)
+            if p_end and self._rng.random() < p_end:
+                return END_LABEL
+
+        if self.branching_mode == "rules" and len(labels) > 1:
             rules_choice = self._rules_weighted_choice(case_id, labels)
             if rules_choice is not None:
                 return rules_choice
 
-        preferred = self._dp_conditioned_probs(case_id, labels)
-        if preferred is None:
+        preferred = None
+        if dp_dist:
+            preferred = {k: v for k, v in dp_dist.items() if k != END_LABEL}
+        if not preferred:
             preferred = self._visit_conditioned_probs(case_id, current_activity)
-        if preferred is None:
+        if not preferred:
             preferred = dict(BRANCHING_PROBS.get(current_activity, []))
         weights = [preferred.get(label, RESIDUAL_WEIGHT) for label in labels]
 
@@ -400,7 +460,7 @@ class PetriNetProcessComponent(ProcessComponent):
         "all" aggregate exists. Counting mirrors mine_dp_probs exactly:
         every evaluation of a multi-label frontier increments the counter.
         """
-        if not self._dp_probs or len(labels) < 2:
+        if not self._dp_probs:
             return None
         key = " | ".join(sorted(labels))
         entry = self._dp_probs.get(key)

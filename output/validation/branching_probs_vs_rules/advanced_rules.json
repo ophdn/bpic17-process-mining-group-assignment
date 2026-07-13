@@ -1,0 +1,115 @@
+{
+  "n_cases": 844,
+  "branching": {
+    "per_activity_tvd": {
+      "A_Accepted": 0.0003,
+      "A_Cancelled": 0.0041,
+      "A_Complete": 0.478,
+      "A_Concept": 0.0013,
+      "A_Create Application": 0.0011,
+      "A_Denied": 0.0035,
+      "A_Incomplete": 0.7151,
+      "A_Pending": 1.0,
+      "A_Submitted": 0.005,
+      "A_Validating": 0.8318,
+      "O_Accepted": 0.1,
+      "O_Cancelled": 0.3531,
+      "O_Create Offer": 0.0073,
+      "O_Created": 0.0668,
+      "O_Refused": 0.697,
+      "O_Returned": 0.3687,
+      "O_Sent (mail and online)": 0.1032,
+      "O_Sent (online only)": null,
+      "W_Assess potential fraud": null,
+      "W_Call after offers": null,
+      "W_Call incomplete files": 0.8,
+      "W_Complete application": 0.0005,
+      "W_Handle leads": 0.0,
+      "W_Personal Loan collection": null,
+      "W_Shortened completion ": null,
+      "W_Validate application": 0.3809
+    },
+    "mean_tvd": 0.2818,
+    "activities_missing_in_run": [
+      "O_Sent (online only)",
+      "W_Assess potential fraud",
+      "W_Call after offers",
+      "W_Personal Loan collection",
+      "W_Shortened completion "
+    ]
+  },
+  "processing_times": {
+    "per_activity": {
+      "W_Assess potential fraud": null,
+      "W_Call after offers": null,
+      "W_Call incomplete files": {
+        "sim_mean_s": 177990.2,
+        "ref_mean_s": 626302.53,
+        "sim_std_s": 221616.4,
+        "ref_std_s": 1207241.74,
+        "rel_err_mean": 0.7158
+      },
+      "W_Complete application": {
+        "sim_mean_s": 15643.4,
+        "ref_mean_s": 34554.48,
+        "sim_std_s": 60459.2,
+        "ref_std_s": 113121.32,
+        "rel_err_mean": 0.5473
+      },
+      "W_Handle leads": {
+        "sim_mean_s": 333.8,
+        "ref_mean_s": 1325.35,
+        "sim_std_s": 586.4,
+        "ref_std_s": 7933.1,
+        "rel_err_mean": 0.7482
+      },
+      "W_Validate application": {
+        "sim_mean_s": 141646.9,
+        "ref_mean_s": 339420.66,
+        "sim_std_s": 232569.7,
+        "ref_std_s": 565850.68,
+        "rel_err_mean": 0.5827
+      }
+    },
+    "mean_rel_err": 0.6485
+  },
+  "arrival_rate": {
+    "sim_mean_interarrival_s": 3057.72,
+    "ref_mean_interarrival_s": 1002.23,
+    "rel_err": 2.0509
+  },
+  "variants": {
+    "ref_top20_variants_reproduced": 0,
+    "ref_top20_traffic_coverage_pct": 0
+  },
+  "case_stats": {
+    "sim_case_length_mean": 73.95,
+    "ref_case_length_mean": 15.09,
+    "case_length_rel_err": 3.9005,
+    "sim_case_duration_mean_s": 118621.1,
+    "ref_case_duration_mean_s": 1887879.72,
+    "case_duration_rel_err": 0.9372
+  },
+  "control_flow": {
+    "fitness": {
+      "perc_fit_traces": 100.0,
+      "average_trace_fitness": 1.0,
+      "log_fitness": 1.0,
+      "percentage_of_fitting_traces": 100.0
+    },
+    "precision": 0.563029056973513
+  },
+  "run_stats": {
+    "cases_started": 2318,
+    "cases_completed": 844,
+    "completion_rate": 0.3641,
+    "sim_duration_days": 30,
+    "seed": 42
+  },
+  "config": {
+    "process_model": "advanced",
+    "bpmn": "bpic17_process.bpmn",
+    "branching_mode": "rules",
+    "processing_time_mode": "distribution"
+  }
+}
