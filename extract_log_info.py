@@ -31,6 +31,11 @@ from scipy import stats
 
 warnings.filterwarnings("ignore")
 
+# Windows consoles default to cp1252, which cannot encode characters like
+# "→" in the progress output — force UTF-8 so a cosmetic print never kills
+# a multi-minute extraction run.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 # ── column name aliases (handles BPIC-17 and generic CSV logs) ──────────────
 COL_ALIASES = {
     "case_id":    ["case:concept:name", "case_id", "CaseID", "caseid"],
@@ -301,6 +306,42 @@ def extract_branching(df: pd.DataFrame) -> dict:
     return result
 
 
+def extract_branching_by_visit(df: pd.DataFrame, max_visit: int = 3,
+                               min_samples: int = 30) -> dict:
+    """
+    A1 termination-fix input: branching probabilities conditioned on how
+    often the current activity has already occurred within the case
+    ("visit count"). The memoryless P(next | current) systematically
+    understates loop-exit probabilities — in BPIC-17 the more often e.g.
+    W_Validate application has run in a case, the likelier the next step
+    is an exit rather than another loop round. A simulation driven by the
+    unconditioned table therefore cycles (measured: 4.35 W_Validate
+    application per case vs. 0.50 real; only 2% of cases terminate).
+
+    Buckets: "1", "2", ..., "{max_visit}+" per activity. Buckets with
+    fewer than *min_samples* observations are dropped — the simulation
+    falls back to the global branching_probs there.
+    """
+    df2 = df.sort_values(["case_id", "timestamp"]).copy()
+    df2["next_activity"] = df2.groupby("case_id")["activity"].shift(-1)
+    df2["visit"] = df2.groupby(["case_id", "activity"]).cumcount() + 1
+    df2 = df2.dropna(subset=["next_activity"])
+    df2["visit_bucket"] = df2["visit"].map(
+        lambda v: str(v) if v < max_visit else f"{max_visit}+")
+
+    result: dict = {}
+    for (act, bucket), grp in df2.groupby(["activity", "visit_bucket"]):
+        counts = grp["next_activity"].value_counts()
+        total = int(counts.sum())
+        if total < min_samples:
+            continue
+        result.setdefault(act, {})[bucket] = {
+            next_act: round(float(cnt / total), 4)
+            for next_act, cnt in counts.items()
+        }
+    return result
+
+
 def extract_case_attributes(df: pd.DataFrame) -> dict:
     """
     Section 1.5 Advanced I input: distributions for the case/runtime data
@@ -449,6 +490,7 @@ def main():
     print("[6/8] Process variants + branching probabilities ...")
     variants  = extract_process_variants(df_complete)
     branching = extract_branching(df_complete)
+    branching_by_visit = extract_branching_by_visit(df_complete)
 
     print("[7/8] Resources ...")
     resources = extract_resources(df)
@@ -465,6 +507,7 @@ def main():
         "arrival_rate":     arrivals,
         "process_variants": variants,
         "branching_probs":  branching,
+        "branching_probs_by_visit": branching_by_visit,
         "resources":        resources,
         "case_attributes":  case_attributes,
     }

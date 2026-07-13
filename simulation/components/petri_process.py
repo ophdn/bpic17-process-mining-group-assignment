@@ -15,6 +15,13 @@ legal activities, one of two branching strategies picks which one happens
 
   - "probs" (Basic): BRANCHING_PROBS (see process.py) as a soft preference,
     renormalised over just the legal subset.
+  - "visit" (A1 termination fix): like "probs", but conditioned on how often
+    the current activity has already occurred in this case
+    (branching_probs_by_visit in simulation_inputs.json, buckets 1/2/3+).
+    Memoryless probabilities understate loop-exit likelihood, which made
+    cases cycle the validation/offer loops (measured: 4.35× W_Validate
+    application per case vs. 0.50 real, only 2% of cases terminating).
+    Falls back to the global table for sparse buckets.
   - "rules" (Advanced I): case/runtime data attributes (ApplicationType,
     LoanGoal, RequestedAmount, and the offer attributes set once
     O_Create Offer has fired) are sampled per case and fed into a
@@ -37,7 +44,9 @@ Upgrade note (from process.py):
     scripts/compare_process_models.py).
 """
 
+import json
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import pm4py
@@ -70,6 +79,19 @@ RESIDUAL_WEIGHT = 0.01
 MAX_ACTIVITY_REPEATS = 60
 MAX_TOTAL_ACTIVITIES = 400
 
+# Visit-conditioned branching table (branching_mode="visit"): produced by
+# extract_log_info.extract_branching_by_visit into simulation_inputs.json.
+INPUTS_PATH = Path(__file__).resolve().parents[2] / "simulation_inputs.json"
+VISIT_BUCKET_MAX = 3  # buckets "1", "2", "3+" — keep in sync with extract_log_info
+
+# Decision-point-level branching table (scripts/mine_dp_probs.py): the
+# preferred source in "visit" mode. Unlike trace bigrams it is mined by
+# replaying the real log on this exact net, so it never mixes concurrency
+# interleavings into a decision point's distribution, and it is conditioned
+# on the case's visit count of that decision point (loop memory).
+DP_PROBS_PATH = Path(__file__).resolve().parent.parent / "models" / "dp_branching_probs.json"
+DP_VISIT_BUCKET_MAX = 5  # buckets "1".."4", "5+" — keep in sync with mine_dp_probs
+
 
 class PetriNetProcessComponent(ProcessComponent):
     """
@@ -97,8 +119,9 @@ class PetriNetProcessComponent(ProcessComponent):
             requires decision_rules_path (joblib artifact from
             train_decision_rules.py, lazy-loaded on first use).
         """
-        if branching_mode not in ("probs", "rules"):
-            raise ValueError(f"branching_mode must be 'probs' or 'rules', got {branching_mode!r}")
+        if branching_mode not in ("probs", "visit", "rules"):
+            raise ValueError(
+                f"branching_mode must be 'probs', 'visit' or 'rules', got {branching_mode!r}")
 
         super().__init__(
             seed=seed,
@@ -112,6 +135,31 @@ class PetriNetProcessComponent(ProcessComponent):
         self._markings: Dict[str, Marking] = {}
 
         self.branching_mode = branching_mode
+
+        # Visit-conditioned branching tables ("visit" mode; "rules" mode also
+        # uses them as its fallback layer when a decision point has no model).
+        self._branching_by_visit: Dict[str, dict] = {}
+        self._dp_probs: Dict[str, dict] = {}
+        self._dp_visit_counts: Dict[str, Dict[str, int]] = {}
+        if branching_mode in ("visit", "rules"):
+            try:
+                with open(INPUTS_PATH, encoding="utf-8") as f:
+                    self._branching_by_visit = json.load(f).get(
+                        "branching_probs_by_visit", {})
+            except FileNotFoundError:
+                pass
+            try:
+                with open(DP_PROBS_PATH, encoding="utf-8") as f:
+                    self._dp_probs = json.load(f).get("dp_probs", {})
+            except FileNotFoundError:
+                pass
+            if branching_mode == "visit" and not (
+                    self._branching_by_visit or self._dp_probs):
+                raise ValueError(
+                    "branching_mode='visit' needs 'branching_probs_by_visit' in "
+                    f"{INPUTS_PATH} (extract_log_info.py) and/or "
+                    f"{DP_PROBS_PATH} (scripts/mine_dp_probs.py).")
+
         self._decision_rules_path = decision_rules_path
         self._decision_models: Optional[dict] = None
         self._decision_encoders: Optional[dict] = None
@@ -131,6 +179,7 @@ class PetriNetProcessComponent(ProcessComponent):
 
         if event.activity == "__PROCESS_START__":
             self._repeat_counts[case_id] = {}
+            self._dp_visit_counts[case_id] = {}
             self._ctx[case_id] = {
                 "start_t": engine.now,
                 "position": 0,
@@ -201,6 +250,7 @@ class PetriNetProcessComponent(ProcessComponent):
     def _end_case(self, engine, case_id: str) -> None:
         self._markings.pop(case_id, None)
         self._repeat_counts.pop(case_id, None)
+        self._dp_visit_counts.pop(case_id, None)
         self._ctx.pop(case_id, None)
         self._case_attrs.pop(case_id, None)
         engine.schedule(SimEvent(
@@ -323,7 +373,11 @@ class PetriNetProcessComponent(ProcessComponent):
             if rules_choice is not None:
                 return rules_choice
 
-        preferred = dict(BRANCHING_PROBS.get(current_activity, []))
+        preferred = self._dp_conditioned_probs(case_id, labels)
+        if preferred is None:
+            preferred = self._visit_conditioned_probs(case_id, current_activity)
+        if preferred is None:
+            preferred = dict(BRANCHING_PROBS.get(current_activity, []))
         weights = [preferred.get(label, RESIDUAL_WEIGHT) for label in labels]
 
         total = sum(weights)
@@ -334,6 +388,50 @@ class PetriNetProcessComponent(ProcessComponent):
             if r <= cumulative:
                 return label
         return labels[-1]
+
+    def _dp_conditioned_probs(self, case_id: str,
+                              labels: List[str]) -> Optional[dict]:
+        """
+        Preferred branching source (A1 stage 2): the real choice distribution
+        AT this exact decision point (mined by scripts/mine_dp_probs.py via
+        replay), conditioned on the case's visit count of the decision point.
+        Falls back (returns None) when the table is absent, the decision
+        point wasn't mined, or a sparse visit bucket has no data and no
+        "all" aggregate exists. Counting mirrors mine_dp_probs exactly:
+        every evaluation of a multi-label frontier increments the counter.
+        """
+        if not self._dp_probs or len(labels) < 2:
+            return None
+        key = " | ".join(sorted(labels))
+        entry = self._dp_probs.get(key)
+        if entry is None:
+            return None
+        visits = self._dp_visit_counts.setdefault(case_id, {})
+        visits[key] = k = visits.get(key, 0) + 1
+        bucket = str(k) if k < DP_VISIT_BUCKET_MAX else f"{DP_VISIT_BUCKET_MAX}+"
+        return entry.get(bucket) or entry.get("all")
+
+    def _visit_conditioned_probs(self, case_id: str,
+                                 current_activity: Optional[str]) -> Optional[dict]:
+        """
+        Branching distribution conditioned on the current activity's visit
+        count in this case (A1 termination fix). Returns None — meaning
+        "fall back to the global BRANCHING_PROBS" — in "probs" mode, for the
+        case's first activity, for activities without a mined table, and
+        for buckets dropped as too sparse during extraction.
+
+        The visit count comes from _repeat_counts, which on_activity_complete
+        increments *before* the next-activity choice — so at decision time
+        counts[current_activity] is exactly the 1-based visit number.
+        """
+        if current_activity is None or not self._branching_by_visit:
+            return None
+        by_visit = self._branching_by_visit.get(current_activity)
+        if not by_visit:
+            return None
+        k = self._repeat_counts.get(case_id, {}).get(current_activity, 1)
+        bucket = str(k) if k < VISIT_BUCKET_MAX else f"{VISIT_BUCKET_MAX}+"
+        return by_visit.get(bucket)
 
     # ------------------------------------------------------------------
     # Data-based branching (Section 1.5 Advanced I)

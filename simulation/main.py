@@ -130,10 +130,10 @@ def main(
             **process_kwargs,
         )
     else:
-        if branching_mode == "rules":
+        if branching_mode != "probs":
             raise ValueError(
-                "--branching-mode rules requires --process-model advanced: "
-                "decision points are only meaningful on the Petri net."
+                f"--branching-mode {branching_mode} requires --process-model "
+                "advanced: decision points are only meaningful on the Petri net."
             )
         process = ProcessComponent(**process_kwargs)
 
@@ -191,11 +191,14 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--branching-mode", default="probs",
-        choices=["probs", "rules"],
-        help="Section 1.5: 'probs' (default) uses BRANCHING_PROBS; 'rules' "
-             "(Advanced I, --process-model advanced only) predicts each "
+        choices=["probs", "visit", "rules"],
+        help="Section 1.5: 'probs' (default) uses BRANCHING_PROBS; 'visit' "
+             "(A1 termination fix) conditions them on the activity's visit "
+             "count within the case (branching_probs_by_visit in "
+             "simulation_inputs.json); 'rules' (Advanced I) predicts each "
              "branch from case/runtime data attributes via a decision-point "
-             "classifier trained by train_decision_rules.py.",
+             "classifier trained by train_decision_rules.py. "
+             "All non-default modes need --process-model advanced.",
     )
     parser.add_argument(
         "--decision-rules-path", default=str(DEFAULT_DECISION_RULES_PATH),
