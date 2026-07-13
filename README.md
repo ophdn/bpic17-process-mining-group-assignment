@@ -4,22 +4,29 @@
 
 > TUM · Business Process Prediction, Simulation & Optimization · Group Assignment
 
-This document explains the **Simulation Engine Core** (Section 1.1 of the assignment) to all team members. It covers the architecture, how events flow, and how to add your own component on top.
+This document explains the **Simulation Engine** to all team members: the DES core (Section 1.1), how events flow, how to add your own component, and the status of each assignment section.
 
 ---
 
 ## Project structure
 
 ```
+output/                          ← simulation results (event_log.csv) — always here, never inside simulation/
 simulation/
 ├── core/
-│   ├── engine.py     ← The DES engine + global event queue  ← START HERE
-│   ├── events.py     ← SimEvent dataclass + EventType enum
-│   └── logger.py     ← Writes the event log to CSV
+│   ├── engine.py                ← The DES engine + global event queue  ← START HERE
+│   ├── events.py                ← SimEvent dataclass + EventType enum
+│   └── logger.py                ← Writes the event log to CSV
 ├── components/
-│   └── stubs.py      ← Placeholder implementations (replace these!)
-├── utils/            ← Shared helpers (add yours here)
-└── main.py           ← Demo runner — shows how to wire everything together
+│   ├── arrival.py                ← Section 1.2: LogNormal case arrivals
+│   ├── process.py                ← Section 1.3+1.5 Basic: fitted durations + branching probs
+│   ├── petri_process.py          ← Section 1.4 Advanced: BPMN → Petri net control-flow enforcement
+│   └── resource.py               ← Section 1.6+1.7+1.8: permissions + allocation
+├── models/                       ← engine input artifacts (things the simulation *loads*)
+│   └── bpic17_process.bpmn       ← discovered process model (Section 1.4 Advanced)
+└── main.py                       ← entry point — wires all components together
+scripts/
+└── test_advanced_process_model.py  ← Basic vs. Advanced conformance comparison
 ```
 
 ---
@@ -143,18 +150,25 @@ You can register **multiple components for the same event type** — they are ca
 
 ## How to run
 
+From the repo root, inside the virtualenv:
+
 ```bash
-cd simulation/
-PYTHONPATH=.. python main.py
+.venv/bin/python -m simulation.main                            # advanced process model (default), fitted distributions
+.venv/bin/python -m simulation.main --process-model basic      # flat next-activity probability graph (Section 1.4 Basic)
+.venv/bin/python -m simulation.main --mode ml_model            # contextual point-estimate ML durations
+.venv/bin/python -m simulation.main --mode ml_probabilistic    # contextual probabilistic ML durations
 ```
 
-Output will be saved to `simulation/output/event_log.csv`.
+Output is always saved to `<repo_root>/output/event_log.csv`, regardless of
+the working directory you run from.
+The `ml_*` modes need a trained artifact — see **[Processing-Time Models
+(Section 1.3)](simulation/PROCESSING_TIMES.md)** for setup, training, mode
+details and reference statistics. To verify the Section 1.4 Advanced
+Petri-net enforcement actually works, run `scripts/test_advanced_process_model.py`
+(see the docstring there for what it checks).
 
-To enable verbose event-by-event output (useful for debugging):
-
-```python
-engine = SimulationEngine(sim_duration=..., verbose=True)
-```
+To enable verbose event-by-event output (useful for debugging), set
+`verbose=True` when constructing `SimulationEngine` in `main.py`.
 
 ---
 
@@ -173,7 +187,7 @@ The logger writes a PM4Py-compatible event log. Every `ACTIVITY_START` and `ACTI
 To save the log after a run:
 
 ```python
-engine.logger.save("output/event_log.csv")
+engine.logger.save(repo_root / "output" / "event_log.csv")
 ```
 
 To change the real-world start date (default: 2024-01-01):
@@ -187,18 +201,19 @@ engine = SimulationEngine(..., start_datetime=datetime(2017, 1, 1))
 
 ## What is already implemented vs. what you need to build
 
-| Assignment section | Status | File to edit/create |
+| Assignment section | Status | File |
 |---|---|---|
 | **1.1** Simulation Engine Core | ✅ Done | `core/engine.py`, `core/events.py`, `core/logger.py` |
-| **1.2** Case Arrivals | 🟡 Stub (Exponential) | `components/stubs.py → ArrivalComponent` |
-| **1.3** Processing Times | 🟡 Stub (Exponential) | `components/stubs.py → ProcessComponent` |
-| **1.4** Process Model | 🟡 Stub (linear sequence) | Replace `ProcessComponent` with Petri net / BPMN |
-| **1.5** Branching Decisions | ❌ Missing | Add XOR gateway logic to the process component |
-| **1.6** Resource Availabilities | ❌ Missing | New `ResourceComponent`, handles `RESOURCE_AVAILABLE` |
-| **1.7** Resource Permissions | ❌ Missing | Add permission check inside resource allocation |
-| **1.8** Resource Allocation | ❌ Missing | Random allocation inside `ResourceComponent` |
+| **1.2** Case Arrivals | ✅ Done (Basic: fitted LogNormal) | `components/arrival.py` |
+| **1.3** Processing Times | ✅ Done (3 modes: distribution / ml_model / ml_probabilistic) | `components/process.py`, `train_processing_time_model.py` — see [PROCESSING_TIMES.md](simulation/PROCESSING_TIMES.md) |
+| **1.4** Process Model | ✅ Done (Basic: probability graph; Advanced: BPMN → Petri net enforcement) | `components/process.py`, `components/petri_process.py`, `models/bpic17_process.bpmn` |
+| **1.5** Branching Decisions | ✅ Done (Basic: empirical branching probabilities) | `components/process.py` (`BRANCHING_PROBS`) |
+| **1.6** Resource Availabilities | ✅ Done (Basic: fixed capacity per resource) | `components/resource.py` |
+| **1.7** Resource Permissions | ✅ Done (Basic: resource→activity permission map) | `components/resource.py` |
+| **1.8** Resource Allocation | ✅ Done (Basic: random allocation among permitted resources) | `components/resource.py` |
 
-**The stubs in `components/stubs.py` are intentionally simple.** They let the engine run end-to-end right now. Replace them one section at a time without touching the core.
+Every section above still has open Advanced variants beyond what's marked
+done (see the "Upgrade path" note at the top of each component file).
 
 ---
 
@@ -212,3 +227,39 @@ Each team member can implement their component independently and register it wit
 
 **Why are simulation times in seconds?**
 Seconds are the natural base unit for `datetime` arithmetic in Python. The logger converts them to real datetimes transparently.
+
+---
+
+## Arrival models: parametric vs. MDN (Section 1.2)
+
+Two interchangeable case-arrival components exist:
+
+| Datei | Modell | Inter-Arrival-Verteilung |
+|---|---|---|
+| `components/arrival.py` | **Parametrisch** (Basic) | eine feste LogNormal, zeit-unabhängig |
+| `components/arrival_mdn.py` | **MDN** (Advanced) | zeitabhängig — bedingt auf Tageszeit/Wochentag/Saison |
+
+Das **MDN** (Mixture Density Network, Log-Normal-Mischung) ist ein intensitätsfreier
+Temporal Point Process: ein kleines neuronales Netz gibt — abhängig von der aktuellen
+Sim-Uhrzeit — die Verteilung der nächsten Inter-Arrival-Time aus. Damit bildet es die
+reale Struktur ab (nachts ~0.6 Ankünfte/h, Kern 12–18h ~7.6/h; Mo ≈ 3× So; Sommer +35 %),
+die eine statische Verteilung prinzipiell nicht erfassen kann.
+
+**Umschalten** in `main.py`:
+```python
+USE_MDN_ARRIVALS = True   # False = parametrische LogNormal (Default)
+```
+
+**Laufzeit braucht kein PyTorch** — die Komponente lädt vortrainierte Gewichte
+(`components/arrival_mdn_weights.npz`) und wertet sie als reinen NumPy-Forward-Pass aus.
+
+**Gewichte neu trainieren** (einmaliger Offline-Schritt, benötigt PyTorch):
+```bash
+uv add torch      # nur fürs Training
+python train_arrival_mdn.py \
+    --arrivals path/to/arrivals.parquet \
+    --out simulation/components/arrival_mdn_weights.npz
+```
+`arrivals.parquet` braucht nur eine Spalte `arrival` mit dem Zeitstempel des ersten
+Events je Fall. Wichtig: `START_DATETIME` in `main.py` muss den Wochentag korrekt
+verankern (BPIC-17 startet 2016-01-01, ein Freitag), damit Wochentag/Tageszeit aligned sind.

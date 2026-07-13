@@ -1,3 +1,15 @@
+# ── BPIC-17 assignment: large data & trained artifacts (never commit) ────────
+# Raw event log (~550 MB) supplied per-environment, not version-controlled
+*.xes
+*.xes.gz
+# simulation/models/ holds engine input artifacts. Trained ML models
+# (regenerate via train_processing_time_model.py) are excluded by default;
+# the discovered BPMN process model is small and can't be regenerated
+# without the raw log, so it's tracked explicitly.
+simulation/models/*
+!simulation/models/bpic17_process.bpmn
+*.joblib
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -217,6 +229,22 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# ignore data
+# uv stuff
+uv.lock
+pyproject.toml
+.python-version
+
+# documentation
+*.pdf
+
+# generated data
+*.csv
+
+# raw event log (BPIC-17) — too large to track; see analysis/loader.py for the path
 data
 data/
+
+# Derived analysis artifacts. Fitted models under models/ are small and *are*
+# tracked; anything the notebooks dump per-resource-per-day is not.
+notebooks/**/resource_intervals.json
+notebooks/**/resource_availability_model.json
