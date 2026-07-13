@@ -76,7 +76,8 @@ _CaseCompletionTracker.HANDLES = {
 }
 
 
-def run_sim(use_advanced: bool, bpmn_path: Path = BPMN_PATH) -> tuple[pd.DataFrame, dict]:
+def run_sim(use_advanced: bool, bpmn_path: Path = BPMN_PATH,
+            branching_mode: str = "probs") -> tuple[pd.DataFrame, dict]:
     """Returns (completed-cases DataFrame, run stats incl. completion rate)."""
     engine = SimulationEngine(sim_duration=SIM_DURATION_SECONDS, start_datetime=START_DATETIME)
     arrivals = ArrivalComponent(seed=SEED)
@@ -85,7 +86,10 @@ def run_sim(use_advanced: bool, bpmn_path: Path = BPMN_PATH) -> tuple[pd.DataFra
 
     kwargs = dict(seed=SEED, resource_component=resources, start_datetime=START_DATETIME)
     if use_advanced:
-        process = PetriNetProcessComponent(bpmn_path=str(bpmn_path), **kwargs)
+        process = PetriNetProcessComponent(
+            bpmn_path=str(bpmn_path), branching_mode=branching_mode,
+            decision_rules_path=str(REPO_ROOT / "simulation" / "models" / "decision_rules.joblib"),
+            **kwargs)
     else:
         process = ProcessComponent(**kwargs)
 
@@ -98,7 +102,9 @@ def run_sim(use_advanced: bool, bpmn_path: Path = BPMN_PATH) -> tuple[pd.DataFra
     engine.run()
 
     df = pd.DataFrame(engine.logger._rows)
-    df["time:timestamp"] = pd.to_datetime(df["time:timestamp"])
+    # format="ISO8601": isoformat() drops the .%f part when microsecond == 0,
+    # so the column mixes two ISO variants — strict parsing would crash.
+    df["time:timestamp"] = pd.to_datetime(df["time:timestamp"], format="ISO8601")
     df = df[df["case:concept:name"].isin(tracker.completed_case_ids)]
     stats = {
         "cases_started": engine.stats.get("cases_started"),
@@ -119,6 +125,10 @@ def main():
                              "measure control-flow fitness/precision against.")
     parser.add_argument("--configs", default="basic,advanced",
                         help="Comma-separated subset of: basic,advanced")
+    parser.add_argument("--branching-mode", default="probs",
+                        choices=["probs", "visit", "rules"],
+                        help="Branching strategy for the advanced config "
+                             "(see simulation/main.py --branching-mode).")
     parser.add_argument("--tag", default="",
                         help="Suffix for the JSON filenames, e.g. 'im02'.")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT,
@@ -135,13 +145,14 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
     results = {}
     for label in configs:
-        df, run_stats = run_sim(label == "advanced", bpmn_path=args.bpmn)
+        df, run_stats = run_sim(label == "advanced", bpmn_path=args.bpmn,
+                                branching_mode=args.branching_mode)
         results[label] = metrics.evaluate(df, reference, net, im, fm)
         results[label]["run_stats"] = run_stats
         results[label]["config"] = {
             "process_model": label,
             "bpmn": str(args.bpmn.name),
-            "branching_mode": "probs",
+            "branching_mode": args.branching_mode if label == "advanced" else "probs",
             "processing_time_mode": "distribution",
         }
         metrics.print_report(label, results[label])

@@ -254,7 +254,7 @@ if __name__ == "__main__":
 
     path = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_LOG_PATH
     df = pd.read_csv(path)
-    df["time:timestamp"] = pd.to_datetime(df["time:timestamp"])
+    df["time:timestamp"] = pd.to_datetime(df["time:timestamp"], format="ISO8601")
 
     # simulation.main writes the naturally-completed case ids next to the
     # log — pick them up automatically so the CLI never reports the biased
