@@ -117,6 +117,13 @@ def main(
     print(f"  events_logged: {engine.logger.num_events}")
     print(f"\n  Expected from BPIC-17 in 30 days: ~2580 cases (~86/day)")
 
+    rstats = resources.stats()
+    print("\n--- Resource pool (Sections 1.6-1.8) ---")
+    print(f"  work items started:      {rstats['work_items_started']}")
+    print(f"  mean wait for a resource: {rstats['mean_wait_seconds'] / 60:.1f} min")
+    print(f"  still queued at horizon: {rstats['still_queued_at_end']}")
+    print(f"  activities nobody may perform: {rstats['unpermitted_activities']}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the BPIC-17 simulation.")

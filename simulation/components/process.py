@@ -481,13 +481,17 @@ class ProcessComponent:
     # ------------------------------------------------------------------
 
     def _fire_start(self, engine, case_id: str, activity: str) -> None:
+        # Emit a *request*, not a start. ResourceComponent is the only component
+        # that turns a request into an ACTIVITY_START, and only once it actually
+        # holds a resource — so the work item cannot begin (or be logged) while
+        # it is still queued. See ResourceComponent for the full rationale.
         engine.schedule(SimEvent(
             timestamp=engine.now,
             priority=5,
-            event_type=EventType.ACTIVITY_START,
+            event_type=EventType.ACTIVITY_REQUEST,
             case_id=case_id,
             activity=activity,
-            resource=None,   # ResourceComponent will fill this (Section 1.8)
+            resource=None,
         ))
 
     def _should_terminate(
