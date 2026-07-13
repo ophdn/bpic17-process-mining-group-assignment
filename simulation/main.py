@@ -54,6 +54,10 @@ DEFAULT_MODEL_PATH = REPO_ROOT / "simulation" / "models" / "processing_time_mode
 # enforce control-flow (see simulation/components/petri_process.py).
 DEFAULT_BPMN_PATH = REPO_ROOT / "simulation" / "models" / "bpic17_process.bpmn"
 
+# Section 1.6: resource availability model, fitted in
+# notebooks/01_resource_availability.ipynb.
+AVAILABILITY_MODEL_PATH = REPO_ROOT / "models" / "availability_model.json"
+
 RANDOM_SEED = 42   # Fix for reproducibility — required by assignment grading!
 
 # Arrival-Modell wählen:
@@ -68,6 +72,7 @@ def main(
     model_path: str | None = None,
     process_model: str = "advanced",
     bpmn_path: str | None = None,
+    availability: str = "calendar",
 ):
     engine = SimulationEngine(
         sim_duration=SIM_DURATION_SECONDS,
@@ -75,12 +80,27 @@ def main(
         verbose=False,   # set True to print every event (slow for large runs)
     )
 
+    # Section 1.6: resource availability. "calendar" loads the model fitted in
+    # notebooks/01_resource_availability.ipynb — per-resource shifts, discovered
+    # public holidays, and sampled vacation. "always" leaves every resource on
+    # duty around the clock, which is the pre-1.6 behaviour and the baseline the
+    # calendar is measured against.
+    calendar = None
+    if availability == "calendar":
+        from analysis.availability import YearlyAvailability
+        calendar = YearlyAvailability.from_json(AVAILABILITY_MODEL_PATH)
+
     if USE_MDN_ARRIVALS:
         arrivals = MDNArrivalComponent(seed=RANDOM_SEED, start_datetime=START_DATETIME)
     else:
         arrivals = ArrivalComponent(seed=RANDOM_SEED)
     process   = ProcessComponent(seed=RANDOM_SEED)
-    resources = ResourceComponent(capacity_per_resource=3, seed=RANDOM_SEED)
+    resources = ResourceComponent(
+        capacity_per_resource=3,
+        seed=RANDOM_SEED,
+        calendar=calendar,
+        start_datetime=START_DATETIME,
+    )
 
     process_kwargs = dict(
         seed=RANDOM_SEED,
@@ -119,9 +139,10 @@ def main(
 
     rstats = resources.stats()
     print("\n--- Resource pool (Sections 1.6-1.8) ---")
-    print(f"  work items started:      {rstats['work_items_started']}")
-    print(f"  mean wait for a resource: {rstats['mean_wait_seconds'] / 60:.1f} min")
-    print(f"  still queued at horizon: {rstats['still_queued_at_end']}")
+    print(f"  availability model:       {availability}")
+    print(f"  work items started:       {rstats['work_items_started']}")
+    print(f"  mean wait for a resource: {rstats['mean_wait_seconds'] / 3600:.1f} h")
+    print(f"  still queued at horizon:  {rstats['still_queued_at_end']}")
     print(f"  activities nobody may perform: {rstats['unpermitted_activities']}")
 
 
@@ -147,10 +168,17 @@ if __name__ == "__main__":
         "--bpmn-path", default=str(DEFAULT_BPMN_PATH),
         help="Path to the .bpmn file (--process-model advanced only).",
     )
+    parser.add_argument(
+        "--availability", default="calendar", choices=["calendar", "always"],
+        help="Section 1.6: 'calendar' enforces the fitted per-resource shifts, "
+             "holidays and vacation (default); 'always' keeps every resource on "
+             "duty around the clock (the baseline).",
+    )
     args = parser.parse_args()
     main(
         mode=args.mode,
         model_path=args.model_path,
         process_model=args.process_model,
         bpmn_path=args.bpmn_path,
+        availability=args.availability,
     )

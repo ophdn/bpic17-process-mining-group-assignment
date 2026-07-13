@@ -269,9 +269,21 @@ class ResourceComponent:
         EventType.RESOURCE_AVAILABLE: None,
     }
 
-    def __init__(self, capacity_per_resource: int = 1, seed: Optional[int] = 42):
+    def __init__(
+        self,
+        capacity_per_resource: int = 1,
+        seed: Optional[int] = 42,
+        calendar=None,
+        start_datetime=None,
+    ):
         self._capacity = capacity_per_resource
         self._rng = random.Random(seed)
+
+        # Section 1.6: an availability calendar (analysis.availability.
+        # YearlyAvailability, or None to leave resources always on duty).
+        # `start_datetime` anchors simulation seconds to wall-clock time.
+        self._calendar = calendar
+        self._start = start_datetime
 
         # resource -> current number of active tasks
         self._busy: Dict[str, int] = {r: 0 for r in RESOURCE_PERMISSIONS}
@@ -289,14 +301,18 @@ class ResourceComponent:
         self._wait_total: float = 0.0
         self._wait_count: int = 0
 
+        # Sim time of the shift-open wake-up already on the queue, if any (so we
+        # schedule at most one).
+        self._wake_at: Optional[float] = None
+
     # ------------------------------------------------------------------
     # Handlers
     # ------------------------------------------------------------------
 
     def on_activity_request(self, engine, event: SimEvent) -> None:
-        """A work item is enabled. Start it now if a qualified resource has a
-        free slot; otherwise queue it until one frees up (R-DE)."""
-        resource = self._allocate(event.activity)
+        """A work item is enabled. Start it now if a qualified resource is free
+        *and on shift*; otherwise queue it (R-DE)."""
+        resource = self._allocate(engine, event.activity)
 
         if resource is not None:
             self._begin(engine, event, resource)
@@ -310,26 +326,125 @@ class ResourceComponent:
             return
 
         self._waiting.append(event)
+        self._arm_shift_wake(engine)
 
     def on_resource_available(self, engine, event: SimEvent) -> None:
-        """A resource finished a task. Offer it to the oldest waiting work item
-        it is qualified to perform (R-DE: distribute as soon as available)."""
+        """Something freed up capacity. Two callers:
+
+        - a task completed (``event.resource`` is set) — that resource is freed
+          and offered to the oldest waiting item it is qualified for;
+        - a shift opened (``event.resource is None``) — resources came on duty
+          without anything completing, so the whole queue is re-examined. Without
+          this, work items queued while every qualified resource was off-shift
+          would never be woken: no completion is pending to wake them.
+        """
         resource = event.resource
-        self._busy[resource] = max(0, self._busy.get(resource, 0) - 1)
 
-        if self._busy[resource] >= self._capacity:
-            return
+        if resource is not None:
+            self._busy[resource] = max(0, self._busy.get(resource, 0) - 1)
+            if (self._busy[resource] < self._capacity
+                    and self._is_on_shift(engine, resource)):
+                permitted = RESOURCE_PERMISSIONS.get(resource, set())
+                for i, waiting in enumerate(self._waiting):
+                    if waiting.activity in permitted:
+                        self._waiting.pop(i)
+                        self._begin(engine, waiting, resource)
+                        break
+        else:
+            self._wake_at = None
+            self._drain(engine)
 
-        permitted = RESOURCE_PERMISSIONS.get(resource, set())
-        for i, waiting in enumerate(self._waiting):
-            if waiting.activity in permitted:
-                self._waiting.pop(i)
-                self._begin(engine, waiting, resource)
-                return
+        self._arm_shift_wake(engine)
 
     # ------------------------------------------------------------------
     # Private
     # ------------------------------------------------------------------
+
+    def _drain(self, engine) -> None:
+        """Start as many queued work items as the on-duty pool can take."""
+        still: List[SimEvent] = []
+        for req in self._waiting:
+            r = self._allocate(engine, req.activity)
+            if r is not None:
+                self._begin(engine, req, r)
+            else:
+                still.append(req)
+        self._waiting = still
+
+    # -- availability (Section 1.6) --------------------------------------
+
+    def _now_wall(self, engine):
+        """Simulation clock as wall-clock time (the calendar is in local time)."""
+        from datetime import timedelta
+        return self._start + timedelta(seconds=engine.now)
+
+    def _is_on_shift(self, engine, resource: str) -> bool:
+        """Is *resource* on duty right now?
+
+        Without a calendar, everyone is always on duty (the pre-1.6 behaviour).
+
+        A resource the calendar does not know is also always on duty. That is not
+        a fallback but the correct answer: the calendar only models *human*
+        staff, so an account missing from it is an automated one (User_1), and a
+        batch process does not keep office hours.
+        """
+        if self._calendar is None:
+            return True
+        if resource not in self._calendar.weekly.windows:
+            return True
+        return self._calendar.is_available(resource, self._now_wall(engine))
+
+    def _arm_shift_wake(self, engine) -> None:
+        """Ensure a wake-up is queued for the next time a shift opens.
+
+        Only needed while work is waiting. At most one is outstanding.
+        """
+        if self._calendar is None or not self._waiting or self._wake_at is not None:
+            return
+
+        t = self._next_shift_open(engine)
+        if t is None:
+            return
+
+        self._wake_at = t
+        engine.schedule(SimEvent(
+            timestamp=t,
+            priority=1,            # open the shift before anything else at t
+            event_type=EventType.RESOURCE_AVAILABLE,
+            resource=None,         # None => "a shift opened", not "a task ended"
+        ))
+
+    def _next_shift_open(self, engine, horizon_days: int = 14) -> Optional[float]:
+        """Sim time at which some resource's window next opens, or None.
+
+        Windows are per weekday, so the candidate times are the window starts of
+        each upcoming day. We scan forward day by day and take the earliest that
+        is strictly in the future.
+        """
+        from datetime import datetime, time, timedelta
+
+        now_wall = self._now_wall(engine)
+        best: Optional[float] = None
+
+        for day in range(horizon_days + 1):
+            d = (now_wall + timedelta(days=day)).date()
+            if d in self._calendar.holidays:
+                continue
+
+            midnight = datetime.combine(d, time.min)
+            dow = d.weekday()
+
+            for res, windows in self._calendar.weekly.windows.items():
+                w = windows.get(dow)
+                if w is None or d in self._calendar.vacations.get(res, ()):
+                    continue
+                t = (midnight + timedelta(hours=w[0]) - self._start).total_seconds()
+                if t > engine.now and (best is None or t < best):
+                    best = t
+
+            if best is not None:
+                return best
+        return best
 
     def _begin(self, engine, request: SimEvent, resource: Optional[str]) -> None:
         """Turn a granted request into an ACTIVITY_START bound to *resource*.
@@ -354,15 +469,21 @@ class ResourceComponent:
             payload=request.payload,
         ))
 
-    def _allocate(self, activity: str) -> Optional[str]:
+    def _allocate(self, engine, activity: str) -> Optional[str]:
         """
-        R-RBA runtime pick: uniformly random among available qualified
-        resources for this activity.  Returns None if all are busy.
+        R-RBA runtime pick: uniformly random among the qualified resources that
+        have a free slot *and are on shift*. Returns None if none qualify right
+        now — the caller queues the work item.
+
+        Note a task already under way is never preempted when its resource goes
+        off shift: the calendar gates *allocation*, not execution. A person who
+        starts a task at 16:55 finishes it rather than dropping it at 17:00.
         """
         candidates = _ACTIVITY_TO_RESOURCES.get(activity, [])
         available = [
             r for r in candidates
             if self._busy.get(r, 0) < self._capacity
+            and self._is_on_shift(engine, r)
         ]
         if not available:
             return None

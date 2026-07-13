@@ -330,14 +330,19 @@ class YearlyAvailability:
     holidays: set          # of datetime.date
     vacations: Dict[str, set]   # resource -> set of dates on leave
 
-    def is_available(self, resource: str, when: pd.Timestamp) -> bool:
+    def is_available(self, resource: str, when) -> bool:
+        """Is *resource* on duty at *when*?
+
+        Accepts either a pandas Timestamp or a stdlib datetime — the simulation
+        should not have to import pandas to ask a calendar question.
+        """
         d = when.date()
         if d in self.holidays:
             return False
         if d in self.vacations.get(resource, ()):
             return False
         hour = when.hour + when.minute / 60 + when.second / 3600
-        return self.weekly.is_open(resource, when.dayofweek, hour)
+        return self.weekly.is_open(resource, d.weekday(), hour)
 
     def to_json(self, path: str | Path) -> Path:
         """Serialise the fitted model. Small: parameters, not per-day rows."""
