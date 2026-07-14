@@ -7,6 +7,9 @@ Components used:
   - PetriNetProcessComponent (Section 1.4 Advanced): loads a .bpmn file, converts
     it to a Petri net, and enforces control-flow via Petri net firing rules
     instead of the flat next-activity graph. Toggle with --process-model.
+    Branching at each decision point is either BRANCHING_PROBS (--branching-mode
+    probs, default) or a decision-point classifier trained on case/runtime data
+    attributes (--branching-mode rules, Section 1.5 Advanced I).
   - ResourceComponent (Section 1.7+1.8 Basic): permission map + random allocation
   - EventLogger       (Section 1.1 Basic): built-in, outputs CSV
 
@@ -14,6 +17,7 @@ Usage:
     cd simulation/
     PYTHONPATH=.. python main.py
     PYTHONPATH=.. python main.py --process-model basic
+    PYTHONPATH=.. python main.py --branching-mode rules
 """
 
 import argparse
@@ -21,6 +25,7 @@ from datetime import datetime
 from pathlib import Path
 
 from simulation.core.engine import SimulationEngine
+from simulation.core.events import EventType
 from simulation.components.arrival import ArrivalComponent
 from simulation.components.arrival_mdn import MDNArrivalComponent
 from simulation.components.process import ProcessComponent
@@ -58,7 +63,33 @@ DEFAULT_BPMN_PATH = REPO_ROOT / "simulation" / "models" / "bpic17_process.bpmn"
 # notebooks/01_resource_availability.ipynb.
 AVAILABILITY_MODEL_PATH = REPO_ROOT / "models" / "availability_model.json"
 
+# Section 1.5 Advanced I: decision-point classifiers trained on case/runtime
+# data attributes (see train_decision_rules.py / petri_process.py).
+DEFAULT_DECISION_RULES_PATH = REPO_ROOT / "simulation" / "models" / "decision_rules.joblib"
+
 RANDOM_SEED = 42   # Fix for reproducibility — required by assignment grading!
+
+
+class CaseCompletionTracker:
+    """Records which cases reach CASE_COMPLETE (finish naturally instead of
+    being cut off by the simulation horizon). Every evaluation must filter
+    the event log to these cases first — horizon-truncated cases would bias
+    cycle time, case length and duration downwards. The ids are written to
+    output/completed_cases.txt so downstream tools (scripts/opt_metrics.py,
+    scripts/metrics.py callers) can apply the filter without re-running."""
+
+    HANDLES = {EventType.CASE_COMPLETE: None}
+
+    def __init__(self):
+        self.completed_case_ids = set()
+
+    def on_case_complete(self, engine, event):
+        self.completed_case_ids.add(event.case_id)
+
+
+CaseCompletionTracker.HANDLES = {
+    EventType.CASE_COMPLETE: CaseCompletionTracker.on_case_complete
+}
 
 # Arrival-Modell wählen:
 #   False = parametrisch (LogNormal, Section 1.2 Basic)
@@ -73,6 +104,8 @@ def main(
     process_model: str = "advanced",
     bpmn_path: str | None = None,
     availability: str = "calendar",
+    branching_mode: str = "probs",
+    decision_rules_path: str | None = None,
 ):
     engine = SimulationEngine(
         sim_duration=SIM_DURATION_SECONDS,
@@ -111,9 +144,17 @@ def main(
     )
     if process_model == "advanced":
         process = PetriNetProcessComponent(
-            bpmn_path=bpmn_path or str(DEFAULT_BPMN_PATH), **process_kwargs
+            bpmn_path=bpmn_path or str(DEFAULT_BPMN_PATH),
+            branching_mode=branching_mode,
+            decision_rules_path=decision_rules_path or str(DEFAULT_DECISION_RULES_PATH),
+            **process_kwargs,
         )
     else:
+        if branching_mode != "probs":
+            raise ValueError(
+                f"--branching-mode {branching_mode} requires --process-model "
+                "advanced: decision points are only meaningful on the Petri net."
+            )
         process = ProcessComponent(**process_kwargs)
 
     # Register ResourceComponent BEFORE ProcessComponent: both handle
@@ -123,14 +164,22 @@ def main(
     engine.register(arrivals)
     engine.register(resources)
     engine.register(process)
+    tracker = CaseCompletionTracker()
+    engine.register(tracker)
 
     arrivals.bootstrap(engine)
     engine.run()
 
     engine.logger.save(OUTPUT_PATH)
+    completed_path = OUTPUT_PATH.parent / "completed_cases.txt"
+    completed_path.write_text(
+        "\n".join(sorted(tracker.completed_case_ids)), encoding="utf-8")
+    print(f"[main] {len(tracker.completed_case_ids)} naturally-completed case "
+          f"ids -> {completed_path}")
 
     print("\n--- Simulation Statistics ---")
     print(f"  process_model: {process_model}")
+    print(f"  branching_mode: {branching_mode}")
     print(f"  processing_time_mode: {mode}")
     for k, v in engine.stats.items():
         print(f"  {k}: {v}")
@@ -174,11 +223,32 @@ if __name__ == "__main__":
              "holidays and vacation (default); 'always' keeps every resource on "
              "duty around the clock (the baseline).",
     )
+    parser.add_argument(
+        "--branching-mode", default=None,
+        choices=["probs", "visit", "rules"],
+        help="Section 1.5: 'probs' (default) uses BRANCHING_PROBS; 'visit' "
+             "(A1 termination fix) conditions them on the activity's visit "
+             "count within the case (branching_probs_by_visit in "
+             "simulation_inputs.json); 'rules' (Advanced I) predicts each "
+             "branch from case/runtime data attributes via a decision-point "
+             "classifier trained by train_decision_rules.py. "
+             "All non-default modes need --process-model advanced.",
+    )
+    parser.add_argument(
+        "--decision-rules-path", default=str(DEFAULT_DECISION_RULES_PATH),
+        help="Path to the trained joblib artifact (--branching-mode rules only).",
+    )
     args = parser.parse_args()
+    # Default branching: "visit" on the Petri net (A1 winner, see
+    # output/validation/branching_probs_vs_rules/), plain "probs" on basic.
+    branching_mode = args.branching_mode or (
+        "visit" if args.process_model == "advanced" else "probs")
     main(
         mode=args.mode,
         model_path=args.model_path,
         process_model=args.process_model,
         bpmn_path=args.bpmn_path,
         availability=args.availability,
+        branching_mode=branching_mode,
+        decision_rules_path=args.decision_rules_path,
     )

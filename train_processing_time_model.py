@@ -42,11 +42,17 @@ import joblib
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import GradientBoostingRegressor
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.model_selection import train_test_split
+from sklearn.metrics import (
+    mean_absolute_error, mean_pinball_loss, mean_squared_error, r2_score,
+)
 from sklearn.preprocessing import LabelEncoder
 
 warnings.filterwarnings("ignore")
+
+# Windows consoles default to cp1252, which cannot encode the box-drawing
+# characters in the report output — force UTF-8 so a cosmetic print never
+# kills a long training run.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # ── Reproducibility ──────────────────────────────────────────────────────────
 RANDOM_SEED = 42
@@ -249,6 +255,39 @@ def build_matrix(inst: pd.DataFrame, encoders: dict) -> np.ndarray:
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# Quantile-model evaluation (Advanced I)
+# ════════════════════════════════════════════════════════════════════════════
+
+def evaluate_quantile_models(quantile_models: dict, quantiles: list,
+                             X_test: np.ndarray, y_test: np.ndarray) -> dict:
+    """Evaluate the predicted conditional distribution, answering lecture 05
+    slide 47's challenge ("how to evaluate the probability densities?"):
+
+    - mean pinball loss (log space) — the proper scoring rule for quantile
+      regression, averaged over the quantile grid; lower is better.
+    - empirical coverage of the central 90 % and 50 % prediction intervals —
+      a calibrated model covers ~0.90 / ~0.50 of the test durations.
+    - R² of the median quantile (log space) — point-quality sanity check.
+    """
+    preds = {q: quantile_models[q].predict(X_test) for q in quantiles}
+    pinball = [mean_pinball_loss(y_test, preds[q], alpha=q) for q in quantiles]
+
+    q_lo, q_hi = min(quantiles), max(quantiles)                 # 0.05 / 0.95
+    q25 = min(quantiles, key=lambda q: abs(q - 0.25))
+    q75 = min(quantiles, key=lambda q: abs(q - 0.75))
+    q50 = min(quantiles, key=lambda q: abs(q - 0.50))
+
+    return {
+        "mean_pinball_loss_log": float(np.mean(pinball)),
+        "coverage_90pct_interval": float(np.mean(
+            (y_test >= preds[q_lo]) & (y_test <= preds[q_hi]))),
+        "coverage_50pct_interval": float(np.mean(
+            (y_test >= preds[q25]) & (y_test <= preds[q75]))),
+        "r2_log_median_quantile": float(r2_score(y_test, preds[q50])),
+    }
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # Training
 # ════════════════════════════════════════════════════════════════════════════
 
@@ -265,11 +304,18 @@ def train(log_path: Path, probabilistic: bool, output_path: Path) -> None:
     X = build_matrix(inst, encoders)
     y = np.log1p(inst["duration_s"].to_numpy())  # target: log1p(duration_s)
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=RANDOM_SEED
-    )
+    # Temporal split (lecture 05, slide 37): train on the oldest 80 % of
+    # activity instances, test on the most recent 20 %. A random split would
+    # leak future process drift (new resources, shifting workloads) into
+    # training and overstate test performance.
+    order = np.argsort(inst["timestamp"].to_numpy())
+    split = int(len(order) * 0.8)
+    train_idx, test_idx = order[:split], order[split:]
+    X_train, X_test = X[train_idx], X[test_idx]
+    y_train, y_test = y[train_idx], y[test_idx]
+    split_date = inst["timestamp"].iloc[order[split]]
     print(f"[train] {X_train.shape[0]:,} train / {X_test.shape[0]:,} test rows, "
-          f"{X.shape[1]} features.")
+          f"{X.shape[1]} features (temporal split at {split_date}).")
 
     # --- Point-estimation model (Basic option 2) ---
     t0 = time.perf_counter()
@@ -282,18 +328,24 @@ def train(log_path: Path, probabilistic: bool, output_path: Path) -> None:
     y_pred = np.expm1(y_pred_log)
     y_true = np.expm1(y_test)
 
+    # MAE + MSE are the two numerical-prediction metrics prescribed by
+    # lecture 05, slide 44; RMSE and R² are reported on top for readability.
+    mse = float(mean_squared_error(y_true, y_pred))
     metrics = {
         "mae_seconds": float(mean_absolute_error(y_true, y_pred)),
-        "rmse_seconds": float(np.sqrt(mean_squared_error(y_true, y_pred))),
+        "mse_seconds2": mse,
+        "rmse_seconds": float(np.sqrt(mse)),
         "r2_raw": float(r2_score(y_true, y_pred)),
         "r2_log": float(r2_score(y_test, y_pred_log)),
+        "split": "temporal_80_20",
         "n_train": int(X_train.shape[0]),
         "n_test": int(X_test.shape[0]),
     }
 
-    print("\n── Point-estimation model — test metrics ──────────────────────")
+    print("\n── Point-estimation model — test metrics (temporal split) ─────")
     print(f"  MAE  (raw)  : {metrics['mae_seconds']:>14,.1f} s "
           f"({metrics['mae_seconds']/3600:.2f} h)")
+    print(f"  MSE  (raw)  : {metrics['mse_seconds2']:>14,.4g} s²")
     print(f"  RMSE (raw)  : {metrics['rmse_seconds']:>14,.1f} s "
           f"({metrics['rmse_seconds']/3600:.2f} h)")
     print(f"  R²   (raw)  : {metrics['r2_raw']:>14.4f}")
@@ -330,16 +382,37 @@ def train(log_path: Path, probabilistic: bool, output_path: Path) -> None:
         artifact["quantile_models"] = quantile_models
         artifact["quantiles"] = QUANTILES
 
-        # Sanity: report the median quantile's R² in log space
-        med = quantile_models[min(QUANTILES, key=lambda q: abs(q - 0.5))]
-        r2_med = r2_score(y_test, med.predict(X_test))
-        print(f"[train] Median-quantile R² (log): {r2_med:.4f}")
+        qe = evaluate_quantile_models(quantile_models, QUANTILES, X_test, y_test)
+        artifact["metrics"]["quantile_eval"] = qe
+        print("\n── Quantile models — distribution evaluation (temporal split) ─")
+        print(f"  mean pinball loss (log) : {qe['mean_pinball_loss_log']:.4f}")
+        print(f"  90% interval coverage   : {qe['coverage_90pct_interval']:.3f} (target ≈ 0.90)")
+        print(f"  50% interval coverage   : {qe['coverage_50pct_interval']:.3f} (target ≈ 0.50)")
+        print(f"  median-quantile R² (log): {qe['r2_log_median_quantile']:.4f}")
 
     # --- Persist ---
     output_path.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(artifact, output_path)
     size_mb = output_path.stat().st_size / 1e6
     print(f"\n[save] Wrote artifact → {output_path} ({size_mb:.1f} MB)")
+
+    # Report-ready metrics JSON (design decision 1.3: distribution vs.
+    # ml_model vs. ml_probabilistic — model-quality evidence lives here).
+    import json
+    metrics_json = {
+        "point_model": artifact["metrics"],
+        "feature_importances": {
+            name: float(imp)
+            for name, imp in zip(FEATURE_NAMES, model.feature_importances_)
+        },
+        "quantile_eval": artifact["metrics"].get("quantile_eval"),
+        "quantiles": QUANTILES if probabilistic else None,
+    }
+    metrics_path = Path("output/models/processing_time_metrics.json")
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(metrics_path, "w", encoding="utf-8") as f:
+        json.dump(metrics_json, f, indent=2, default=float)
+    print(f"[save] Wrote metrics → {metrics_path}")
     print(f"[save] Contents: model{' + ' + str(len(QUANTILES)) + ' quantile models' if probabilistic else ''}, "
           f"{len(encoders)} encoders, {len(FEATURE_NAMES)} features, metrics.")
 

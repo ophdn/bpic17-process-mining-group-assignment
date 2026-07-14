@@ -248,3 +248,5 @@ data/
 # tracked; anything the notebooks dump per-resource-per-day is not.
 notebooks/**/resource_intervals.json
 notebooks/**/resource_availability_model.json
+
+output/completed_cases.txt
