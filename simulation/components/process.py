@@ -14,8 +14,34 @@ Upgrade path:
   - Section 1.4 Advanced: replace _next_activity() with a Petri net / BPMN loader
   - Section 1.3 Advanced I: replace _sample_duration() with a probabilistic ML model
   - Section 1.5 Advanced II: replace _next_activity() with a trained next-activity predictor
+
+Common Random Numbers (CRN, opt-in via crn=True)
+-------------------------------------------------
+By default all stochastic draws in this component (branching, duration
+sampling) come from one shared ``self._rng``, consumed in whatever order
+the engine dispatches events. That means changing something unrelated to
+this component — e.g. which resource-allocation policy is active — changes
+the event-dispatch order, which changes every subsequent draw from this
+shared RNG too. Two policies run under "the same seed" then see different
+arrivals-aside trajectories: not a controlled comparison (see
+output/piled_execution_eval.md for the empirical consequence).
+
+With ``crn=True``, each branching/duration decision instead draws from a
+fresh ``random.Random`` seeded deterministically from
+``(base_seed, case_id, activity, kind, visit)`` — see ``_draw_rng()``.
+This makes a given case's Nth visit to a given activity draw the same
+branch and the same duration regardless of what else happened first in
+the event queue, so paired experiments across allocation policies (Part
+II) actually compare the same case trajectories up to the point they
+diverge on allocation. Scope: this covers branching and duration draws
+only. Case/offer-attribute sampling in petri_process.py's "rules" mode
+(applicant type, loan goal, requested amount, offer terms) is out of
+scope — it's a one-time draw per case/offer rather than a per-event draw
+in the dispatch-order-sensitive hot path, so it's a much smaller residual
+source of cross-policy divergence in "rules" mode specifically.
 """
 
+import hashlib
 import math
 import random
 from datetime import datetime, timedelta
@@ -393,6 +419,7 @@ class ProcessComponent:
         model_path: Optional[str] = None,
         start_datetime: Optional[datetime] = None,
         resource_component=None,
+        crn: bool = False,
     ):
         """
         Parameters
@@ -411,11 +438,19 @@ class ProcessComponent:
             If provided, its resource is released on ACTIVITY_COMPLETE (via the
             component's own ``release()`` API). Without this the resource pool
             saturates permanently, leaving the ML resource feature degenerate.
+        crn : bool, optional
+            Common Random Numbers (see module docstring). Default False
+            preserves every existing evidence log bit-for-bit. Requires
+            ``seed`` to be a concrete int (not None).
         """
         if mode not in self._MODES:
             raise ValueError(f"mode must be one of {self._MODES}, got {mode!r}")
+        if crn and seed is None:
+            raise ValueError("crn=True requires a concrete seed (got None)")
 
         self._rng = random.Random(seed)
+        self._seed = seed
+        self._crn = crn
         self.mode = mode
         self._model_path = model_path
         self._anchor = start_datetime or _DEFAULT_ANCHOR
@@ -468,6 +503,36 @@ class ProcessComponent:
                     "mode='ml_probabilistic' needs quantile models — retrain "
                     "with `--probabilistic`."
                 )
+
+    # ------------------------------------------------------------------
+    # Common Random Numbers (see module docstring)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _crn_seed(base_seed: int, *parts) -> int:
+        """Deterministic derived seed from (base_seed, *parts).
+
+        Not Python's builtin ``hash()``: that's salted per-process for str
+        (PYTHONHASHSEED), so it would silently break cross-run reproducibility
+        — the one thing this whole project's grading depends on.
+        """
+        key = "|".join(str(p) for p in (base_seed, *parts)).encode("utf-8")
+        return int.from_bytes(hashlib.blake2b(key, digest_size=8).digest(), "big")
+
+    def _draw_rng(self, case_id: str, activity: Optional[str], kind: str, visit: int = 1):
+        """RNG to use for one branching/duration decision.
+
+        crn=False (default): the shared ``self._rng``, in whatever order the
+        engine dispatches events — today's unchanged behaviour.
+        crn=True: a fresh ``random.Random`` seeded from
+        (base_seed, case_id, activity, kind, visit), independent of dispatch
+        order. ``kind`` (e.g. "duration" vs "branch") keeps two different
+        draws for the same (case, activity, visit) from colliding on one seed.
+        """
+        if not self._crn:
+            return self._rng
+        seed = self._crn_seed(self._seed, case_id, activity, kind, visit)
+        return random.Random(seed)
 
     # ------------------------------------------------------------------
     # Event handlers
@@ -538,7 +603,7 @@ class ProcessComponent:
             return
 
         # Choose and schedule the next activity
-        next_act = self._next_activity(activity)
+        next_act = self._next_activity(case_id, activity, counts.get(activity, 1))
         if next_act is None:
             # No outgoing edge defined — treat as terminal
             self._repeat_counts.pop(case_id, None)
@@ -586,16 +651,21 @@ class ProcessComponent:
             return True
         return False
 
-    def _next_activity(self, current: str) -> Optional[str]:
+    def _next_activity(self, case_id: str, current: str, visit: int = 1) -> Optional[str]:
         """
         Sample the next activity using empirical branching probabilities.
         Returns None if current activity has no outgoing edges.
+
+        ``visit`` is the 1-based count of how many times *current* has
+        occurred in this case so far (the caller already tracks this in
+        ``counts``) — used as part of the CRN draw key when crn=True.
         """
         options = BRANCHING_PROBS.get(current)
         if not options:
             return None
 
-        r = self._rng.random()
+        rng = self._draw_rng(case_id, current, "branch", visit)
+        r = rng.random()
         cumulative = 0.0
         for next_act, prob in options:
             cumulative += prob
@@ -610,14 +680,19 @@ class ProcessComponent:
 
     def _duration(self, engine, event: SimEvent, ctx: dict) -> float:
         """Route to the configured processing-time model."""
+        # This instance's 1-based visit count: at ACTIVITY_START time
+        # _repeat_counts hasn't been incremented for this occurrence yet.
+        visit = self._repeat_counts.get(event.case_id, {}).get(event.activity, 0) + 1
+        rng = self._draw_rng(event.case_id, event.activity, "duration", visit)
+
         if self.mode == "distribution":
-            return self._sample_duration(event.activity)
+            return self._sample_duration(event.activity, rng)
 
         self._ensure_model()
         features = self._build_features(engine, event, ctx)
         if self.mode == "ml_model":
             return self._sample_duration_ml(features)
-        return self._sample_duration_ml_prob(features)   # ml_probabilistic
+        return self._sample_duration_ml_prob(features, rng)   # ml_probabilistic
 
     def _encode(self, name: str, value, fallback: str) -> int:
         """Label-encode *value*, falling back to a sentinel for unseen labels."""
@@ -660,70 +735,84 @@ class ProcessComponent:
         pred_log = self._model.predict(np.asarray(features, dtype=float).reshape(1, -1))[0]
         return max(1.0, float(np.expm1(pred_log)))
 
-    def _sample_duration_ml_prob(self, features: List[float]) -> float:
+    def _sample_duration_ml_prob(self, features: List[float], rng=None) -> float:
         """
         Probabilistic (Advanced I): predict the conditional quantile curve,
         enforce monotonicity, draw u ~ Uniform(0,1) and interpolate — this
         restores the variance a point estimate discards.
+
+        ``rng`` defaults to ``self._rng`` for callers outside the CRN path
+        (e.g. direct unit use); ``_duration()`` always passes one explicitly.
         """
         import numpy as np
+        rng = rng if rng is not None else self._rng
         x = np.asarray(features, dtype=float).reshape(1, -1)
         qs = self._quantiles
         preds_log = np.array([self._quantile_models[q].predict(x)[0] for q in qs])
         # Clip quantile crossings so the curve is non-decreasing.
         preds_log = np.maximum.accumulate(preds_log)
-        u = self._rng.random()
+        u = rng.random()
         # np.interp clamps u outside [qs[0], qs[-1]] to the edge predictions.
         dur_log = float(np.interp(u, qs, preds_log))
         return max(1.0, float(np.expm1(dur_log)))
 
-    def _sample_duration(self, activity: str) -> float:
+    def _sample_duration(self, activity: str, rng=None) -> float:
         """
         Sample processing time in seconds for an activity.
         Uses fitted scipy distributions where available, exponential fallback otherwise.
+
+        ``rng`` defaults to ``self._rng``; ``_duration()`` passes the
+        CRN-derived draw RNG explicitly when crn=True.
         """
+        rng = rng if rng is not None else self._rng
         if activity in PROCESSING_TIME_PARAMS:
             dist_name, params = PROCESSING_TIME_PARAMS[activity]
-            return max(1.0, self._sample_scipy_like(dist_name, params))
+            return max(1.0, self._sample_scipy_like(dist_name, params, rng))
 
         mean = FALLBACK_MEAN_DURATIONS.get(activity, 600.0)
-        return max(1.0, self._rng.expovariate(1.0 / mean))
+        return max(1.0, rng.expovariate(1.0 / mean))
 
-    def _sample_scipy_like(self, dist_name: str, params: tuple) -> float:
+    def _sample_scipy_like(self, dist_name: str, params: tuple, rng=None) -> float:
         """
         Pure-Python approximation of scipy distribution sampling.
         Avoids a scipy dependency at runtime.
 
         Supported: lognorm, gamma, weibull_min, expon, norm
+
+        ``rng`` defaults to ``self._rng`` — callers sampling case/offer
+        attributes (petri_process.py, "rules" mode) intentionally keep using
+        the shared RNG; only duration/branching draws go through CRN
+        (see module docstring's CRN scope note).
         """
+        rng = rng if rng is not None else self._rng
         if dist_name == "lognorm":
             s, loc, scale = params
             # X = loc + scale * exp(s * Z), Z ~ N(0,1)
-            z = self._rng.gauss(0, 1)
+            z = rng.gauss(0, 1)
             return loc + scale * math.exp(s * z)
 
         elif dist_name == "gamma":
             # params: (a, loc, scale)  X = loc + scale * Gamma(a)
             a, loc, scale = params
-            return loc + scale * self._rng.gammavariate(a, 1.0)
+            return loc + scale * rng.gammavariate(a, 1.0)
 
         elif dist_name == "weibull_min":
             # params: (c, loc, scale)  X = loc + scale * Weibull(c)
             c, loc, scale = params
-            return loc + scale * self._rng.weibullvariate(1.0, c)
+            return loc + scale * rng.weibullvariate(1.0, c)
 
         elif dist_name == "expon":
             loc, scale = params[-2], params[-1]
-            return loc + self._rng.expovariate(1.0 / scale)
+            return loc + rng.expovariate(1.0 / scale)
 
         elif dist_name == "norm":
             loc, scale = params[-2], params[-1]
-            return self._rng.gauss(loc, scale)
+            return rng.gauss(loc, scale)
 
         else:
             # Unknown distribution: exponential fallback
             scale = params[-1]
-            return self._rng.expovariate(1.0 / scale)
+            return rng.expovariate(1.0 / scale)
 
 
 ProcessComponent.HANDLES = {
