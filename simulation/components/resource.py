@@ -120,6 +120,7 @@ from collections import defaultdict
 from typing import Dict, List, Optional, Set
 
 from ..core.events import SimEvent, EventType
+from ..policies import AllocationPolicy, AllocationState, RandomPolicy
 
 
 # ── Resource permission map (from BPIC-17 resource_activity_map) ─────────────
@@ -267,8 +268,9 @@ class ResourceComponent:
 
     Section 1.7 Basic (R-RBA): only resources that have historically
     performed an activity are candidates (from BPIC-17 resource_activity_map).
-    Among the available qualified candidates a uniform random pick is made
-    — the runtime decision R-RBA defers to.
+    Among the available qualified candidates, ``policy.select()`` picks one
+    (default: uniform random — see simulation/policies.py for the push
+    selection pattern seam Part II policies plug into).
 
     Section 1.8 (R-DE): if all qualified resources are busy, the task is
     queued and retried when a resource becomes free (FIFO on the freeing
@@ -292,10 +294,18 @@ class ResourceComponent:
         calendar=None,
         start_datetime=None,
         piled: bool = False,
+        policy: Optional[AllocationPolicy] = None,
     ):
         self._capacity = capacity_per_resource
         self._rng = random.Random(seed)
         self._piled = piled
+
+        # Section 1.8 Advanced: push selection pattern (see
+        # simulation/policies.py). Default reuses this component's own RNG
+        # so the draw sequence — and therefore every historical event log —
+        # is unchanged: RandomPolicy(rng=self._rng) is the pre-existing
+        # self._rng.choice(available) call, just behind a seam.
+        self._policy: AllocationPolicy = policy or RandomPolicy(rng=self._rng)
 
         # Section 1.6: an availability calendar (analysis.availability.
         # YearlyAvailability, or None to leave resources always on duty).
@@ -506,9 +516,11 @@ class ResourceComponent:
 
     def _allocate(self, engine, activity: str) -> Optional[str]:
         """
-        R-RBA runtime pick: uniformly random among the qualified resources that
-        have a free slot *and are on shift*. Returns None if none qualify right
-        now — the caller queues the work item.
+        R-RBA runtime filter (role permission + live capacity + on-shift),
+        then the push *selection* pattern in ``self._policy`` picks one.
+        Returns None if nobody qualifies right now — the caller queues the
+        work item. A policy never sees a candidate this filter rejected, so
+        it cannot violate R-RBA or the shift calendar even by accident.
 
         Note a task already under way is never preempted when its resource goes
         off shift: the calendar gates *allocation*, not execution. A person who
@@ -522,7 +534,8 @@ class ResourceComponent:
         ]
         if not available:
             return None
-        return self._rng.choice(available)
+        state = AllocationState(busy=self._busy, capacity=self._capacity)
+        return self._policy.select(activity, available, state)
 
     # ------------------------------------------------------------------
     # Introspection (for empirical evaluation)
