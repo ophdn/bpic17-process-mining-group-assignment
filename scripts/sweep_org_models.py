@@ -21,7 +21,26 @@ from analysis import permissions as P
 
 OUT = Path("models")
 SWEEP = OUT / "org_model_sweep.json"
-BEST = OUT / "permissions_orgmodel.json"
+
+# The best model overall, by F1. Kept for the record — it is what the paper's
+# evaluation selects.
+BEST = OUT / "permissions_orgmodel_best.json"
+
+# The best model the *simulation* can actually use, which is not the same thing.
+#
+# Trace-clustered case types are derived from how a case behaved — the sequence
+# of activities it went through. At the moment a case arrives and needs its first
+# resource, that has not happened yet, so the simulation cannot know the case's
+# cluster. It is not an implementation gap; it is causally unknowable at
+# allocation time.
+#
+# Fitness and precision measure how well a model *describes* a log in hindsight.
+# They say nothing about whether it can *drive* a process forward. The paper's
+# evaluation is retrospective conformance checking; ours is generative. So the
+# model we deploy is the best one whose case types exist when a case is created:
+# ATonly (no case types at all) or CT+AT+TT from a real case attribute.
+DEPLOYABLE_CONTEXTS = {"ATonly", "CT+AT+TT(ca)"}
+DEPLOY = OUT / "permissions_orgmodel.json"
 
 # The paper's published BPIC-17 numbers, for validation (Tables 7-10).
 PAPER = {
@@ -74,9 +93,25 @@ def main():
                 if row["F1"] == max(r["F1"] for r in results):
                     P.org_model_to_json(m, BEST)
 
+                deployable = [r for r in results
+                              if r["contexts"] in DEPLOYABLE_CONTEXTS]
+                if (row["contexts"] in DEPLOYABLE_CONTEXTS
+                        and row["F1"] == max(r["F1"] for r in deployable)):
+                    P.org_model_to_json(m, DEPLOY)
+
     print(f"\n[done] {len(results)} models -> {SWEEP}")
+
     best = max(results, key=lambda r: r["F1"])
-    print(f"[best] {best}  -> {BEST}")
+    dep = max((r for r in results if r["contexts"] in DEPLOYABLE_CONTEXTS),
+              key=lambda r: r["F1"])
+    print(f"[best]       F1={best['F1']}  {best['contexts']} {best['discovery']} "
+          f"{best['profiling']}  -> {BEST}")
+    print(f"[deployable] F1={dep['F1']}  {dep['contexts']} {dep['discovery']} "
+          f"{dep['profiling']}  -> {DEPLOY}")
+    if best is not dep:
+        print(f"\n  The best model is not deployable: its case types come from trace")
+        print(f"  clustering, which describes how a case *behaved* — unknowable when")
+        print(f"  the case arrives. Cost of deployability: {best['F1'] - dep['F1']:.3f} F1.")
 
 
 if __name__ == "__main__":

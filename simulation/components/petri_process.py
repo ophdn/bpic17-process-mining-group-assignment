@@ -66,22 +66,12 @@ class PetriNetProcessComponent(ProcessComponent):
     arguments as ProcessComponent, plus ``bpmn_path``.
     """
 
-    def __init__(
-        self,
-        bpmn_path: str,
-        seed: Optional[int] = 42,
-        mode: str = "distribution",
-        model_path: Optional[str] = None,
-        start_datetime: Optional[datetime] = None,
-        resource_component=None,
-    ):
-        super().__init__(
-            seed=seed,
-            mode=mode,
-            model_path=model_path,
-            start_datetime=start_datetime,
-            resource_component=resource_component,
-        )
+    def __init__(self, bpmn_path: str, **kwargs):
+        # Forward everything else to ProcessComponent rather than restating its
+        # signature: this class promises to accept the same arguments, and
+        # copying them means it breaks every time the parent gains one (it did,
+        # when `case_attributes` was added for Section 1.7).
+        super().__init__(**kwargs)
         bpmn_model = pm4py.read_bpmn(bpmn_path)
         self.net, self.im, self.fm = pm4py.convert_to_petri_net(bpmn_model)
         self._markings: Dict[str, Marking] = {}

@@ -109,6 +109,7 @@ def main(
     case_attrs = None
     if permissions == "orgmodel":
         perms = perm_models.OrgModelPermissions.from_json(ORGMODEL_PATH)
+        perms.self_check()   # a vocabulary mismatch would permit nothing, silently
         # The org model can gate on case type, so cases need one.
         case_attrs = CaseAttributeSampler.from_json(
             CASE_ATTRIBUTES_PATH, seed=RANDOM_SEED)

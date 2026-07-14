@@ -55,7 +55,12 @@ from typing import Dict, Iterable, List, Optional, Protocol, Sequence, Set, Tupl
 WILDCARD = ""          # ⊥ — matches every value on that dimension
 
 # Weekday time types, matching the paper's TT definition (the seven week days).
-_WEEKDAY_TT = ["TT.Mon", "TT.Tue", "TT.Wed", "TT.Thu", "TT.Fri", "TT.Sat", "TT.Sun"]
+# Spelled out in full because that is how OrdinoR names them when it learns the
+# contexts; an abbreviation here would silently match nothing.
+_WEEKDAY_TT = [
+    "TT.Monday", "TT.Tuesday", "TT.Wednesday", "TT.Thursday",
+    "TT.Friday", "TT.Saturday", "TT.Sunday",
+]
 
 
 def time_type_of(when) -> str:
@@ -204,6 +209,24 @@ class OrgModelPermissions:
         return list(self._resources)
 
     # -- introspection --
+
+    def self_check(self) -> None:
+        """Fail loudly if the model's vocabulary cannot match what we supply.
+
+        A permission model whose time types are spelled "TT.Wednesday" will match
+        nothing at all if the simulation offers "TT.Wed" — and it fails *silently*,
+        by simply granting no candidates, which looks like a saturated pool rather
+        than a wiring bug. (It did. This check exists because of it.)
+        """
+        model_tts = {tt for _, caps in self._groups for _, _, tt in caps if tt}
+        if model_tts:
+            ours = set(_WEEKDAY_TT)
+            if not (model_tts & ours):
+                raise ValueError(
+                    f"permission model's time types {sorted(model_tts)[:3]}... "
+                    f"do not overlap the ones this simulation produces "
+                    f"{sorted(ours)[:3]}... — the model would permit nothing"
+                )
 
     @property
     def n_groups(self) -> int:
