@@ -239,3 +239,12 @@ pyproject.toml
 
 # generated data
 *.csv
+
+# raw event log (BPIC-17) — too large to track; see analysis/loader.py for the path
+data
+data/
+
+# Derived analysis artifacts. Fitted models under models/ are small and *are*
+# tracked; anything the notebooks dump per-resource-per-day is not.
+notebooks/**/resource_intervals.json
+notebooks/**/resource_availability_model.json

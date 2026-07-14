@@ -53,13 +53,11 @@ class ArrivalComponent:
 
     def on_arrival(self, engine, event: SimEvent) -> None:
         """Handle CASE_ARRIVAL: hand off to process, schedule next arrival."""
-        # Signal the process component to start routing this case. The case
-        # start is an ACTIVITY_ENABLED (the process seizes no resource for the
-        # __PROCESS_START__ sentinel — it just bootstraps the first activity).
+        # Signal the process component to start routing this case
         engine.schedule(SimEvent(
             timestamp=engine.now,
             priority=5,
-            event_type=EventType.ACTIVITY_ENABLED,
+            event_type=EventType.ACTIVITY_START,
             case_id=event.case_id,
             activity="__PROCESS_START__",
             payload=event.payload or {},

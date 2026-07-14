@@ -90,32 +90,30 @@ class PetriNetProcessComponent(ProcessComponent):
     # Event handlers
     # ------------------------------------------------------------------
 
-    def on_activity_enabled(self, engine, event: SimEvent) -> None:
-        # Only the case-start sentinel needs Petri-specific handling here
-        # (initialise the token marking and pick the first visible activity).
-        # Real activities are seized by the ResourceComponent, which then emits
-        # ACTIVITY_START — handled by the inherited (service-only)
-        # ProcessComponent.on_activity_start. Duration sampling / ctx
-        # bookkeeping is identical regardless of routing mechanism.
-        if event.activity != "__PROCESS_START__":
+    def on_activity_start(self, engine, event: SimEvent) -> None:
+        case_id = event.case_id
+
+        if event.activity == "__PROCESS_START__":
+            self._repeat_counts[case_id] = {}
+            self._ctx[case_id] = {
+                "start_t": engine.now,
+                "position": 0,
+                "prev_act": None,
+            }
+            self._markings[case_id] = Marking(self.im)
+            first_activity = self._advance_to_next_visible(case_id, current_activity=None)
+            if first_activity is None:
+                # Malformed net: nothing enabled from the initial marking.
+                self._markings.pop(case_id, None)
+                self._repeat_counts.pop(case_id, None)
+                self._ctx.pop(case_id, None)
+                return
+            self._fire_start(engine, case_id, first_activity)
             return
 
-        case_id = event.case_id
-        self._repeat_counts[case_id] = {}
-        self._ctx[case_id] = {
-            "start_t": engine.now,
-            "position": 0,
-            "prev_act": None,
-        }
-        self._markings[case_id] = Marking(self.im)
-        first_activity = self._advance_to_next_visible(case_id, current_activity=None)
-        if first_activity is None:
-            # Malformed net: nothing enabled from the initial marking.
-            self._markings.pop(case_id, None)
-            self._repeat_counts.pop(case_id, None)
-            self._ctx.pop(case_id, None)
-            return
-        self._fire_start(engine, case_id, first_activity)
+        # Normal activity start (duration sampling, ctx bookkeeping) is
+        # identical to the Basic component regardless of routing mechanism.
+        super().on_activity_start(engine, event)
 
     def on_activity_complete(self, engine, event: SimEvent) -> None:
         case_id = event.case_id

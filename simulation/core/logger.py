@@ -60,6 +60,11 @@ class EventLogger:
         else:
             return  # Not an activity event – skip
 
+        # Internal control sentinels (e.g. __PROCESS_START__) are routing
+        # signals, not real activities — they must not appear in the log.
+        if event.activity and event.activity.startswith("__"):
+            return
+
         ts = self._sim_time_to_datetime(event.timestamp)
         self._rows.append({
             "case:concept:name": event.case_id,

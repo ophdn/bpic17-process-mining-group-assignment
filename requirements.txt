@@ -1,6 +1,14 @@
+# Direct dependencies only (transitive deps are resolved by pip).
+
+# Simulation engine + data-driven components
 joblib==1.5.3
 numpy==2.5.0
 pandas==3.0.3
 pm4py==2.7.23.1
 scikit-learn==1.9.0
 scipy==1.18.0
+
+# Resource analysis notebooks (Sections 1.6 / 1.7)
+ipykernel==7.2.0
+matplotlib==3.10.9
+seaborn==0.13.2

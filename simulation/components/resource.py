@@ -20,16 +20,6 @@ Pattern 2 of Russell et al. 2005) as the resource-allocation heuristic:
   - Section 1.6 Basic: simple availability model — each resource has a
     fixed capacity (max parallel tasks); tasks queue if all busy.
 
-Execution gating (ACTIVITY_ENABLED → ACTIVITY_START)
-----------------------------------------------------
-Resource seizure genuinely gates execution.  The process emits
-``ACTIVITY_ENABLED`` when an activity becomes ready; this component tries
-to seize a qualified resource and only *then* emits the logged
-``ACTIVITY_START`` (carrying the resource) that begins service.  If no
-resource is free the activity waits, so contention actually delays the
-case — which is what makes the allocation heuristic affect cycle and
-waiting time rather than only relabelling who did the work.
-
 Reference
 ---------
 Nick Russell, Wil M.P. van der Aalst, Arthur H.M. ter Hofstede, and
@@ -47,38 +37,54 @@ probabilistic quantile ML model).  The classic Russell R-RBA pattern was
 written for workflow systems with deterministic queues; to adapt it to
 this uncertain-availability setting we make the following decisions:
 
-1. **Allocate against live load, never against a prediction.**
-   Allocation reads the current `_busy` counter at the precise moment an
-   activity is *enabled*, rather than relying on a queue-length forecast.
-   Under stochastic service times the live `_busy` is the only honest
-   signal of who is actually free.
+1. **A work item is requested, then started — never both at once.**
+   `ACTIVITY_REQUEST` means "this work item is enabled"; `ACTIVITY_START`
+   means "a resource is holding it and work has begun".  The process
+   component only ever emits the former; this component is the *only*
+   thing that emits the latter, and only once allocation succeeded.
 
-2. **Capacity > 1 generalises the paper's single-task resource.**
+   This split is load-bearing.  The engine dispatches every event to all
+   registered handlers unconditionally — a handler cannot veto or consume
+   an event.  So if a queued work item were still an `ACTIVITY_START`, the
+   ProcessComponent would execute it anyway while it sat in the queue, and
+   again when the queue re-scheduled it, forking the case into two chains.
+   Requests are invisible to everything except this component, so a queued
+   item is genuinely stalled: it cannot run, and it cannot be logged.
+
+   It also means `org:resource` is populated by construction (the resource
+   is bound before the event the logger sees is ever created), and that
+   waiting time falls out for free as `start_time - request_time`.
+
+2. **Allocate against live load, never against a prediction.**
+   Allocation reads the current `_busy` counter at the moment the request
+   is served, rather than a queue-length forecast.  Under stochastic
+   service times the live `_busy` is the only honest signal of who is free.
+
+3. **Capacity > 1 generalises the paper's single-task resource.**
    `capacity_per_resource` parallel slots are allowed.  A candidate is
    considered "available" when `_busy < capacity`, i.e. it has at least
    one free slot, not only when it is completely idle.
 
-3. **Saturation path = Distribution on Enablement (R-DE).**
-   When all qualified candidates are busy, the work item is pushed onto
-   a `_waiting` queue rather than rejected.  On every
+4. **Saturation path = Distribution on Enablement (R-DE).**
+   When all qualified candidates are busy, the request is pushed onto a
+   FIFO `_waiting` queue rather than rejected.  On every
    `RESOURCE_AVAILABLE` event the just-freed resource is offered to the
-   *first* (FIFO) waiting item it is qualified to perform — the resource
-   that just became idle is reused for backlog (O(1) per release).  This
+   *first* waiting item it is qualified to perform — the resource that
+   just became idle is reused for backlog (O(1) per release).  This
    matches R-DE's "distribute as soon as a resource is available".
 
-4. **Seizure and service are separated, so allocation runs once.**
-   Allocation happens exactly once per activity, on `ACTIVITY_ENABLED`.
-   Whether a resource is seized immediately or after a wait, the seized
-   resource is handed to a *fresh* `ACTIVITY_START` (see
-   `_start_activity`); the enable event is never re-scheduled, so there
-   is no re-allocation and no busy-slot double-counting.
+5. **An activity nobody may perform runs unassigned, rather than stalling.**
+   If `_ACTIVITY_TO_RESOURCES` has no entry for an activity, no release
+   will ever unblock it, so queueing would strand the case forever.  That
+   is a gap in the *permission model*, not congestion, so the work item
+   runs with `resource=None` and is counted in `stats()`.
 
-5. **Deterministic pick under the fixed seed.**
+6. **Deterministic pick under the fixed seed.**
    The uniform random pick uses a seeded `random.Random`, so R-RBA is
    fully reproducible given `RANDOM_SEED=42` — required by the
    assignment's grading.
 
-6. **No a-priori deadline / urgency ordering.**
+7. **No a-priori deadline / urgency ordering.**
    R-RBA is workload/permission-only; more advanced timing variants
    (R-ED Early / R-LD Late Distribution) and push *selection* patterns
    (R-RMA random, R-RRA round-robin, R-SHQ shortest-queue) and detour
@@ -259,96 +265,243 @@ class ResourceComponent:
     """
 
     HANDLES = {
-        EventType.ACTIVITY_ENABLED:   None,
+        EventType.ACTIVITY_REQUEST:   None,
         EventType.RESOURCE_AVAILABLE: None,
     }
 
-    def __init__(self, capacity_per_resource: int = 1, seed: Optional[int] = 42):
+    def __init__(
+        self,
+        capacity_per_resource: int = 1,
+        seed: Optional[int] = 42,
+        calendar=None,
+        start_datetime=None,
+    ):
         self._capacity = capacity_per_resource
         self._rng = random.Random(seed)
+
+        # Section 1.6: an availability calendar (analysis.availability.
+        # YearlyAvailability, or None to leave resources always on duty).
+        # `start_datetime` anchors simulation seconds to wall-clock time.
+        self._calendar = calendar
+        self._start = start_datetime
 
         # resource -> current number of active tasks
         self._busy: Dict[str, int] = {r: 0 for r in RESOURCE_PERMISSIONS}
 
-        # Queue of (engine, event) waiting for a free resource (R-DE fallback)
-        self._waiting: List[tuple] = []
+        # Work items enabled but not yet started, awaiting a resource (R-DE).
+        # FIFO. Holds ACTIVITY_REQUEST events.
+        self._waiting: List[SimEvent] = []
+
+        # Requests whose activity no resource is permitted to perform. These
+        # are a gap in the permission model, not congestion — surfaced in stats
+        # rather than silently queued forever (which would deadlock the case).
+        self._unpermitted: int = 0
+
+        # Waiting time accumulated between ACTIVITY_REQUEST and ACTIVITY_START.
+        self._wait_total: float = 0.0
+        self._wait_count: int = 0
+
+        # Sim time of the shift-open wake-up already on the queue, if any (so we
+        # schedule at most one).
+        self._wake_at: Optional[float] = None
 
     # ------------------------------------------------------------------
     # Handlers
     # ------------------------------------------------------------------
 
-    def on_activity_enabled(self, engine, event: SimEvent) -> None:
-        """
-        An activity became ready. Try to seize a qualified resource (R-RBA);
-        on success emit the ACTIVITY_START that begins service. If none is
-        free, defer the work item onto the FIFO wait queue (R-DE) until a
-        qualified resource frees up (Section 1.6) — so contention actually
-        delays execution.
-        """
-        if event.activity == "__PROCESS_START__":
-            return  # sentinel — no resource needed
+    def on_activity_request(self, engine, event: SimEvent) -> None:
+        """A work item is enabled. Start it now if a qualified resource is free
+        *and on shift*; otherwise queue it (R-DE)."""
+        resource = self._allocate(engine, event.activity)
 
-        resource = self._allocate(event.activity)
-        if resource:
-            self._busy[resource] = self._busy.get(resource, 0) + 1
-            self._start_activity(engine, event, resource)
-        else:
-            # All permitted resources busy → queue and wait (R-DE)
-            self._waiting.append((engine, event))
-
-    def on_resource_available(self, engine, event: SimEvent) -> None:
-        """When a resource frees up, hand it to the first waiting task it can do.
-
-        Deferred-allocation policy (R-DE): the just-freed resource is
-        offered to the *first* (FIFO) waiting work item it is permitted
-        to perform.  This localises the decision to the freeing resource
-        (O(1) per release) and aligns with R-DE's "distribute as soon as
-        a resource is available".
-        """
-        resource = event.resource
-        self._busy[resource] = max(0, self._busy.get(resource, 0) - 1)
-
-        # Only re-busy this resource if it actually has spare capacity.
-        if self._busy[resource] >= self._capacity:
+        if resource is not None:
+            self._begin(engine, event, resource)
             return
 
-        permitted = RESOURCE_PERMISSIONS.get(resource, set())
-        for i, (eng, waiting_event) in enumerate(self._waiting):
-            if waiting_event.activity in permitted:
-                self._waiting.pop(i)
-                self._busy[resource] = self._busy.get(resource, 0) + 1
-                self._start_activity(eng, waiting_event, resource)
-                return
+        if not _ACTIVITY_TO_RESOURCES.get(event.activity):
+            # Nobody is permitted to do this at all. Queuing would strand the
+            # case forever, so run it unassigned and count it.
+            self._unpermitted += 1
+            self._begin(engine, event, None)
+            return
 
-    def _start_activity(self, engine, enabled_event: SimEvent, resource: str) -> None:
-        """Emit the ACTIVITY_START that begins service, with the seized resource."""
-        engine.schedule(SimEvent(
-            timestamp=engine.now,
-            priority=4,   # before ACTIVITY_COMPLETE (5) at the same instant
-            event_type=EventType.ACTIVITY_START,
-            case_id=enabled_event.case_id,
-            activity=enabled_event.activity,
-            resource=resource,
-            payload=enabled_event.payload,
-        ))
+        self._waiting.append(event)
+        self._arm_shift_wake(engine)
+
+    def on_resource_available(self, engine, event: SimEvent) -> None:
+        """Something freed up capacity. Two callers:
+
+        - a task completed (``event.resource`` is set) — that resource is freed
+          and offered to the oldest waiting item it is qualified for;
+        - a shift opened (``event.resource is None``) — resources came on duty
+          without anything completing, so the whole queue is re-examined. Without
+          this, work items queued while every qualified resource was off-shift
+          would never be woken: no completion is pending to wake them.
+        """
+        resource = event.resource
+
+        if resource is not None:
+            self._busy[resource] = max(0, self._busy.get(resource, 0) - 1)
+            if (self._busy[resource] < self._capacity
+                    and self._is_on_shift(engine, resource)):
+                permitted = RESOURCE_PERMISSIONS.get(resource, set())
+                for i, waiting in enumerate(self._waiting):
+                    if waiting.activity in permitted:
+                        self._waiting.pop(i)
+                        self._begin(engine, waiting, resource)
+                        break
+        else:
+            self._wake_at = None
+            self._drain(engine)
+
+        self._arm_shift_wake(engine)
 
     # ------------------------------------------------------------------
     # Private
     # ------------------------------------------------------------------
 
-    def _allocate(self, activity: str) -> Optional[str]:
+    def _drain(self, engine) -> None:
+        """Start as many queued work items as the on-duty pool can take."""
+        still: List[SimEvent] = []
+        for req in self._waiting:
+            r = self._allocate(engine, req.activity)
+            if r is not None:
+                self._begin(engine, req, r)
+            else:
+                still.append(req)
+        self._waiting = still
+
+    # -- availability (Section 1.6) --------------------------------------
+
+    def _now_wall(self, engine):
+        """Simulation clock as wall-clock time (the calendar is in local time)."""
+        from datetime import timedelta
+        return self._start + timedelta(seconds=engine.now)
+
+    def _is_on_shift(self, engine, resource: str) -> bool:
+        """Is *resource* on duty right now?
+
+        Without a calendar, everyone is always on duty (the pre-1.6 behaviour).
+
+        A resource the calendar does not know is also always on duty. That is not
+        a fallback but the correct answer: the calendar only models *human*
+        staff, so an account missing from it is an automated one (User_1), and a
+        batch process does not keep office hours.
         """
-        R-RBA runtime pick: uniformly random among available qualified
-        resources for this activity.  Returns None if all are busy.
+        if self._calendar is None:
+            return True
+        if resource not in self._calendar.weekly.windows:
+            return True
+        return self._calendar.is_available(resource, self._now_wall(engine))
+
+    def _arm_shift_wake(self, engine) -> None:
+        """Ensure a wake-up is queued for the next time a shift opens.
+
+        Only needed while work is waiting. At most one is outstanding.
+        """
+        if self._calendar is None or not self._waiting or self._wake_at is not None:
+            return
+
+        t = self._next_shift_open(engine)
+        if t is None:
+            return
+
+        self._wake_at = t
+        engine.schedule(SimEvent(
+            timestamp=t,
+            priority=1,            # open the shift before anything else at t
+            event_type=EventType.RESOURCE_AVAILABLE,
+            resource=None,         # None => "a shift opened", not "a task ended"
+        ))
+
+    def _next_shift_open(self, engine, horizon_days: int = 14) -> Optional[float]:
+        """Sim time at which some resource's window next opens, or None.
+
+        Windows are per weekday, so the candidate times are the window starts of
+        each upcoming day. We scan forward day by day and take the earliest that
+        is strictly in the future.
+        """
+        from datetime import datetime, time, timedelta
+
+        now_wall = self._now_wall(engine)
+        best: Optional[float] = None
+
+        for day in range(horizon_days + 1):
+            d = (now_wall + timedelta(days=day)).date()
+            if d in self._calendar.holidays:
+                continue
+
+            midnight = datetime.combine(d, time.min)
+            dow = d.weekday()
+
+            for res, windows in self._calendar.weekly.windows.items():
+                w = windows.get(dow)
+                if w is None or d in self._calendar.vacations.get(res, ()):
+                    continue
+                t = (midnight + timedelta(hours=w[0]) - self._start).total_seconds()
+                if t > engine.now and (best is None or t < best):
+                    best = t
+
+            if best is not None:
+                return best
+        return best
+
+    def _begin(self, engine, request: SimEvent, resource: Optional[str]) -> None:
+        """Turn a granted request into an ACTIVITY_START bound to *resource*.
+
+        This is the only place an ACTIVITY_START is created, which is what keeps
+        a queued work item from also being executed by the ProcessComponent.
+        """
+        if resource is not None:
+            self._busy[resource] = self._busy.get(resource, 0) + 1
+
+        waited = engine.now - request.timestamp
+        self._wait_total += waited
+        self._wait_count += 1
+
+        engine.schedule(SimEvent(
+            timestamp=engine.now,
+            priority=5,
+            event_type=EventType.ACTIVITY_START,
+            case_id=request.case_id,
+            activity=request.activity,
+            resource=resource,
+            payload=request.payload,
+        ))
+
+    def _allocate(self, engine, activity: str) -> Optional[str]:
+        """
+        R-RBA runtime pick: uniformly random among the qualified resources that
+        have a free slot *and are on shift*. Returns None if none qualify right
+        now — the caller queues the work item.
+
+        Note a task already under way is never preempted when its resource goes
+        off shift: the calendar gates *allocation*, not execution. A person who
+        starts a task at 16:55 finishes it rather than dropping it at 17:00.
         """
         candidates = _ACTIVITY_TO_RESOURCES.get(activity, [])
         available = [
             r for r in candidates
             if self._busy.get(r, 0) < self._capacity
+            and self._is_on_shift(engine, r)
         ]
         if not available:
             return None
         return self._rng.choice(available)
+
+    # ------------------------------------------------------------------
+    # Introspection (for empirical evaluation)
+    # ------------------------------------------------------------------
+
+    def stats(self) -> Dict[str, float]:
+        """Queueing behaviour of the resource pool over the run."""
+        mean_wait = self._wait_total / self._wait_count if self._wait_count else 0.0
+        return {
+            "mean_wait_seconds": mean_wait,
+            "work_items_started": self._wait_count,
+            "still_queued_at_end": len(self._waiting),
+            "unpermitted_activities": self._unpermitted,
+        }
 
     def release(self, engine, resource: str) -> None:
         """
@@ -364,6 +517,6 @@ class ResourceComponent:
 
 
 ResourceComponent.HANDLES = {
-    EventType.ACTIVITY_ENABLED:   ResourceComponent.on_activity_enabled,
+    EventType.ACTIVITY_REQUEST:   ResourceComponent.on_activity_request,
     EventType.RESOURCE_AVAILABLE: ResourceComponent.on_resource_available,
 }
