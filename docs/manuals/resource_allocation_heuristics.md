@@ -233,7 +233,20 @@ tail -n +2 output/event_log.csv | awk -F, '
   {prev_r=$5; prev_a=$2}
   END {print c" back-to-back same-worker+same-activity pairs"}'
 ```
-The piled run should show a higher count.
+
+The pile-preference branch itself is instrumented-verified to fire (see
+`scripts/eval_piled_execution.py`): once the wait queue has any backlog it
+matches on a majority of releases, and the hit rate grows with load. But
+this raw pair count over a **full 30-day run** does not reliably come out
+higher for the piled run — see `output/piled_execution_eval.md` for why:
+this is a single shared-seed DES, so changing *which* waiting item a
+freeing resource grabs shifts every downstream event timestamp, which
+cascades into different branching-RNG draw order in `ProcessComponent`
+for the rest of the run. The two 30-day runs are different deterministic
+trajectories, not a controlled A/B on identical arrivals, so the
+aggregate pair count is not a clean readout of whether piling "worked" —
+run `eval_piled_execution.py` for the fuller picture (mean wait time,
+cycle time, throughput) instead of trusting this one metric in isolation.
 
 ---
 
@@ -274,9 +287,13 @@ R-RBA answers **"who is allowed"**. It deliberately does **not** answer
 **"which of the allowed ones"** beyond a uniform random pick — that's
 where the push *selection* patterns come in. Future work:
 
-- **Section 1.6 Advanced** — calendar / shift-based availability: gate
-  allocation on whether the resource is on-shift at `engine.now`, not
-  just on `_busy < capacity`.
+- **Section 1.6 Advanced** — calendar / shift-based availability is now
+  implemented: allocation gates on whether the resource is on-shift at
+  `engine.now` (`_is_on_shift`), not just on `_busy < capacity`. Default
+  on via `--availability calendar`; `--availability always` reverts to
+  the pre-1.6 baseline. Piled Execution respects it — an off-shift
+  resource never picks up piled work, since the pile-preference branch
+  is nested inside the same `_is_on_shift` guard as the regular FIFO drain.
 - **Section 1.7 Advanced** — role-discovery (e.g. OrdinoR) to replace
   the hardcoded `RESOURCE_PERMISSIONS` with a mined organisational
   model.

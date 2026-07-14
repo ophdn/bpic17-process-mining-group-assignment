@@ -94,9 +94,11 @@ def main():
             violations += 1
     print(f"  logged events         = {len(logged)}")
     print(f"  with resource checked = {checked}")
-    print(f"  missing resource      = {no_resource}  (expected: ACTIVITY_START")
-    print(f"                          fires before ResourceComponent assigns)")
+    print(f"  missing resource      = {no_resource}  (expected: 0 — the request/start")
+    print(f"                          split binds the resource before ACTIVITY_START")
+    print(f"                          is ever created, see docs/manuals/case_forking_bug.md)")
     print(f"  permission violations = {violations}")
+    assert no_resource == 0, "An ACTIVITY_START row is missing org:resource!"
     assert violations == 0, "R-RBA assigned a resource not permitted for the activity!"
     print("  PASS — all assigned resources are permitted for their activity\n")
 
