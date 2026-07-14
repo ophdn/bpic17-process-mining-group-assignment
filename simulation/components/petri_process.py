@@ -99,6 +99,17 @@ DP_VISIT_BUCKET_MAX = 5  # buckets "1".."4", "5+" — keep in sync with mine_dp_
 # data-driven *choice* mined from where real traces stop (mine_dp_probs.py).
 END_LABEL = "__END__"
 
+# The application's outcome milestones. In the real log every case fires
+# exactly one of these (per-case frequencies: A_Pending 0.55 + A_Cancelled
+# 0.33 + A_Denied 0.12 = 1.00) and the trace ends right after (bar minor
+# wrap-up events). The Signavio net keeps loop tokens alive past these
+# markings and its final marking is often NOT tau-reachable there, so
+# neither marking==fm nor the mined __END__ choice can stop such cases —
+# measured effect: cases fired "O_Accepted, A_Pending" and then cycled the
+# validation loop for 50+ further events. Domain-level termination rule:
+# once the outcome is decided, the case is over.
+TERMINAL_OUTCOMES = {"A_Pending", "A_Denied", "A_Cancelled"}
+
 
 class PetriNetProcessComponent(ProcessComponent):
     """
@@ -249,6 +260,8 @@ class PetriNetProcessComponent(ProcessComponent):
         checked separately in on_activity_complete. Only the loop-guards
         remain, as a safety net against pathological/infinite loops.
         """
+        if activity in TERMINAL_OUTCOMES:
+            return True
         if counts.get(activity, 0) >= MAX_ACTIVITY_REPEATS:
             return True
         if sum(counts.values()) > MAX_TOTAL_ACTIVITIES:

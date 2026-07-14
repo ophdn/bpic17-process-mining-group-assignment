@@ -1,35 +1,35 @@
 {
-  "n_cases": 1647,
+  "n_cases": 864,
   "branching": {
     "per_activity_tvd": {
-      "A_Accepted": 0.0098,
+      "A_Accepted": 0.0139,
       "A_Cancelled": null,
-      "A_Complete": 0.1403,
+      "A_Complete": 0.7974,
       "A_Concept": 0.0013,
-      "A_Create Application": 0.0088,
+      "A_Create Application": 0.2118,
       "A_Denied": null,
-      "A_Incomplete": 0.198,
+      "A_Incomplete": 0.8956,
       "A_Pending": null,
-      "A_Submitted": 0.0149,
-      "A_Validating": 0.1902,
-      "O_Accepted": 0.0067,
+      "A_Submitted": 0.8217,
+      "A_Validating": 0.2494,
+      "O_Accepted": 0.0057,
       "O_Cancelled": null,
       "O_Create Offer": 0.0084,
       "O_Created": 0.0668,
       "O_Refused": null,
-      "O_Returned": 0.3194,
-      "O_Sent (mail and online)": 0.0561,
+      "O_Returned": 0.597,
+      "O_Sent (mail and online)": 0.4246,
       "O_Sent (online only)": null,
       "W_Assess potential fraud": null,
       "W_Call after offers": null,
-      "W_Call incomplete files": 0.1666,
-      "W_Complete application": 0.0371,
+      "W_Call incomplete files": 0.9919,
+      "W_Complete application": 0.5703,
       "W_Handle leads": 0.0,
       "W_Personal Loan collection": null,
       "W_Shortened completion ": null,
-      "W_Validate application": 0.5992
+      "W_Validate application": null
     },
-    "mean_tvd": 0.114,
+    "mean_tvd": 0.3771,
     "activities_missing_in_run": [
       "A_Cancelled",
       "A_Denied",
@@ -40,7 +40,8 @@
       "W_Assess potential fraud",
       "W_Call after offers",
       "W_Personal Loan collection",
-      "W_Shortened completion "
+      "W_Shortened completion ",
+      "W_Validate application"
     ]
   },
   "processing_times": {
@@ -48,73 +49,67 @@
       "W_Assess potential fraud": null,
       "W_Call after offers": null,
       "W_Call incomplete files": {
-        "sim_mean_s": 258678.1,
+        "sim_mean_s": 208974.9,
         "ref_mean_s": 626302.53,
-        "sim_std_s": 397260.0,
+        "sim_std_s": 376420.0,
         "ref_std_s": 1207241.74,
-        "rel_err_mean": 0.587
+        "rel_err_mean": 0.6663
       },
       "W_Complete application": {
-        "sim_mean_s": 16377.6,
+        "sim_mean_s": 18074.3,
         "ref_mean_s": 34554.48,
-        "sim_std_s": 61207.3,
+        "sim_std_s": 73060.2,
         "ref_std_s": 113121.32,
-        "rel_err_mean": 0.526
+        "rel_err_mean": 0.4769
       },
       "W_Handle leads": {
-        "sim_mean_s": 461.7,
+        "sim_mean_s": 554.3,
         "ref_mean_s": 1325.35,
-        "sim_std_s": 790.1,
+        "sim_std_s": 2378.1,
         "ref_std_s": 7933.1,
-        "rel_err_mean": 0.6516
+        "rel_err_mean": 0.5818
       },
-      "W_Validate application": {
-        "sim_mean_s": 95397.6,
-        "ref_mean_s": 339420.66,
-        "sim_std_s": 123375.0,
-        "ref_std_s": 565850.68,
-        "rel_err_mean": 0.7189
-      }
+      "W_Validate application": null
     },
-    "mean_rel_err": 0.6209
+    "mean_rel_err": 0.575
   },
   "arrival_rate": {
-    "sim_mean_interarrival_s": 1571.11,
+    "sim_mean_interarrival_s": 2995.87,
     "ref_mean_interarrival_s": 1002.23,
-    "rel_err": 0.5676
+    "rel_err": 1.9892
   },
   "variants": {
-    "ref_top20_variants_reproduced": 10,
-    "ref_top20_traffic_coverage_pct": 16.41
+    "ref_top20_variants_reproduced": 0,
+    "ref_top20_traffic_coverage_pct": 0
   },
   "case_stats": {
-    "sim_case_length_mean": 12.88,
+    "sim_case_length_mean": 16.94,
     "ref_case_length_mean": 15.09,
-    "case_length_rel_err": 0.1467,
-    "sim_case_duration_mean_s": 31177.4,
+    "case_length_rel_err": 0.1224,
+    "sim_case_duration_mean_s": 71078.6,
     "ref_case_duration_mean_s": 1887879.72,
-    "case_duration_rel_err": 0.9835
+    "case_duration_rel_err": 0.9624
   },
   "control_flow": {
     "fitness": {
-      "perc_fit_traces": 45.59805707346691,
-      "average_trace_fitness": 0.9678202938890748,
-      "log_fitness": 0.9776205702088643,
-      "percentage_of_fitting_traces": 45.59805707346691
+      "perc_fit_traces": 0.5787037037037037,
+      "average_trace_fitness": 0.9510938700770732,
+      "log_fitness": 0.9550586900982325,
+      "percentage_of_fitting_traces": 0.5787037037037037
     },
-    "precision": 0.6886957837783299
+    "precision": 0.7168877099911583
   },
   "run_stats": {
     "cases_started": 2318,
-    "cases_completed": 1647,
-    "completion_rate": 0.7105,
+    "cases_completed": 864,
+    "completion_rate": 0.3727,
     "sim_duration_days": 30,
     "seed": 42
   },
   "config": {
     "process_model": "advanced",
     "bpmn": "bpic17_process.bpmn",
-    "branching_mode": "visit",
+    "branching_mode": "probs",
     "processing_time_mode": "distribution"
   }
 }

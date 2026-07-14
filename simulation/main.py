@@ -190,7 +190,7 @@ if __name__ == "__main__":
         help="Path to the .bpmn file (--process-model advanced only).",
     )
     parser.add_argument(
-        "--branching-mode", default="probs",
+        "--branching-mode", default=None,
         choices=["probs", "visit", "rules"],
         help="Section 1.5: 'probs' (default) uses BRANCHING_PROBS; 'visit' "
              "(A1 termination fix) conditions them on the activity's visit "
@@ -205,11 +205,15 @@ if __name__ == "__main__":
         help="Path to the trained joblib artifact (--branching-mode rules only).",
     )
     args = parser.parse_args()
+    # Default branching: "visit" on the Petri net (A1 winner, see
+    # output/validation/branching_probs_vs_rules/), plain "probs" on basic.
+    branching_mode = args.branching_mode or (
+        "visit" if args.process_model == "advanced" else "probs")
     main(
         mode=args.mode,
         model_path=args.model_path,
         process_model=args.process_model,
         bpmn_path=args.bpmn_path,
-        branching_mode=args.branching_mode,
+        branching_mode=branching_mode,
         decision_rules_path=args.decision_rules_path,
     )

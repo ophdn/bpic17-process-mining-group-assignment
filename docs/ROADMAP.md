@@ -91,7 +91,26 @@ ist seit dem Pull vom 11.07. da — offen ist nur noch die KPI-Validierung
 > Ziel: simuliertes Log „relativ nah am echten Log", damit Teil II
 > aussagekräftig wird. Reihenfolge = Priorität.
 
-**A1. Terminierungsproblem im Advanced-Modell (Blocker)**
+**A1. Terminierungsproblem im Advanced-Modell — ✅ ERLEDIGT (14.07.)**
+- Drei Ursachen gefunden und behoben (Evidenz:
+  `output/validation/branching_probs_vs_rules/`):
+  1. Trace-Bigramme mischen Nebenläufigkeit in die Branch-Schätzung →
+     Decision-Point-Wahrscheinlichkeiten per Replay gemined
+     (`scripts/mine_dp_probs.py`), konditioniert auf DP-Besuchszähler.
+  2. Enden war nie eine Option: An vielen Markierungen ist das Final-Marking
+     nur per Tau erreichbar, während sichtbare Loop-Labels enabled bleiben →
+     `__END__` als datengetriebene Wahl mitgemined (z. B. [O_Cancelled]:
+     80 % END real).
+  3. Outcome-Semantik: Nach A_Pending/A_Denied/A_Cancelled (real exakt 1,00
+     pro Case) hält das Netz Loop-Tokens am Leben → Terminal-Outcome-Regel.
+- Ergebnis (`--branching-mode visit`, jetzt Default): Completion 2 % → 71 %,
+  Case-Länge-Fehler 3,96 → 0,15, Branching-TVD 0,24 → **0,11**, 10/20 echte
+  Top-Varianten reproduziert. Trade-off: Token-Replay-Fitness 100 % → 0,97
+  (das Netz kann real endende Traces nicht voll replayen — Modellgrenze, im
+  Report diskutieren). `rules` (1.5 Adv. I) liegt gleichauf (Case-Länge
+  0,004!), Precision aber schwächer (0,47 vs. 0,69).
+- Rest (~29 % der Cases im Horizont unfertig): langsame Validierungsrunden
+  (tagelange Full-Durations) — löst sich mit A2 (Service-/Wartezeit-Split).
 - **Entschieden (12.07., Evidenz in `output/validation/bpmn_source_comparison/`):**
   Das Signavio-BPMN bleibt Simulationsbasis. Ein Inductive-Miner-Modell
   (noise 0.2) fittet das echte Log nur marginal besser (73,6 % vs. 68,8 %
