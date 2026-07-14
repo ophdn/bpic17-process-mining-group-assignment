@@ -26,6 +26,8 @@ from simulation.components.arrival_mdn import MDNArrivalComponent
 from simulation.components.process import ProcessComponent
 from simulation.components.petri_process import PetriNetProcessComponent
 from simulation.components.resource import ResourceComponent
+from simulation.components import permissions as perm_models
+from simulation.components.case_attributes import CaseAttributeSampler
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
@@ -58,6 +60,12 @@ DEFAULT_BPMN_PATH = REPO_ROOT / "simulation" / "models" / "bpic17_process.bpmn"
 # notebooks/01_resource_availability.ipynb.
 AVAILABILITY_MODEL_PATH = REPO_ROOT / "models" / "availability_model.json"
 
+# Section 1.7: permission models, fitted in
+# notebooks/02_resource_permissions.ipynb.
+ORGMODEL_PATH        = REPO_ROOT / "models" / "permissions_orgmodel.json"
+OBSERVED_PERMS_PATH  = REPO_ROOT / "models" / "permissions_observed.json"
+CASE_ATTRIBUTES_PATH = REPO_ROOT / "models" / "case_attributes.json"
+
 RANDOM_SEED = 42   # Fix for reproducibility — required by assignment grading!
 
 # Arrival-Modell wählen:
@@ -73,6 +81,7 @@ def main(
     process_model: str = "advanced",
     bpmn_path: str | None = None,
     availability: str = "calendar",
+    permissions: str = "orgmodel",
 ):
     engine = SimulationEngine(
         sim_duration=SIM_DURATION_SECONDS,
@@ -90,6 +99,22 @@ def main(
         from analysis.availability import YearlyAvailability
         calendar = YearlyAvailability.from_json(AVAILABILITY_MODEL_PATH)
 
+    # Section 1.7: who may perform what.
+    #   "orgmodel" — the OrdinoR organizational model (Advanced): resources
+    #                inherit their group's capabilities, which may be conditioned
+    #                on the case type and the day of the week.
+    #   "observed" — the resource x activity matrix (Basic): permitted iff seen.
+    #   "hardcoded"— the original top-20 map, kept as the baseline.
+    perms = None
+    case_attrs = None
+    if permissions == "orgmodel":
+        perms = perm_models.OrgModelPermissions.from_json(ORGMODEL_PATH)
+        # The org model can gate on case type, so cases need one.
+        case_attrs = CaseAttributeSampler.from_json(
+            CASE_ATTRIBUTES_PATH, seed=RANDOM_SEED)
+    elif permissions == "observed":
+        perms = perm_models.StaticPermissions.from_json(OBSERVED_PERMS_PATH)
+
     if USE_MDN_ARRIVALS:
         arrivals = MDNArrivalComponent(seed=RANDOM_SEED, start_datetime=START_DATETIME)
     else:
@@ -100,6 +125,7 @@ def main(
         seed=RANDOM_SEED,
         calendar=calendar,
         start_datetime=START_DATETIME,
+        permissions=perms,
     )
 
     process_kwargs = dict(
@@ -108,6 +134,7 @@ def main(
         model_path=model_path,
         start_datetime=START_DATETIME,   # anchor for day_of_week / hour_of_day
         resource_component=resources,    # so resources are released on complete
+        case_attributes=case_attrs,      # Section 1.7: case types for the org model
     )
     if process_model == "advanced":
         process = PetriNetProcessComponent(
@@ -140,6 +167,8 @@ def main(
     rstats = resources.stats()
     print("\n--- Resource pool (Sections 1.6-1.8) ---")
     print(f"  availability model:       {availability}")
+    print(f"  permission model:         {permissions}")
+    print(f"  resources in pool:        {len(resources.permissions.resources())}")
     print(f"  work items started:       {rstats['work_items_started']}")
     print(f"  mean wait for a resource: {rstats['mean_wait_seconds'] / 3600:.1f} h")
     print(f"  still queued at horizon:  {rstats['still_queued_at_end']}")
@@ -174,6 +203,13 @@ if __name__ == "__main__":
              "holidays and vacation (default); 'always' keeps every resource on "
              "duty around the clock (the baseline).",
     )
+    parser.add_argument(
+        "--permissions", default="orgmodel",
+        choices=["orgmodel", "observed", "hardcoded"],
+        help="Section 1.7: 'orgmodel' uses the OrdinoR organizational model "
+             "(Advanced, default); 'observed' the learned resource x activity "
+             "matrix (Basic); 'hardcoded' the original top-20 map (baseline).",
+    )
     args = parser.parse_args()
     main(
         mode=args.mode,
@@ -181,4 +217,5 @@ if __name__ == "__main__":
         process_model=args.process_model,
         bpmn_path=args.bpmn_path,
         availability=args.availability,
+        permissions=args.permissions,
     )

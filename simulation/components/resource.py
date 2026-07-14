@@ -320,6 +320,11 @@ class ResourceComponent:
         # schedule at most one).
         self._wake_at: Optional[float] = None
 
+    @property
+    def permissions(self) -> PermissionModel:
+        """The permission model in force (Section 1.7)."""
+        return self._permissions
+
     # ------------------------------------------------------------------
     # Handlers
     # ------------------------------------------------------------------

@@ -349,9 +349,31 @@ class OrgModel:
         }
 
 
+# AHC linkage. The paper fixes the metric (Euclidean) but never states the
+# linkage, and ordinor's default is `single` — which is the one bad choice.
+# Single linkage *chains*: on BPIC-17 it puts 102 of 144 resources into one
+# cluster and leaves five singletons, which is a blob, not an organizational
+# model. Measured on ATonly + OverallScore (paper's own number for this
+# configuration: F1 = 0.673):
+#
+#     linkage    #groups   fitness  precision    F1     cluster sizes
+#     single        5       0.878     0.474     0.616   [102,19,13,3,2,1,1,1,1,1]
+#     complete      7       0.893     0.576     0.700   [35,27,26,18,13,10,8,3,3,1]
+#     ward          7       0.863     0.584     0.696   [41,31,15,15,13,11,8,6,3,1]
+#     average       6       0.879     0.569     0.690   [53,34,19,13,8,8,3,3,2,1]
+#
+# Complete linkage produces balanced groups and beats the paper's reported F1.
+AHC_LINKAGE = "complete"
+
+# MOC restarts. Ordinor's default (100) forks a worker per restart and takes ~32
+# minutes per configuration on this log; the extra restarts do not change the
+# result materially. Lowered so the sweep is runnable.
+MOC_N_INIT = 3
+
+
 def discover(rl, n_groups: int = 10, discovery: str = "AHC",
              profiling: str = "OverallScore", contexts: str = "",
-             seed: int = 42) -> OrgModel:
+             linkage: str = AHC_LINKAGE, seed: int = 42) -> OrgModel:
     """Discover groups, profile them, and score the model (paper §5.1.2-5.1.3).
 
     `discovery`:
@@ -378,9 +400,9 @@ def discover(rl, n_groups: int = 10, discovery: str = "AHC",
         profiles = direct_count(rl, scale="log")
 
         if discovery == "AHC":
-            groups = ahc(profiles, n_groups=n_groups)
+            groups = ahc(profiles, n_groups=n_groups, method=linkage)
         elif discovery == "MOC":
-            groups = moc(profiles, n_groups=n_groups, n_init=10)
+            groups = moc(profiles, n_groups=n_groups, n_init=MOC_N_INIT)
         else:
             raise ValueError(f"unknown discovery method: {discovery!r}")
 
@@ -405,32 +427,92 @@ def discover(rl, n_groups: int = 10, discovery: str = "AHC",
     )
 
 
+def _stake_and_coverage(groups, rl):
+    """RelStake and Coverage for every (group, execution context) pair.
+
+    Paper Definitions 14 and 15:
+
+        RelStake(rg, co) = (events in co done by members of rg) / (events in co)
+        Cov(rg, co)      = (members of rg who worked in co) / (members of rg)
+
+    Computed once, for all groups and all contexts, in two group-bys. Neither
+    depends on OverallScore's lambda or w1 — which is the whole point: the grid
+    search can then be pure thresholding instead of 81 full recomputations over
+    the resource log. (Ordinor recomputes them per grid point, which is what made
+    the search cost tens of minutes per configuration.)
+    """
+    ctx = pd.MultiIndex.from_arrays(
+        [rl["case_type"], rl["activity_type"], rl["time_type"]])
+    df = pd.DataFrame({"co": list(ctx), "r": rl["org:resource"].to_numpy()})
+
+    per_ctx = df.groupby("co").size()                       # |[Eres]_co|
+    per_ctx_res = df.groupby(["co", "r"]).size()            # events by r in co
+
+    stake, cover = [], []
+    for gi, members in enumerate(groups):
+        members = set(members)
+        if not members:
+            continue
+        sel = per_ctx_res[
+            per_ctx_res.index.get_level_values("r").isin(members)]
+
+        # events in co done by this group
+        ev = sel.groupby(level="co").sum()
+        # distinct members of this group active in co
+        mem = sel.groupby(level="co").size()
+
+        for co in ev.index:
+            stake.append((gi, co, ev[co] / per_ctx[co]))
+            cover.append((gi, co, mem[co] / len(members)))
+
+    return stake, cover
+
+
 def _overall_score_search(groups, rl):
     """Grid-search OverallScore's weight and threshold, as the paper does (§6.2).
 
-    Same grid as the paper: lambda and w1 each over [0.1, 0.9] in steps of 0.1,
-    selecting the model with the best F1.
+    A context becomes a group capability when
 
-    Run in a single process. Ordinor's own `auto_search=True` farms these 81
-    evaluations out to an uncapped `multiprocessing.Pool()` — one worker per core,
-    each with a copy of the resource log — which exhausts memory on a many-core
-    machine. With `conformance()` costing well under a second, there is nothing to
-    parallelise anyway.
+        w1 * RelStake(rg, co) + (1 - w1) * Cov(rg, co) >= lambda
+
+    i.e. the group does a substantial share of that work AND enough of its members
+    do it. Grid: lambda and w1 each over [0.1, 0.9] in steps of 0.1, keeping the
+    model with the best F1 — the paper's configuration (§6.2).
+
+    RelStake and Coverage are computed once (see `_stake_and_coverage`); each grid
+    point is then a threshold over the precomputed scores, so the whole search is
+    a few seconds in a single process rather than tens of minutes across an
+    uncapped process pool.
     """
-    from copy import deepcopy
-    from ordinor.org_model_miner.group_profiling import overall_score
+    from ordinor.org_model_miner import OrganizationalModel
+
+    stake, cover = _stake_and_coverage(groups, rl)
+
+    # Align the two measures on (group, context).
+    s = {(gi, co): v for gi, co, v in stake}
+    c = {(gi, co): v for gi, co, v in cover}
+    keys = list(s)
 
     best_om, best_f1, best_params = None, -1.0, None
 
-    for lam in [x / 10 for x in range(1, 10)]:
-        for w1 in [x / 10 for x in range(1, 10)]:
-            with _quiet():
-                om = overall_score(deepcopy(groups), rl, p=lam, w1=w1)
-            if om.group_number == 0:
+    for w1 in [x / 10 for x in range(1, 10)]:
+        score = {k: w1 * s[k] + (1 - w1) * c[k] for k in keys}
+        for lam in [x / 10 for x in range(1, 10)]:
+            caps: Dict[int, List[tuple]] = {}
+            for (gi, co), v in score.items():
+                if v >= lam:
+                    caps.setdefault(gi, []).append(co)
+            if not caps:
                 continue
+
+            om = OrganizationalModel()
+            for gi, cos in caps.items():
+                om.add_group(set(groups[gi]), cos)
+
             _, _, f1 = conformance(rl, om)
             if f1 > best_f1:
-                best_om, best_f1, best_params = om, f1, {"lambda": lam, "w1": w1}
+                best_om, best_f1 = om, f1
+                best_params = {"lambda": lam, "w1": round(w1, 1)}
 
     if best_om is None:      # no threshold produced a usable model
         from ordinor.org_model_miner.group_profiling import full_recall
