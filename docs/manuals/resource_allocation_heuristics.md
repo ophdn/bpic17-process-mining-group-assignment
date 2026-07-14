@@ -1,4 +1,4 @@
-# Resource Allocation — R-RBA (Section 1.8)
+# Resource Allocation — R-RBA (Section 1.8) + Piled Execution (optional)
 
 How the simulation decides **which worker does which task**.
 
@@ -149,13 +149,66 @@ All 17 workers are qualified for this task. With `capacity = 3`:
 
 ---
 
+## Piled Execution (R-PE, Pattern 38) — optional batch allocation
+
+**Plain version:** when a worker finishes a task of type T, before
+becoming generally available they first look at the waiting list for
+another task of the **same type T**. If one is there, they grab it
+immediately (one task per release). Only if no same-type task is
+waiting do they fall back to the normal "oldest waiting task I'm
+qualified for" rule.
+
+This is **Piled Execution**, Russell et al. *Auto-start Pattern 38
+(R-PE)*: "initiate the next instance of a workflow task once the
+previous one has completed … allocating similar work items to the same
+resource which aims to undertake them one after the other" — reduced
+set-up time / familiarity from sticking with one task type.
+
+It's a **batch allocation approach** because same-type tasks cluster
+onto one worker rather than being scattered uniformly across the pool.
+But it's deliberately **sequential** — only one same-type task is
+handed off per release, faithful to the paper's "the next one".
+
+### What changed in the code
+
+- The wait-queue drain (R-DE) gains a same-type-first scan *before* the
+  FIFO scan — only when `--piled-execution` is on.
+- Synchronous allocation (`_allocate`) is **unchanged** — new tasks
+  are still picked uniformly at random among qualified+free workers.
+  Piled Execution only biases the **deferred** path.
+- `release()` now carries the just-finished activity so the freeing
+  worker knows what "same pile" to look for.
+- Processing times are **not** affected. Only *which* worker does
+  *which* waiting task changes.
+
+### Design decisions for uncertain availabilities
+
+Piled Execution is layered on the same live-load / R-DE machinery as
+R-RBA, so the uncertain-availability adaptations from earlier still
+hold. The pile is formed from the **current** waiting list (not a
+future queue forecast), and one same-type handoff per release keeps it
+O(1) and deterministic under the seed. If the same-type waiter isn't
+qualified (it can't be — the worker just finished that activity, so it
+must be permitted), we don't try; but this never happens because
+`RESOURCE_PERMISSIONS` guarantees the freeing worker is permitted for
+the activity it just ran.
+
+Default off → current R-RBA-only behaviour is preserved bit-for-bit.
+
+---
+
 ## Usage
 
-There's no special flag — R-RBA is always on:
+R-RBA is always on; Piled Execution is opt-in:
 
 ```bash
+# default — R-RBA only
 .venv/bin/python -m simulation.main
-.venv/bin/python -m simulation.main --process-model basic   # alter process model only
+.venv/bin/python -m simulation.main --process-model basic
+
+# turn on Piled Execution (same-type batching on the wait queue)
+.venv/bin/python -m simulation.main --piled-execution
+.venv/bin/python -m simulation.main --process-model basic --piled-execution
 ```
 
 Or programmatically:
@@ -163,8 +216,24 @@ Or programmatically:
 ```python
 from simulation.components.resource import ResourceComponent
 
+# R-RBA only (default)
 resources = ResourceComponent(capacity_per_resource=3, seed=42)
+
+# R-RBA + Piled Execution
+resources = ResourceComponent(capacity_per_resource=3, seed=42, piled=True)
 ```
+
+To see the effect, compare consecutive complete rows for the same worker
++ same activity before/after turning the flag on:
+
+```bash
+# count "piled" pairs: same worker did the same activity back-to-back
+tail -n +2 output/event_log.csv | awk -F, '
+  $4=="complete" && $5==prev_r && $2==prev_a {c++}
+  {prev_r=$5; prev_a=$2}
+  END {print c" back-to-back same-worker+same-activity pairs"}'
+```
+The piled run should show a higher count.
 
 ---
 
@@ -221,8 +290,10 @@ where the push *selection* patterns come in. Future work:
 - **Detour patterns** (R-D delegation, R-E escalation, R-SD
   deallocation, R-PR/R-UR reallocation) — for handling exceptions such
   as resource unavailability mid-execution.
-- **Auto-start patterns** (R-PE piled execution, R-CE chained
-  execution) — pipeline same-task or same-case work items to the same
-  worker for efficiency.
+- **Auto-start patterns** — *R-PE* (Piled Execution, pat. 38) is now
+  implemented behind `--piled-execution` (see the dedicated section
+  above). *R-CE* (Chained Execution, pat. 39) — pipeline sequential
+  work items within the same case to the same resource — remains
+  future work.
 - **Early/Late Distribution** (R-ED / R-LD) — timing variants that
   allocate before/after enablement rather than at enablement.

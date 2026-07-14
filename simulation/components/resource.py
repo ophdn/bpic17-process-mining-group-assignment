@@ -100,6 +100,19 @@ Upgrade path:
   - Section 1.7 Advanced: role-discovery (e.g. OrdinoR)
   - Section 1.8 Advanced: push selection patterns (R-RMA/R-RRA/R-SHQ)
     and detour patterns (R-D/R-E/R-SD/R-PR/R-UR)
+
+Piled Execution (R-PE, auto-start Pattern 38) — optional
+---------------------------------------------------------
+When ``piled=True`` is passed to the constructor, the deferred-allocation
+drain (R-DE) is refined: on each RESOURCE_AVAILABLE the just-freed
+resource first tries to grab a WAITING work item of the *same* activity
+type it just finished (its "pile"), before falling back to the usual FIFO
+first-compatible scan.  Only ONE task is handed off per release (strictly
+sequential, matching the paper's wording).  This batches similar work
+onto one worker without affecting the synchronous R-RBA pick or the
+processing-time distributions.  Default ``piled=False`` preserves the
+existing R-RBA-only behaviour bit-for-bit.  Enabled at runtime via
+``--piled-execution`` on main.py.
 """
 
 import random
@@ -262,6 +275,9 @@ class ResourceComponent:
     resource).
 
     Section 1.6 Basic: each resource has a capacity (default: 1 parallel task).
+
+    Piled Execution: pass ``piled=True`` to bias the deferred drain toward
+    same-activity batching (see module docstring).
     """
 
     HANDLES = {
@@ -275,9 +291,11 @@ class ResourceComponent:
         seed: Optional[int] = 42,
         calendar=None,
         start_datetime=None,
+        piled: bool = False,
     ):
         self._capacity = capacity_per_resource
         self._rng = random.Random(seed)
+        self._piled = piled
 
         # Section 1.6: an availability calendar (analysis.availability.
         # YearlyAvailability, or None to leave resources always on duty).
@@ -337,6 +355,12 @@ class ResourceComponent:
           without anything completing, so the whole queue is re-examined. Without
           this, work items queued while every qualified resource was off-shift
           would never be woken: no completion is pending to wake them.
+
+        Piled Execution (R-PE, Pattern 38): when ``self._piled`` is True and the
+        event carries the just-finished activity in ``event.payload``, the freed
+        resource first looks for a waiting item of the SAME activity type before
+        falling back to the FIFO first-compatible scan. One handoff per release
+        (sequential, per the paper).
         """
         resource = event.resource
 
@@ -344,6 +368,17 @@ class ResourceComponent:
             self._busy[resource] = max(0, self._busy.get(resource, 0) - 1)
             if (self._busy[resource] < self._capacity
                     and self._is_on_shift(engine, resource)):
+                # Piled Execution: prefer a waiting item of the same activity
+                # type this resource just finished. It is permitted by
+                # construction (it just ran one), so no permission check needed.
+                if self._piled and event.payload is not None:
+                    for i, waiting in enumerate(self._waiting):
+                        if waiting.activity == event.payload:
+                            self._waiting.pop(i)
+                            self._begin(engine, waiting, resource)
+                            self._arm_shift_wake(engine)
+                            return
+
                 permitted = RESOURCE_PERMISSIONS.get(resource, set())
                 for i, waiting in enumerate(self._waiting):
                     if waiting.activity in permitted:
@@ -503,16 +538,26 @@ class ResourceComponent:
             "unpermitted_activities": self._unpermitted,
         }
 
-    def release(self, engine, resource: str) -> None:
+    def release(self, engine, resource: str, activity: Optional[str] = None) -> None:
         """
         Call this from the ProcessComponent after ACTIVITY_COMPLETE
         to free the resource. Schedules a RESOURCE_AVAILABLE event.
+
+        Parameters
+        ----------
+        activity : str, optional
+            The activity just completed by ``resource``.  Stashed in
+            the event's ``payload`` so that ``on_resource_available``
+            can implement Piled Execution (same-activity batching).
+            Default ``None`` preserves the existing behaviour for
+            callers that don't pass it.
         """
         engine.schedule(SimEvent(
             timestamp=engine.now,
             priority=1,   # High priority: free up before next tasks start
             event_type=EventType.RESOURCE_AVAILABLE,
             resource=resource,
+            payload=activity,
         ))
 
 

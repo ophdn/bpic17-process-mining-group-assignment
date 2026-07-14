@@ -227,7 +227,7 @@ class PetriNetProcessComponent(ProcessComponent):
         activity = event.activity
 
         if self._resources is not None and event.resource:
-            self._resources.release(engine, event.resource)
+            self._resources.release(engine, event.resource, event.activity)
 
         counts = self._repeat_counts.get(case_id, {})
         counts[activity] = counts.get(activity, 0) + 1

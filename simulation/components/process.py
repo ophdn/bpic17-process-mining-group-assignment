@@ -518,7 +518,7 @@ class ProcessComponent:
         # (uses ResourceComponent's documented release() API; high-priority
         # RESOURCE_AVAILABLE fires before the next activity's allocation).
         if self._resources is not None and event.resource:
-            self._resources.release(engine, event.resource)
+            self._resources.release(engine, event.resource, event.activity)
 
         # Track repeats for loop-guard
         counts = self._repeat_counts.get(case_id, {})
