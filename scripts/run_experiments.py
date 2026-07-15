@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import argparse
 import random as _random
+import re
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -81,6 +82,7 @@ START_DATETIME = datetime(2016, 1, 1)
 
 KNOWN_POLICIES = {"random", "piled"}
 KNOWN_SCENARIOS = {"normal", "peak", "outage"}
+_KBATCH_RE = re.compile(r"^kbatch(\d+)$")
 OUTAGE_FRACTION = 0.20
 
 
@@ -147,13 +149,37 @@ def scenario_excluded_resources(scenario: str, seed: int) -> Optional[Set[str]]:
     return set(rng.sample(names, k))
 
 
+def parse_kbatch_policy(policy: str) -> Optional[int]:
+    """'kbatch5' -> 5, 'kbatch20' -> 20, else None. Lets --policies list a
+    k-sweep (kbatch1,kbatch2,kbatch5,kbatch10,kbatch20) without a fixed
+    enum of every k value anyone might want to try."""
+    m = _KBATCH_RE.match(policy)
+    return int(m.group(1)) if m else None
+
+
+def is_known_policy(policy: str) -> bool:
+    return policy in KNOWN_POLICIES or parse_kbatch_policy(policy) is not None
+
+
 def build_resource_component(
     policy: str, seed: int, calendar, excluded: Optional[Set[str]],
 ) -> ResourceComponent:
+    k = parse_kbatch_policy(policy)
+    if k is not None:
+        return ResourceComponent(
+            capacity_per_resource=3,
+            seed=seed,
+            calendar=calendar,
+            start_datetime=START_DATETIME,
+            excluded_resources=excluded,
+            batching_k=k,
+            duration_model_path=str(REPO_ROOT / "simulation" / "models" / "processing_time_model.joblib"),
+        )
     if policy not in KNOWN_POLICIES:
         raise ValueError(
-            f"unknown policy {policy!r} (known: {sorted(KNOWN_POLICIES)}). "
-            "Add new conditions here as Part II lands k-batching / R-RRA / R-SHQ."
+            f"unknown policy {policy!r} (known: {sorted(KNOWN_POLICIES)}, "
+            f"or 'kbatchN' for k-Batching with k=N). Add new conditions "
+            "here as Part II lands R-RRA / R-SHQ."
         )
     return ResourceComponent(
         capacity_per_resource=3,
@@ -444,7 +470,9 @@ def aggregate_and_report(results: pd.DataFrame, policies: list, out_dir: Path, s
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--policies", default="random,piled",
-                   help=f"Comma-separated policy names (known: {sorted(KNOWN_POLICIES)}).")
+                   help=f"Comma-separated policy names (known: {sorted(KNOWN_POLICIES)}, "
+                        f"or 'kbatchN' for k-Batching with k=N, e.g. "
+                        f"kbatch1,kbatch2,kbatch5,kbatch10,kbatch20 for a k-sweep).")
     p.add_argument("--seeds", type=int, default=10, help="Number of seeds (uses 1..N).")
     p.add_argument("--days", type=int, default=30, help="Simulation horizon in days.")
     p.add_argument("--warmup-days", type=float, default=0.0,
@@ -473,10 +501,11 @@ def main():
         return
 
     policies = [x.strip() for x in args.policies.split(",") if x.strip()]
-    unknown = set(policies) - KNOWN_POLICIES
+    unknown = [p for p in policies if not is_known_policy(p)]
     if unknown:
         print(f"Unknown polic{'y' if len(unknown) == 1 else 'ies'}: {sorted(unknown)} "
-              f"(known: {sorted(KNOWN_POLICIES)})", file=sys.stderr)
+              f"(known: {sorted(KNOWN_POLICIES)}, or 'kbatchN' e.g. kbatch5)",
+              file=sys.stderr)
         sys.exit(1)
 
     seeds = list(range(1, args.seeds + 1))

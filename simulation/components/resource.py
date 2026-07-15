@@ -113,14 +113,39 @@ onto one worker without affecting the synchronous R-RBA pick or the
 processing-time distributions.  Default ``piled=False`` preserves the
 existing R-RBA-only behaviour bit-for-bit.  Enabled at runtime via
 ``--piled-execution`` on main.py.
+
+k-Batching (Zeng & Zhao) — optional, mutually exclusive with Piled Execution
+-----------------------------------------------------------------------------
+When ``batching_k`` is set (an int >= 1), the allocation discipline changes
+fundamentally: work items are NEVER allocated immediately on request.  They
+always queue, and are released in batches of *k* solved as a parallel-
+machines assignment problem (``scipy.optimize.linear_sum_assignment``)
+against whichever qualified+free+on-shift resources exist at flush time,
+minimising total expected processing time
+(``simulation/expected_duration.py``).  A flush triggers when either
+(a) >= k items are waiting, or (b) the oldest waiting item has waited past
+``batching_max_wait_seconds`` (a safety valve against starving a thin
+queue -- the known idle-time weakness of k-Batching under low load,
+Zeng & Zhao, lecture 06 slide 12).  Items an assignment round can't match
+to a free resource stay queued for the next flush.  This deliberately does
+NOT reduce to the synchronous R-RBA pick at k=1 in the same way Piled
+Execution reduces to plain R-DE at piled=False -- even k=1 always makes
+the requester wait for a flush trigger rather than starting immediately
+when a resource happens to be free, which is the whole point of the
+lecture's k-Batching formulation (batch allocation, not on-arrival
+allocation).  Enabled at runtime via ``--k-batching K`` on main.py.
 """
 
 import random
 from collections import defaultdict
 from typing import Dict, List, Optional, Set
 
+import numpy as np
+from scipy.optimize import linear_sum_assignment
+
 from ..core.events import SimEvent, EventType
 from ..policies import AllocationPolicy, AllocationState, RandomPolicy
+from ..expected_duration import ExpectedDurationModel
 
 
 # ── Resource permission map (from BPIC-17 resource_activity_map) ─────────────
@@ -261,6 +286,13 @@ for _res, _acts in RESOURCE_PERMISSIONS.items():
     for _act in _acts:
         _ACTIVITY_TO_RESOURCES[_act].append(_res)
 
+# payload tags on synthetic resource=None RESOURCE_AVAILABLE wake-up events,
+# so on_resource_available's k-batching branch resets only the specific
+# wake mechanism that actually fired (see the comment there for why
+# resetting both indiscriminately is a real bug, not just untidy).
+_SHIFT_WAKE = "__shift_wake__"
+_BATCH_WAKE = "__batch_wake__"
+
 
 class ResourceComponent:
     """
@@ -296,7 +328,19 @@ class ResourceComponent:
         piled: bool = False,
         policy: Optional[AllocationPolicy] = None,
         excluded_resources: Optional[Set[str]] = None,
+        batching_k: Optional[int] = None,
+        batching_max_wait_seconds: float = 4 * 3600,
+        duration_model_path: Optional[str] = None,
     ):
+        if batching_k is not None and piled:
+            raise ValueError(
+                "batching_k and piled=True are mutually exclusive — they "
+                "define different (incompatible) deferred-allocation "
+                "disciplines. Pick one."
+            )
+        if batching_k is not None and batching_k < 1:
+            raise ValueError(f"batching_k must be >= 1, got {batching_k!r}")
+
         self._capacity = capacity_per_resource
         self._rng = random.Random(seed)
         self._piled = piled
@@ -314,6 +358,13 @@ class ResourceComponent:
         # is unchanged: RandomPolicy(rng=self._rng) is the pre-existing
         # self._rng.choice(available) call, just behind a seam.
         self._policy: AllocationPolicy = policy or RandomPolicy(rng=self._rng)
+
+        # k-Batching (Zeng & Zhao) — see module docstring.
+        self._batching_k = batching_k
+        self._batching_max_wait = batching_max_wait_seconds
+        self._duration_model: Optional[ExpectedDurationModel] = (
+            ExpectedDurationModel(duration_model_path) if batching_k is not None else None
+        )
 
         # Section 1.6: an availability calendar (analysis.availability.
         # YearlyAvailability, or None to leave resources always on duty).
@@ -341,13 +392,39 @@ class ResourceComponent:
         # schedule at most one).
         self._wake_at: Optional[float] = None
 
+        # k-Batching's max-wait valve: sim time of the wake-up already queued
+        # for when the oldest waiting item's max-wait elapses, if any. Without
+        # this, the valve would only fire as a side effect of some unrelated
+        # event happening to be dispatched after the threshold — fine under
+        # BPIC-17's real arrival rate (an event is never far away), but not
+        # robust for a genuinely idle lull (e.g. very low --scale-factor
+        # experiments), so it gets its own self-scheduled wake-up like the
+        # shift-wake mechanism above.
+        self._batch_wake_at: Optional[float] = None
+
     # ------------------------------------------------------------------
     # Handlers
     # ------------------------------------------------------------------
 
     def on_activity_request(self, engine, event: SimEvent) -> None:
         """A work item is enabled. Start it now if a qualified resource is free
-        *and on shift*; otherwise queue it (R-DE)."""
+        *and on shift*; otherwise queue it (R-DE).
+
+        k-Batching (see module docstring): if ``self._batching_k`` is set,
+        this discipline is replaced entirely — a request NEVER allocates
+        immediately, it always queues and waits for a batch flush.
+        """
+        if self._batching_k is not None:
+            if not _ACTIVITY_TO_RESOURCES.get(event.activity):
+                self._unpermitted += 1
+                self._begin(engine, event, None)
+                return
+            self._waiting.append(event)
+            self._maybe_flush_batch(engine)
+            self._arm_shift_wake(engine)
+            self._arm_batch_wake(engine)
+            return
+
         resource = self._allocate(engine, event.activity)
 
         if resource is not None:
@@ -379,7 +456,34 @@ class ResourceComponent:
         resource first looks for a waiting item of the SAME activity type before
         falling back to the FIFO first-compatible scan. One handoff per release
         (sequential, per the paper).
+
+        k-Batching: replaces this whole method's logic — freeing a resource
+        (or a shift opening) just means "maybe there's now enough
+        free/on-shift capacity to flush a batch", checked once here rather
+        than per-release handoff logic.
         """
+        if self._batching_k is not None:
+            if event.resource is not None:
+                self._busy[event.resource] = max(0, self._busy.get(event.resource, 0) - 1)
+            elif event.payload == _SHIFT_WAKE:
+                self._wake_at = None
+            elif event.payload == _BATCH_WAKE:
+                self._batch_wake_at = None
+            # else: some other resource=None event -- nothing to reset.
+            #
+            # Tagging matters: resetting BOTH flags whenever *either* wake
+            # fires (the naive version) re-arms whichever one is still
+            # legitimately pending on its own already-scheduled event,
+            # duplicating it. Duplicates compound every time the other wake
+            # fires too, producing thousands of same-target RESOURCE_
+            # AVAILABLE events piled at one instant (found the hard way via
+            # cProfile -- _next_shift_open dominated runtime with the
+            # non-batching cost model reused).
+            self._maybe_flush_batch(engine)
+            self._arm_shift_wake(engine)
+            self._arm_batch_wake(engine)
+            return
+
         resource = event.resource
 
         if resource is not None:
@@ -410,8 +514,74 @@ class ResourceComponent:
         self._arm_shift_wake(engine)
 
     # ------------------------------------------------------------------
-    # Private
+    # k-Batching (Zeng & Zhao) — see module docstring
     # ------------------------------------------------------------------
+
+    def _free_resources(self, engine) -> List[str]:
+        """Every resource with a free slot, on shift, not excluded — the
+        candidate pool a batch flush assigns against. Shared with
+        ``_allocate``'s filter, minus the per-activity permission check
+        (the assignment cost matrix handles permission per pair instead)."""
+        return [
+            r for r in RESOURCE_PERMISSIONS
+            if self._busy.get(r, 0) < self._capacity
+            and self._is_on_shift(engine, r)
+            and r not in self._excluded
+        ]
+
+    def _maybe_flush_batch(self, engine) -> None:
+        """Flush batches while the trigger holds: >= k items waiting, or the
+        oldest waiting item has waited past the max-wait safety valve.
+        Loops (rather than flushing just one batch) so a burst of requests
+        arriving with plenty of free capacity available right now doesn't
+        leave a second full batch queued idly until the next unrelated
+        event — but stops as soon as a round makes no progress (nothing
+        left with a compatible free resource), rather than spinning.
+        """
+        while self._waiting:
+            oldest_wait = engine.now - self._waiting[0].timestamp
+            if len(self._waiting) < self._batching_k and oldest_wait < self._batching_max_wait:
+                return
+
+            free = self._free_resources(engine)
+            if not free:
+                return  # nothing to assign to yet; try again on the next trigger
+
+            batch = self._waiting[: self._batching_k]
+            before = len(self._waiting)
+            self._assign_batch(engine, batch, free)
+            if len(self._waiting) == before:
+                return  # no progress this round (permission gaps) -- stop
+
+    def _assign_batch(self, engine, batch: List[SimEvent], free: List[str]) -> None:
+        """Solve batch (size n) x free-resources (size m) as a parallel-
+        machines assignment problem: minimise total expected processing
+        time (``simulation/expected_duration.py``), subject to R-RBA
+        permission (an unpermitted pair gets a prohibitive cost so
+        ``linear_sum_assignment`` never picks it). Unmatched items
+        (permission gap, or more batch items than compatible free
+        resources) stay in ``self._waiting``.
+        """
+        n, m = len(batch), len(free)
+        PROHIBITIVE = 1e12
+        cost = np.full((n, m), PROHIBITIVE)
+        for i, req in enumerate(batch):
+            for j, r in enumerate(free):
+                if req.activity in RESOURCE_PERMISSIONS.get(r, set()):
+                    cost[i, j] = self._duration_model.expected_duration(req.activity, r)
+
+        row_ind, col_ind = linear_sum_assignment(cost)
+
+        assigned_ids = set()
+        for i, j in zip(row_ind, col_ind):
+            if cost[i, j] >= PROHIBITIVE:
+                continue  # no compatible free resource for this item this round
+            req = batch[i]
+            assigned_ids.add(id(req))
+            self._begin(engine, req, free[j])
+
+        if assigned_ids:
+            self._waiting = [w for w in self._waiting if id(w) not in assigned_ids]
 
     def _drain(self, engine) -> None:
         """Start as many queued work items as the on-duty pool can take."""
@@ -465,6 +635,38 @@ class ResourceComponent:
             priority=1,            # open the shift before anything else at t
             event_type=EventType.RESOURCE_AVAILABLE,
             resource=None,         # None => "a shift opened", not "a task ended"
+            payload=_SHIFT_WAKE,
+        ))
+
+    def _arm_batch_wake(self, engine) -> None:
+        """Ensure a wake-up is queued for when the oldest waiting item's
+        k-Batching max-wait elapses, so the safety valve fires even during
+        an idle lull with no other event to trigger a recheck. At most one
+        outstanding (mirrors ``_arm_shift_wake``'s pattern).
+
+        Guards ``t > engine.now`` strictly: if the valve just fired and
+        found no free resource to assign to, ``self._waiting[0]`` hasn't
+        changed, so the naive recomputation lands on the exact same instant
+        that just fired — scheduling that again is an infinite same-instant
+        loop (confirmed the hard way: heapq keeps re-popping a same-
+        timestamp event before ever reaching later, real completion events
+        that would actually free a resource). When the deadline is already
+        due, do nothing here; the next *real* RESOURCE_AVAILABLE release
+        already re-checks via _maybe_flush_batch, which is the correct path
+        to eventually unstick a capacity-exhausted queue.
+        """
+        if self._batching_k is None or not self._waiting or self._batch_wake_at is not None:
+            return
+        t = self._waiting[0].timestamp + self._batching_max_wait
+        if t <= engine.now:
+            return
+        self._batch_wake_at = t
+        engine.schedule(SimEvent(
+            timestamp=t,
+            priority=1,
+            event_type=EventType.RESOURCE_AVAILABLE,
+            resource=None,
+            payload=_BATCH_WAKE,
         ))
 
     def _next_shift_open(self, engine, horizon_days: int = 14) -> Optional[float]:
