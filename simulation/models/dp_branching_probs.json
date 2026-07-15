@@ -1,0 +1,409 @@
+{
+  "bpmn": "bpic17_process.bpmn",
+  "visit_bucket_max": 5,
+  "min_samples": 30,
+  "replay_fit_pct": 57.75,
+  "dp_probs": {
+    "A_Concept | A_Submitted": {
+      "1": {
+        "A_Submitted": 0.6482,
+        "A_Concept": 0.3518
+      },
+      "all": {
+        "A_Submitted": 0.6482,
+        "A_Concept": 0.3518
+      }
+    },
+    "A_Concept | W_Handle leads": {
+      "1": {
+        "A_Concept": 0.8296,
+        "W_Handle leads": 0.1704
+      },
+      "all": {
+        "A_Concept": 0.8296,
+        "W_Handle leads": 0.1704
+      }
+    },
+    "A_Complete | O_Create Offer": {
+      "1": {
+        "O_Create Offer": 1.0
+      },
+      "all": {
+        "O_Create Offer": 0.6309,
+        "A_Complete": 0.3691
+      },
+      "2": {
+        "A_Complete": 1.0
+      }
+    },
+    "A_Complete | O_Created": {
+      "1": {
+        "O_Created": 1.0
+      },
+      "all": {
+        "O_Created": 1.0
+      },
+      "2": {
+        "O_Created": 1.0
+      },
+      "3": {
+        "O_Created": 1.0
+      },
+      "4": {
+        "O_Created": 1.0
+      }
+    },
+    "A_Complete | O_Create Offer | O_Sent (mail and online)": {
+      "1": {
+        "O_Sent (mail and online)": 0.8946,
+        "O_Create Offer": 0.1054
+      },
+      "all": {
+        "O_Sent (mail and online)": 0.8961,
+        "O_Create Offer": 0.1039
+      },
+      "2": {
+        "O_Sent (mail and online)": 0.9296,
+        "O_Create Offer": 0.0704
+      },
+      "3": {
+        "O_Sent (mail and online)": 0.633,
+        "O_Create Offer": 0.367
+      },
+      "4": {
+        "O_Sent (mail and online)": 0.8929,
+        "O_Create Offer": 0.1071
+      }
+    },
+    "A_Complete | O_Create Offer | O_Sent (mail and online) | W_Complete application": {
+      "1": {
+        "W_Complete application": 0.5508,
+        "A_Complete": 0.3632,
+        "O_Sent (mail and online)": 0.086
+      },
+      "all": {
+        "W_Complete application": 0.5553,
+        "A_Complete": 0.3608,
+        "O_Sent (mail and online)": 0.084
+      },
+      "2": {
+        "W_Complete application": 0.6135,
+        "A_Complete": 0.3401,
+        "O_Sent (mail and online)": 0.0464
+      },
+      "3": {
+        "W_Complete application": 0.438,
+        "O_Sent (mail and online)": 0.3802,
+        "A_Complete": 0.1818
+      },
+      "4": {
+        "W_Complete application": 0.4783,
+        "A_Complete": 0.4348,
+        "O_Sent (mail and online)": 0.087
+      }
+    },
+    "A_Cancelled | A_Denied | A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Create Offer | O_Returned | O_Sent (mail and online) | W_Call incomplete files | W_Complete application | W_Validate application": {
+      "1": {
+        "A_Validating": 0.6101,
+        "A_Cancelled": 0.2496,
+        "O_Create Offer": 0.1306,
+        "O_Sent (mail and online)": 0.0062,
+        "A_Denied": 0.0034
+      },
+      "all": {
+        "A_Validating": 0.6099,
+        "A_Cancelled": 0.2444,
+        "O_Create Offer": 0.1305,
+        "O_Sent (mail and online)": 0.012,
+        "A_Denied": 0.0032
+      },
+      "2": {
+        "A_Validating": 0.6178,
+        "A_Cancelled": 0.2038,
+        "O_Create Offer": 0.1276,
+        "O_Sent (mail and online)": 0.0495,
+        "A_Denied": 0.0013
+      },
+      "3": {
+        "A_Validating": 0.5808,
+        "A_Cancelled": 0.214,
+        "O_Create Offer": 0.1397,
+        "O_Sent (mail and online)": 0.0611,
+        "A_Denied": 0.0044
+      },
+      "4": {
+        "A_Validating": 0.5,
+        "A_Cancelled": 0.2143,
+        "O_Sent (mail and online)": 0.1429,
+        "O_Create Offer": 0.1429
+      }
+    },
+    "O_Cancelled": {
+      "1": {
+        "__END__": 0.803,
+        "O_Cancelled": 0.197
+      },
+      "all": {
+        "__END__": 0.8073,
+        "O_Cancelled": 0.1927
+      },
+      "2": {
+        "__END__": 0.8467,
+        "O_Cancelled": 0.1533
+      },
+      "3": {
+        "__END__": 0.7148,
+        "O_Cancelled": 0.2852
+      },
+      "4": {
+        "__END__": 0.8219,
+        "O_Cancelled": 0.1781
+      }
+    },
+    "A_Cancelled | A_Denied | A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Create Offer | O_Returned | W_Call incomplete files | W_Validate application": {
+      "1": {
+        "A_Validating": 0.592,
+        "A_Cancelled": 0.2699,
+        "O_Create Offer": 0.1348,
+        "A_Denied": 0.0033
+      },
+      "all": {
+        "A_Validating": 0.592,
+        "A_Cancelled": 0.2699,
+        "O_Create Offer": 0.1348,
+        "A_Denied": 0.0033
+      }
+    },
+    "A_Denied | A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Returned | W_Call incomplete files | W_Validate application": {
+      "1": {
+        "O_Returned": 0.9443,
+        "W_Validate application": 0.052,
+        "A_Incomplete": 0.0028,
+        "A_Denied": 0.0008
+      },
+      "all": {
+        "O_Returned": 0.9443,
+        "W_Validate application": 0.052,
+        "A_Incomplete": 0.0028,
+        "A_Denied": 0.0008
+      }
+    },
+    "A_Denied | A_Incomplete | A_Pending | A_Validating | O_Accepted | W_Call incomplete files | W_Validate application": {
+      "1": {
+        "A_Incomplete": 0.3691,
+        "W_Validate application": 0.2989,
+        "O_Accepted": 0.2266,
+        "A_Denied": 0.1054,
+        "A_Validating": 0.0001
+      },
+      "all": {
+        "A_Incomplete": 0.3691,
+        "W_Validate application": 0.2988,
+        "O_Accepted": 0.2266,
+        "A_Denied": 0.1054,
+        "A_Validating": 0.0001
+      }
+    },
+    "A_Incomplete | A_Pending | A_Validating | W_Validate application": {
+      "1": {
+        "A_Pending": 0.9914,
+        "A_Validating": 0.0047,
+        "A_Incomplete": 0.0024,
+        "W_Validate application": 0.0014,
+        "__END__": 0.0001
+      },
+      "all": {
+        "A_Pending": 0.987,
+        "A_Validating": 0.0064,
+        "A_Incomplete": 0.0043,
+        "W_Validate application": 0.0022,
+        "__END__": 0.0001
+      }
+    },
+    "A_Incomplete | A_Validating | W_Validate application": {
+      "1": {
+        "A_Incomplete": 0.7043,
+        "W_Validate application": 0.172,
+        "A_Validating": 0.085,
+        "__END__": 0.0387
+      },
+      "all": {
+        "A_Incomplete": 0.487,
+        "A_Validating": 0.3359,
+        "W_Validate application": 0.1599,
+        "__END__": 0.0173
+      },
+      "2": {
+        "A_Validating": 0.89,
+        "A_Incomplete": 0.0767,
+        "W_Validate application": 0.0332,
+        "__END__": 0.0002
+      },
+      "3": {
+        "A_Incomplete": 0.4607,
+        "W_Validate application": 0.4603,
+        "A_Validating": 0.0791
+      },
+      "4": {
+        "A_Incomplete": 0.6621,
+        "A_Validating": 0.3192,
+        "W_Validate application": 0.0165,
+        "__END__": 0.0022
+      },
+      "5+": {
+        "A_Validating": 0.4759,
+        "A_Incomplete": 0.3692,
+        "W_Validate application": 0.1548
+      }
+    },
+    "A_Incomplete | A_Pending | A_Validating | O_Accepted | W_Call incomplete files | W_Validate application": {
+      "1": {
+        "A_Validating": 0.472,
+        "O_Accepted": 0.234,
+        "W_Validate application": 0.1066,
+        "__END__": 0.1013,
+        "W_Call incomplete files": 0.0849,
+        "A_Incomplete": 0.0011
+      },
+      "all": {
+        "O_Accepted": 0.3575,
+        "A_Validating": 0.3251,
+        "A_Incomplete": 0.1052,
+        "W_Validate application": 0.0907,
+        "__END__": 0.061,
+        "W_Call incomplete files": 0.0604
+      },
+      "2": {
+        "O_Accepted": 0.5723,
+        "A_Incomplete": 0.3369,
+        "W_Validate application": 0.089,
+        "A_Validating": 0.0009,
+        "W_Call incomplete files": 0.0006,
+        "__END__": 0.0003
+      },
+      "3": {
+        "A_Validating": 0.4556,
+        "O_Accepted": 0.4406,
+        "W_Call incomplete files": 0.0982,
+        "__END__": 0.0056
+      },
+      "4": {
+        "O_Accepted": 0.5677,
+        "A_Incomplete": 0.3505,
+        "W_Validate application": 0.0817
+      },
+      "5+": {
+        "O_Accepted": 0.4774,
+        "A_Validating": 0.3086,
+        "A_Incomplete": 0.1152,
+        "W_Call incomplete files": 0.0823,
+        "W_Validate application": 0.0165
+      }
+    },
+    "A_Validating | O_Refused": {
+      "1": {
+        "O_Refused": 1.0
+      },
+      "all": {
+        "O_Refused": 1.0
+      }
+    },
+    "O_Create Offer | O_Sent (mail and online)": {
+      "1": {
+        "O_Sent (mail and online)": 0.9485,
+        "O_Create Offer": 0.0515
+      },
+      "all": {
+        "O_Sent (mail and online)": 0.9428,
+        "O_Create Offer": 0.0572
+      },
+      "2": {
+        "O_Sent (mail and online)": 0.9219,
+        "O_Create Offer": 0.0781
+      },
+      "3": {
+        "O_Sent (mail and online)": 0.9099,
+        "O_Create Offer": 0.0901
+      }
+    },
+    "A_Incomplete | A_Validating | O_Returned | W_Validate application": {
+      "1": {
+        "A_Incomplete": 0.999,
+        "O_Returned": 0.001
+      },
+      "all": {
+        "A_Incomplete": 0.4753,
+        "O_Returned": 0.4069,
+        "A_Validating": 0.0957,
+        "W_Validate application": 0.0221
+      },
+      "2": {
+        "O_Returned": 0.8014,
+        "A_Validating": 0.1986
+      },
+      "3": {
+        "O_Returned": 0.6882,
+        "W_Validate application": 0.2258,
+        "A_Incomplete": 0.086
+      },
+      "4": {
+        "A_Incomplete": 0.7778,
+        "A_Validating": 0.1667,
+        "O_Returned": 0.0556
+      },
+      "5+": {
+        "O_Returned": 0.4828,
+        "A_Validating": 0.2529,
+        "A_Incomplete": 0.1494,
+        "W_Validate application": 0.1149
+      }
+    },
+    "A_Incomplete | A_Pending | A_Validating | O_Accepted | W_Validate application": {
+      "1": {
+        "A_Validating": 0.9975,
+        "O_Accepted": 0.0025
+      },
+      "all": {
+        "A_Validating": 0.5557,
+        "O_Accepted": 0.3189,
+        "A_Incomplete": 0.0764,
+        "W_Validate application": 0.0491
+      },
+      "2": {
+        "O_Accepted": 0.7168,
+        "A_Incomplete": 0.1725,
+        "W_Validate application": 0.1108
+      }
+    },
+    "A_Validating | O_Refused | O_Returned": {
+      "1": {
+        "O_Refused": 1.0
+      },
+      "all": {
+        "O_Refused": 1.0
+      }
+    },
+    "A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Returned | W_Call incomplete files | W_Validate application": {
+      "1": {
+        "A_Validating": 0.4386,
+        "O_Returned": 0.386,
+        "W_Validate application": 0.1053,
+        "W_Call incomplete files": 0.0702
+      },
+      "all": {
+        "O_Returned": 0.4536,
+        "A_Validating": 0.3196,
+        "A_Incomplete": 0.1031,
+        "W_Validate application": 0.0825,
+        "W_Call incomplete files": 0.0412
+      }
+    },
+    "A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Returned | W_Validate application": {
+      "all": {
+        "A_Validating": 0.5714,
+        "O_Returned": 0.2857,
+        "W_Validate application": 0.1429
+      }
+    }
+  }
+}

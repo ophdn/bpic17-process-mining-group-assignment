@@ -26,7 +26,10 @@ simulation/
 │   └── bpic17_process.bpmn       ← discovered process model (Section 1.4 Advanced)
 └── main.py                       ← entry point — wires all components together
 scripts/
-└── test_advanced_process_model.py  ← Basic vs. Advanced conformance comparison
+├── metrics.py                       ← reusable KPI functions (see docs/paper_insights_*.md)
+└── compare_process_models.py        ← runs Basic vs. Advanced and reports all KPIs
+docs/
+└── paper_insights_discovering_simulation_models.md  ← validation methodology background
 ```
 
 ---
@@ -163,9 +166,11 @@ Output is always saved to `<repo_root>/output/event_log.csv`, regardless of
 the working directory you run from.
 The `ml_*` modes need a trained artifact — see **[Processing-Time Models
 (Section 1.3)](simulation/PROCESSING_TIMES.md)** for setup, training, mode
-details and reference statistics. To verify the Section 1.4 Advanced
-Petri-net enforcement actually works, run `scripts/test_advanced_process_model.py`
-(see the docstring there for what it checks).
+details and reference statistics. To check whether Basic or Advanced (or any
+change you make) better approximates the real BPIC-17 process, run
+`scripts/compare_process_models.py` — see
+[docs/paper_insights_discovering_simulation_models.md](docs/paper_insights_discovering_simulation_models.md)
+for the KPIs it reports and why.
 
 To enable verbose event-by-event output (useful for debugging), set
 `verbose=True` when constructing `SimulationEngine` in `main.py`.

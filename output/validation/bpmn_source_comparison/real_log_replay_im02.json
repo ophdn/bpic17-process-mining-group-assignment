@@ -1,0 +1,14 @@
+{
+  "noise_threshold": 0.2,
+  "discovered_bpmn": "bpic17_process_im02.bpmn",
+  "manual_signavio": {
+    "pct_fully_fitting_traces": 68.84,
+    "average_trace_fitness": 0.9756,
+    "net_size": "44p/55t"
+  },
+  "im02": {
+    "pct_fully_fitting_traces": 73.59,
+    "average_trace_fitness": 0.9927,
+    "net_size": "37p/56t"
+  }
+}
