@@ -77,10 +77,28 @@ file in the repository's \texttt{output/} directory.
 \label{sec:simulation}
 
 \subsection{Simulation Engine Core (all members)}
-% TODO (all, ~0.3 col): single global event queue (min-heap) DES engine,
-% component/handler registration pattern, CSV/XES logging, fixed seeds for
-% reproducibility. Keep short.
-tbd.
+The engine implements discrete event simulation with a single global event
+queue, as required by the assignment: a min-heap ordered by
+$(\text{timestamp}, \text{priority})$, where the integer priority breaks
+ties between simultaneous events deterministically (e.g.\ a resource is
+released before the next task is dispatched). Event types cover the case
+lifecycle (\texttt{CASE\_ARRIVAL}, \texttt{CASE\_COMPLETE}), the activity
+lifecycle (\texttt{ACTIVITY\_START}, \texttt{ACTIVITY\_COMPLETE}), and
+resource state changes. The engine itself contains no domain logic -- it is
+a dispatcher: components (arrivals, process, resources) are plain classes
+that register handlers per event type and are called in registration order.
+This design decision let all four members develop their components
+independently against a stable interface, without ever modifying the engine
+or each other's code. A built-in logger records every activity event in
+pm4py column convention and exports CSV; case ids that reach
+\texttt{CASE\_COMPLETE} are written alongside, so that every evaluation can
+filter out horizon-truncated cases (unfiltered logs would bias cycle time
+and case duration downwards). Simulation time is a float in seconds --
+the natural base unit for datetime arithmetic -- anchored to a real start
+date at logging time. All stochastic components draw from seeded random
+number generators, and set iterations that would otherwise depend on memory
+layout are explicitly sorted, so a fixed seed reproduces a byte-identical
+event log -- the basis for all before/after comparisons in this report.
 
 \subsection{Case Arrivals (Mario)}
 % TODO (Mario): LogNormal fit (Basic), MDN-based dynamic arrivals (Advanced),
