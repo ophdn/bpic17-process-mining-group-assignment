@@ -46,6 +46,7 @@ import json
 from pathlib import Path
 from typing import Dict, Optional
 
+import numpy as np
 import pandas as pd
 import pm4py
 
@@ -228,6 +229,43 @@ def arrival_rate_error(df_all: pd.DataFrame, reference_arrival: dict) -> dict:
     return result
 
 
+def arrival_profile_error(df_all: pd.DataFrame, reference_arrival: dict) -> Optional[dict]:
+    """Hour-of-day / day-of-week arrival SHAPE error (Section 1.2 Advanced).
+
+    This is the metric that actually distinguishes the MDN (time-dependent)
+    arrival model from the static parametric LogNormal: both can match the
+    same MEAN inter-arrival time (arrival_rate_error above), but only a
+    model that conditions on time-of-day/weekday can match the real shape
+    (nights ~0.6 arrivals/h vs ~7.6/h in the 12-18h core; Monday ~3x Sunday
+    -- see components/arrival_mdn.py's module docstring). MAE between
+    normalized 24-bin hour-of-day and 7-bin day-of-week histograms.
+
+    Returns None if the reference doesn't carry ``hod_profile``/
+    ``dow_profile`` yet -- an older simulation_inputs.json, or
+    extract_log_info.py hasn't been re-run against the real log with this
+    field added (see docs/ROADMAP.md A4). Callers should skip this KPI
+    rather than treat None as an error.
+    """
+    hod_ref = reference_arrival.get("hod_profile")
+    dow_ref = reference_arrival.get("dow_profile")
+    if hod_ref is None or dow_ref is None:
+        return None
+
+    first_events = (
+        df_all.sort_values("time:timestamp")
+        .groupby("case:concept:name")["time:timestamp"].first()
+    )
+    hod_counts = first_events.dt.hour.value_counts().reindex(range(24), fill_value=0)
+    hod_sim = (hod_counts / hod_counts.sum()).to_numpy()
+    dow_counts = first_events.dt.dayofweek.value_counts().reindex(range(7), fill_value=0)
+    dow_sim = (dow_counts / dow_counts.sum()).to_numpy()
+
+    return {
+        "hour_of_day_mae": round(float(np.mean(np.abs(hod_sim - np.asarray(hod_ref)))), 4),
+        "day_of_week_mae": round(float(np.mean(np.abs(dow_sim - np.asarray(dow_ref)))), 4),
+    }
+
+
 # ---------------------------------------------------------------------
 # 5. Process variants
 # ---------------------------------------------------------------------
@@ -307,6 +345,7 @@ def evaluate(
         "branching": branching_divergence(df_complete, reference["branching_probs"]),
         "processing_times": processing_time_errors(df, reference["processing_times"]),
         "arrival_rate": arrival_rate_error(df_all, reference["arrival_rate"]),
+        "arrival_profile": arrival_profile_error(df_all, reference["arrival_rate"]),
         "variants": variant_overlap(df_complete, reference["process_variants"]["top_20"]),
         "case_stats": case_length_duration_errors(df_complete, reference["basic_stats"]),
     }
@@ -337,6 +376,10 @@ def print_report(label: str, metrics: dict) -> None:
     if a.get("daily_arrivals_rel_err") is not None:
         print(f"  daily arrivals rel.err:       {a['daily_arrivals_rel_err']}  "
               f"(sim={a['sim_daily_arrivals_mean']}/day vs ref={a['ref_daily_arrivals_mean']}/day)")
+    ap = metrics.get("arrival_profile")
+    if ap is not None:
+        print(f"  arrival profile MAE:         hour-of-day={ap['hour_of_day_mae']}  "
+              f"day-of-week={ap['day_of_week_mae']}")
     v = metrics["variants"]
     print(f"  top-20 real variants reproduced: {v['ref_top20_variants_reproduced']}/20 "
           f"(covers {v['ref_top20_traffic_coverage_pct']}% of real traffic)")
