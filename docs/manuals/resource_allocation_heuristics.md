@@ -1,9 +1,23 @@
-# Resource Allocation — R-RBA (Section 1.8) + Piled Execution (optional)
+# Resource Allocation — R-RBA (Section 1.8) + Piled Execution (bonus) + k-Batching (Optimization, Final Task 1)
 
 How the simulation decides **which worker does which task**.
 
 The code lives in `simulation/components/resource.py` (`ResourceComponent`).
 Same seed (`42`) = same result every run.
+
+**Which one is the graded batch-allocation deliverable?** k-Batching
+(see the dedicated section below), not Piled Execution. Both cluster
+similar work, but they answer different questions and only one of them
+is Zeng & Zhao's k-Batching heuristic named in the assignment:
+
+| | Piled Execution (R-PE) | k-Batching (Zeng & Zhao) |
+|---|---|---|
+| Status | Bonus / ablation for the report | **Final Task 1 batch-allocation deliverable** |
+| Trigger | A resource just freed up | k items are waiting, or a max-wait timer |
+| Decision | Same-activity-first, else FIFO | Solve an assignment problem (`scipy.optimize.linear_sum_assignment`) minimising total expected duration |
+| Cost model | None — no ranking among candidates | `simulation/expected_duration.py` (shared with Park & Song) |
+| CLI flag | `--piled-execution` | `--k-batching K` |
+| Mutually exclusive? | Yes — pass only one of the two flags |
 
 ---
 
@@ -309,8 +323,16 @@ where the push *selection* patterns come in. Future work:
   as resource unavailability mid-execution.
 - **Auto-start patterns** — *R-PE* (Piled Execution, pat. 38) is now
   implemented behind `--piled-execution` (see the dedicated section
-  above). *R-CE* (Chained Execution, pat. 39) — pipeline sequential
-  work items within the same case to the same resource — remains
-  future work.
+  above; bonus/ablation, not the graded batch-allocation deliverable —
+  see the table at the top). *R-CE* (Chained Execution, pat. 39) —
+  pipeline sequential work items within the same case to the same
+  resource — remains future work.
+- **k-Batching (Zeng & Zhao)** — done, `--k-batching K`. Not a Russell
+  et al. pattern (a separate parallel-machines-scheduling heuristic from
+  lecture 06); implemented and evaluated (`scripts/test_kbatching.py`,
+  `output/experiments/aggregate_normal.csv`, report
+  Section "Simple Policies and k-Batching"). **This is the assignment's
+  graded batch-allocation deliverable** — R-PE above is bonus material
+  next to it, not a substitute.
 - **Early/Late Distribution** (R-ED / R-LD) — timing variants that
   allocate before/after enablement rather than at enablement.
