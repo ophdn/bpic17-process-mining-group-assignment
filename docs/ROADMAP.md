@@ -337,7 +337,49 @@ Report: jede Person schreibt die Subsections der eigenen Pakete
 - [ ] Report ≤ 10 Seiten, TUM-Template, Beiträge + AI-Nutzung deklariert
 - [ ] Repo aufgeräumt: ungetrackte Dateien (`scripts/metrics.py`, `docs/`, `train_decision_rules.py`) committen
 
-## 7. Offene Fragen (an Betreuer / im Team klären)
+## 7. Vorlesungs-Konformität (Decks 04–06) — geprüft 14./15.07.
+
+Abgleich unserer Implementierung gegen die konkreten Anweisungen der
+Vorlesungsfolien. Status: ✅ umgesetzt · 🚫 bewusst nicht angewendet (mit
+Begründung — je ein Satz im Report!) · ➡️ Hinweis an Paket-Owner.
+
+### Deck 04 (Simulation)
+
+| Folie | Anweisung | Status |
+|---|---|---|
+| F10 | BPMN → Petrinetz + Petrinetz-Algebra (pm4py) als „adequate approach" | ✅ exakt so (`petri_process.py`); Hard-coded-Graph als Basic-Vergleich |
+| F9 | Block-Strukturiertheit / Designfehler vermeiden | ✅ Woflan-Check: Netz ist sound (live, bounded, keine toten Transitionen) → O_Cancelled-Schleife ist legitimes Modellverhalten, kein Designfehler; Satz steht im Report |
+| F20 | Decision Points: statische Wahrscheinlichkeiten (simple) / Decision Mining (braucht Attribut-Simulation) | ✅ beides; DP-/Besuchs-Konditionierung geht methodisch darüber hinaus (Rozinat-basiert) |
+| F20 | Next-Activity-Prädiktion („non-transparent") | 🚫 bewusst nicht — Folie liefert die Begründung (Intransparenz) selbst |
+| F15 | Case-Attribute beim Arrival samplen | ✅ konditionale Verteilungen aus dem Log (1.5 Adv. I) |
+| F31 | Allocation-Einstieg: **Pull-Prinzip, longest-active-first** | ➡️ Johannes: als Basis-Disziplin kennen/erwähnen (Assignment-Text sagt nur „random") |
+| F28 | Kalender; Rozinat vernachlässigt **Saisonalität** | ➡️ Johannes: Saisonalitäts-Satz in seinen Kalender-Abschnitt |
+| F16 | Differentiated resources (Verteilungen pro Aktivität×Ressource) | ➡️ Daniel: mindestens als Related Work (sein Modell nutzt Ressource als Feature) |
+| F35 | DES: Event-Queue, Simulationszeit, Loop | ✅ Engine entspricht exakt der Folie — im 1.1-Report-Abschnitt referenzieren |
+
+### Deck 05 (ML / Splits / Metriken)
+
+| Folie | Anweisung | Status |
+|---|---|---|
+| F37 | **Temporaler Split** (train alt, test neu — Drift!) | ✅ beide Trainingsskripte; Befund: log-R² 0,36 → 0,12 (Random-Split hatte Drift geleakt) → Daniels Report-Story |
+| F37 | 70/15/15 mit Validation-Set | 🚫 80/20 ohne Val-Slice — Hyperparameter fest, nicht getunt (steht im Report); wer tunt, braucht ein Val-Slice |
+| F44 | Kategorial: Precision, Recall, ROC-AUC | ✅ pro Decision Point (macro, OvR) — deckte Majority-Class-Kollaps auf (acc 0,89, prec 0,22) |
+| F44 | Numerisch: MAE, MSE | ✅ wörtlich im Zeitmodell-Training |
+| F44 | Sequenz: Damerau-Levenshtein | 🚫 keine Suffix-Prädiktion bei uns |
+| F47 | „How to evaluate probability densities?" | ✅ Pinball-Loss + 90 %/50 %-Intervall-Coverage (0,815 / 0,424) |
+| F36 | Cleaning (Ausreißer/None) | ✅ Dauern-Filter 0<d≤365d, Sentinels, Leakage-Attribute ausgeschlossen |
+| F39 | Standard-Scaling / Embeddings | 🚫 baumbasierte Modelle sind skaleninvariant — Index-Encoding genügt |
+| F38–F43 | Prefix-Encoding, ELoader, LSTM-Encodings | ➡️ Bauanleitung für **D1 (Park & Song)** in Teil II — an den D1-Owner weitergeben |
+
+### Deck 06 (Optimierung)
+
+| Folie | Anweisung | Status |
+|---|---|---|
+| F21 | Die drei Evaluationsmetriken (exakte Definitionen) | ✅ 1:1 in `scripts/opt_metrics.py` (inkl. Verfügbarkeits-Nenner + Completed-Filter) |
+| F22/23 | Final Tasks + Management-Fragen | ✅ vollständig in Phase C/D dieser Roadmap abgebildet |
+| F18 vs. F21 | Fairness-*Ziel* (Abweichung vom Längstarbeitenden, CP) ≠ Fairness-*Metrik* (Abweichung vom Durchschnitt) | ✅ Unterscheidung in `opt_metrics.py` dokumentiert — nicht verwechseln! |
+
+## 8. Offene Fragen (an Betreuer / im Team klären)
 
 1. Zählen die bereits umgesetzten Teil-I-Advanced-Bausteine (1.3 Adv. I,
    1.4 Adv., 1.5 Adv. I) individuell für die Personen, die sie gebaut haben?

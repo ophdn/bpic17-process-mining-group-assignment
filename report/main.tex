@@ -111,7 +111,11 @@ $\tau$-closure of the current marking -- a greedy strategy that fires
 $\tau$-transitions only when no visible transition is enabled would make
 whole branches structurally unreachable, because n-way splits are encoded as
 nested binary gateways whose named branch and $\tau$-sibling are enabled
-simultaneously.
+simultaneously. Following the lecture's advice to guard against structural
+design errors, we verified the converted net with pm4py's Woflan
+implementation: it is a sound workflow net (live, bounded, no dead
+transitions) -- the loop behavior analyzed in Section~\ref{sec:branching}
+is therefore legitimate model behavior, not a modeling defect.
 
 \textbf{Design decision: model source.} We compared our manually modeled
 (Signavio) BPMN against models discovered from the log with the Inductive
@@ -231,9 +235,12 @@ the branch from these attributes (\emph{rules} column in
 Table~\ref{tab:ablation}); the training data was identified by replaying the
 log on the process model, and outcome-encoding attributes
 (\texttt{Accepted}, \texttt{Selected}) were excluded to prevent label
-leakage. Evaluated with a temporal 80/20 split and the metrics from the
-lecture (precision, recall, one-vs-rest ROC-AUC next to accuracy and a
-majority-class baseline), 16 decision points obtained models: one is
+leakage. Evaluated with a temporal 80/20 split -- training on older, testing on the
+most recent cases, since a random split would leak process drift -- and the
+metrics from the lecture (precision, recall, one-vs-rest ROC-AUC next to
+accuracy and a majority-class baseline; no separate validation slice, as all
+hyperparameters were fixed a priori rather than tuned), 16 decision points
+obtained models: one is
 perfectly separable (AUC $1.0$), while several collapse to the majority
 class -- e.g.\ accuracy $0.89$ at macro-precision $0.22$ -- which accuracy
 alone would have hidden. \emph{rules} matches \emph{visit} on variant
