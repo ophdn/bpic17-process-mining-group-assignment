@@ -181,19 +181,51 @@ def processing_time_errors(df: pd.DataFrame, reference_processing_times: Dict[st
 # 4. Arrival rate
 # ---------------------------------------------------------------------
 
-def arrival_rate_error(df_complete: pd.DataFrame, reference_arrival: dict) -> dict:
-    first_events = df_complete.sort_values("time:timestamp").groupby("case:concept:name")["time:timestamp"].first().sort_values()
+def arrival_rate_error(df_all: pd.DataFrame, reference_arrival: dict) -> dict:
+    """Compare simulated vs. real inter-arrival time and daily arrival count.
+
+    Takes the UNFILTERED event log (every case that arrived, not just the
+    ones that finished within the horizon) — arrivals are a property of
+    the ArrivalComponent alone, independent of anything downstream, so
+    restricting to completed cases only would bias this metric by
+    whatever biases completion (e.g. an overloaded resource pool at low
+    completion rates preferentially "completes" short/easy cases). This
+    was a real bug: the previous version took ``df_complete`` here, so at
+    ~3% completion (an overloaded advanced-model run) the reported
+    inter-arrival error reflected almost nothing about arrivals.
+    """
+    first_events = df_all.sort_values("time:timestamp").groupby("case:concept:name")["time:timestamp"].first().sort_values()
     inter_arrival = first_events.diff().dt.total_seconds().dropna()
     inter_arrival = inter_arrival[inter_arrival > 0]
 
     sim_mean = inter_arrival.mean()
     ref_mean = reference_arrival["mean_s"]
     rel_err = abs(sim_mean - ref_mean) / ref_mean if ref_mean else None
-    return {
+
+    result = {
         "sim_mean_interarrival_s": round(sim_mean, 2),
         "ref_mean_interarrival_s": ref_mean,
         "rel_err": round(rel_err, 4) if rel_err is not None else None,
     }
+
+    daily_ref = reference_arrival.get("daily_arrivals")
+    if daily_ref:
+        daily_sim = first_events.dt.floor("D").value_counts()
+        # Drop the first/last calendar day: partial horizons at either edge
+        # would understate a real day's count and skew the mean down.
+        if len(daily_sim) > 2:
+            daily_sim = daily_sim.sort_index().iloc[1:-1]
+        sim_daily_mean = float(daily_sim.mean()) if len(daily_sim) else None
+        ref_daily_mean = daily_ref["mean"]
+        daily_rel_err = (abs(sim_daily_mean - ref_daily_mean) / ref_daily_mean
+                         if sim_daily_mean is not None and ref_daily_mean else None)
+        result["sim_daily_arrivals_mean"] = (
+            round(sim_daily_mean, 2) if sim_daily_mean is not None else None)
+        result["ref_daily_arrivals_mean"] = ref_daily_mean
+        result["daily_arrivals_rel_err"] = (
+            round(daily_rel_err, 4) if daily_rel_err is not None else None)
+
+    return result
 
 
 # ---------------------------------------------------------------------
@@ -246,24 +278,35 @@ def evaluate(
     df: pd.DataFrame,
     reference: dict,
     net=None, im=None, fm=None,
+    df_all: Optional[pd.DataFrame] = None,
 ) -> dict:
     """
     Run every KPI above on *df* (a raw event-log DataFrame already
     restricted to naturally-completed cases). Control-flow metrics are
     skipped if no Petri net is given.
 
-    Every KPI except processing_time_errors runs on the complete-only
-    reduction of *df* — matching how the reference values in
+    Every KPI except processing_time_errors and arrival_rate runs on the
+    complete-only reduction of *df* — matching how the reference values in
     simulation_inputs.json were computed (extract_log_info.py's
     filter_to_complete) — so raw start/schedule/suspend/resume noise on
     either side never leaks into the comparison.
+
+    *df_all*: the UNFILTERED log (every started case, not just completed
+    ones) — arrival_rate_error needs this, since arrivals are independent
+    of whatever biases completion and restricting to completed cases
+    understates the arrival rate at low completion rates (see
+    arrival_rate_error's docstring). Falls back to *df* if not given, which
+    silently reproduces the old bias — always pass it for a simulated log
+    where *df* has already been filtered to completed cases.
     """
     df_complete = to_completed_events(df)
+    if df_all is None:
+        df_all = df
     metrics = {
         "n_cases": df["case:concept:name"].nunique(),
         "branching": branching_divergence(df_complete, reference["branching_probs"]),
         "processing_times": processing_time_errors(df, reference["processing_times"]),
-        "arrival_rate": arrival_rate_error(df_complete, reference["arrival_rate"]),
+        "arrival_rate": arrival_rate_error(df_all, reference["arrival_rate"]),
         "variants": variant_overlap(df_complete, reference["process_variants"]["top_20"]),
         "case_stats": case_length_duration_errors(df_complete, reference["basic_stats"]),
     }
@@ -291,6 +334,9 @@ def print_report(label: str, metrics: dict) -> None:
     a = metrics["arrival_rate"]
     print(f"  arrival rate rel.err:         {a['rel_err']}  "
           f"(sim={a['sim_mean_interarrival_s']}s vs ref={a['ref_mean_interarrival_s']}s)")
+    if a.get("daily_arrivals_rel_err") is not None:
+        print(f"  daily arrivals rel.err:       {a['daily_arrivals_rel_err']}  "
+              f"(sim={a['sim_daily_arrivals_mean']}/day vs ref={a['ref_daily_arrivals_mean']}/day)")
     v = metrics["variants"]
     print(f"  top-20 real variants reproduced: {v['ref_top20_variants_reproduced']}/20 "
           f"(covers {v['ref_top20_traffic_coverage_pct']}% of real traffic)")
