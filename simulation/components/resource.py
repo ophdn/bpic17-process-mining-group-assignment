@@ -295,10 +295,18 @@ class ResourceComponent:
         start_datetime=None,
         piled: bool = False,
         policy: Optional[AllocationPolicy] = None,
+        excluded_resources: Optional[Set[str]] = None,
     ):
         self._capacity = capacity_per_resource
         self._rng = random.Random(seed)
         self._piled = piled
+
+        # Instance-level resource removal (scenario experiments: "outage",
+        # the management "fire two employees" question). Excluded resources
+        # are simply never candidates for a new allocation — the permission
+        # map and shift calendar are untouched, so this composes cleanly
+        # with everything else instead of mutating global module state.
+        self._excluded: Set[str] = set(excluded_resources or ())
 
         # Section 1.8 Advanced: push selection pattern (see
         # simulation/policies.py). Default reuses this component's own RNG
@@ -531,6 +539,7 @@ class ResourceComponent:
             r for r in candidates
             if self._busy.get(r, 0) < self._capacity
             and self._is_on_shift(engine, r)
+            and r not in self._excluded
         ]
         if not available:
             return None
