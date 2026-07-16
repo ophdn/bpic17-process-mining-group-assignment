@@ -201,19 +201,33 @@ def extract_activities(df: pd.DataFrame) -> dict:
 def extract_processing_times(df: pd.DataFrame) -> dict:
     """
     For each activity, compute duration between START and COMPLETE events.
+    Repeated occurrences are paired by their stable per-(case, activity)
+    sequence number; merging on only case/activity would cross-join them.
     Falls back to single-timestamp diff between consecutive events if
     no lifecycle column exists.
     """
     result = {}
 
     if "lifecycle" in df.columns:
-        starts    = df[df["lifecycle"].str.lower().isin(["start", "assign"])].copy()
-        completes = df[df["lifecycle"].str.lower().isin(["complete"])].copy()
+        order_cols = ["case_id", "timestamp"]
+        if "event_order" in df.columns:
+            order_cols.append("event_order")
+        ordered = df.sort_values(order_cols, kind="stable")
+        starts = ordered[
+            ordered["lifecycle"].str.lower().isin(["start", "assign"])
+        ].copy()
+        completes = ordered[
+            ordered["lifecycle"].str.lower().eq("complete")
+        ].copy()
+        starts["instance_seq"] = starts.groupby(
+            ["case_id", "activity"], sort=False).cumcount()
+        completes["instance_seq"] = completes.groupby(
+            ["case_id", "activity"], sort=False).cumcount()
 
         merged = pd.merge(
-            starts[["case_id", "activity", "timestamp"]],
-            completes[["case_id", "activity", "timestamp"]],
-            on=["case_id", "activity"],
+            starts[["case_id", "activity", "instance_seq", "timestamp"]],
+            completes[["case_id", "activity", "instance_seq", "timestamp"]],
+            on=["case_id", "activity", "instance_seq"],
             suffixes=("_start", "_complete"),
         )
         merged["duration_s"] = (

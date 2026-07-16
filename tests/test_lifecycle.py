@@ -8,6 +8,7 @@ from simulation.components.permissions import StaticPermissions
 from simulation.components.process import ProcessComponent
 from simulation.components.resource import ResourceComponent
 from simulation.core.engine import SimulationEngine
+from simulation.core.events import EventType, SimEvent
 
 
 WORK = "W_Test"
@@ -137,6 +138,57 @@ def _work_rows(engine):
 
 
 class LifecycleStateMachineTests(unittest.TestCase):
+    def test_piled_preference_skips_resume_ready_request(self):
+        engine = SimulationEngine(
+            sim_duration=1.0,
+            start_datetime=datetime(2016, 1, 1),
+            lifecycle_mode="active",
+        )
+        resource = ResourceComponent(
+            capacity_per_resource=1,
+            seed=7,
+            permissions=StaticPermissions({"r1": {WORK, NEXT}}),
+            piled=True,
+        )
+        engine.register(resource)
+        resource._busy["r1"] = 1
+        fresh = SimEvent(
+            timestamp=0.0,
+            event_type=EventType.ACTIVITY_REQUEST,
+            case_id="fresh",
+            activity=NEXT,
+            payload={"work_item_id": "fresh:1"},
+        )
+        resume = SimEvent(
+            timestamp=0.0,
+            event_type=EventType.ACTIVITY_REQUEST,
+            case_id="resume",
+            activity=WORK,
+            payload={"work_item_id": "resume:1", "resuming": True},
+        )
+        # FIFO says NEXT. Piled execution would jump to the later W_Test item
+        # solely because it matches the completed activity unless resumes are
+        # explicitly excluded from that preference.
+        resource._waiting.extend([fresh, resume])
+        resource.on_resource_available(engine, SimEvent(
+            timestamp=0.0,
+            event_type=EventType.RESOURCE_AVAILABLE,
+            resource="r1",
+            payload=WORK,
+        ))
+        engine.run()
+
+        starts = [
+            row for row in engine.logger._rows
+            if row["lifecycle:transition"] in {"start", "resume"}
+        ]
+        self.assertEqual(
+            [(row["case:concept:name"], row["lifecycle:transition"])
+             for row in starts],
+            [("fresh", "start")],
+        )
+        self.assertEqual(resource._waiting, [resume])
+
     def test_complete_without_churn(self):
         engine, resource, _ = _run(
             durations=(10.0,), session_draws={0: 0.0})

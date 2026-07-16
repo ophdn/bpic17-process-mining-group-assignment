@@ -5,7 +5,13 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-from extract_log_info import _off_shift_tail_seconds, extract_lifecycle
+from unittest.mock import patch
+
+from extract_log_info import (
+    _off_shift_tail_seconds,
+    extract_lifecycle,
+    extract_processing_times,
+)
 from train_processing_time_model import build_active_sessions
 
 
@@ -13,6 +19,26 @@ UTC = timezone.utc
 
 
 class LifecycleExtractionTests(unittest.TestCase):
+    def test_elapsed_extractor_does_not_cross_join_repeated_activity(self):
+        base = pd.Timestamp("2016-01-04T09:00:00Z")
+        rows = [
+            ("c", "W_Test", 0, "start"),
+            ("c", "W_Test", 10, "complete"),
+            ("c", "W_Test", 20, "start"),
+            ("c", "W_Test", 50, "complete"),
+        ]
+        df = pd.DataFrame(rows, columns=[
+            "case_id", "activity", "seconds", "lifecycle"])
+        df["timestamp"] = base + pd.to_timedelta(df["seconds"], unit="s")
+        df["event_order"] = range(len(df))
+
+        with patch("extract_log_info.fit_best_distribution") as fit:
+            fit.return_value = {"distribution": "test", "params": []}
+            extract_processing_times(df)
+
+        self.assertEqual(fit.call_count, 1)
+        self.assertEqual(fit.call_args.args[0].tolist(), [10.0, 30.0])
+
     def test_equal_timestamp_continuation_uses_source_order(self):
         base = pd.Timestamp("2016-01-04T09:00:00Z")
         rows = [
