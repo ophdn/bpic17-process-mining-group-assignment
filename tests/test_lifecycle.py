@@ -190,7 +190,7 @@ class LifecycleStateMachineTests(unittest.TestCase):
         self.assertEqual(resource._waiting, [resume])
 
     def test_complete_without_churn(self):
-        engine, resource, _ = _run(
+        engine, resource, process = _run(
             durations=(10.0,), session_draws={0: 0.0})
         rows = _work_rows(engine)
         self.assertEqual(
@@ -201,6 +201,8 @@ class LifecycleStateMachineTests(unittest.TestCase):
         self.assertEqual(engine.stats["cases_completed"], 1)
         self.assertEqual(resource.release_calls, [("r1", WORK)])
         self.assertEqual(resource._busy["r1"], 0)
+        self.assertNotIn("c1", process._witem_seq)
+        self.assertFalse(process._witem)
 
     def test_multi_suspend_resume_exact_timing_and_active_sum(self):
         engine, resource, _ = _run(

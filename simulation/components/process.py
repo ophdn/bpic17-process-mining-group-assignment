@@ -686,8 +686,7 @@ class ProcessComponent:
 
         # Decide termination
         if self._should_terminate(case_id, activity, counts):
-            self._repeat_counts.pop(case_id, None)
-            self._ctx.pop(case_id, None)
+            self._clear_case_state(case_id)
             engine.schedule(SimEvent(
                 timestamp=engine.now,
                 priority=20,
@@ -700,8 +699,7 @@ class ProcessComponent:
         next_act = self._next_activity(case_id, activity, counts.get(activity, 1))
         if next_act is None:
             # No outgoing edge defined — treat as terminal
-            self._repeat_counts.pop(case_id, None)
-            self._ctx.pop(case_id, None)
+            self._clear_case_state(case_id)
             engine.schedule(SimEvent(
                 timestamp=engine.now,
                 priority=20,
@@ -921,8 +919,7 @@ class ProcessComponent:
         self._repeat_counts[case_id] = counts
 
         def end_case():
-            self._repeat_counts.pop(case_id, None)
-            self._ctx.pop(case_id, None)
+            self._clear_case_state(case_id)
             engine.schedule(SimEvent(timestamp=engine.now, priority=20,
                                      event_type=EventType.CASE_COMPLETE, case_id=case_id))
 
@@ -955,6 +952,15 @@ class ProcessComponent:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _clear_case_state(self, case_id: str) -> None:
+        """Drop every per-case runtime key after natural or guarded completion."""
+        self._repeat_counts.pop(case_id, None)
+        self._ctx.pop(case_id, None)
+        self._witem_seq.pop(case_id, None)
+        for work_item_id, state in list(self._witem.items()):
+            if state.get("case_id") == case_id:
+                self._witem.pop(work_item_id, None)
 
     def _fire_start(self, engine, case_id: str, activity: str) -> None:
         # Emit a *request*, not a start. ResourceComponent is the only component

@@ -367,10 +367,9 @@ class PetriNetProcessComponent(ProcessComponent):
 
     def _end_case(self, engine, case_id: str) -> None:
         self._markings.pop(case_id, None)
-        self._repeat_counts.pop(case_id, None)
         self._dp_visit_counts.pop(case_id, None)
-        self._ctx.pop(case_id, None)
         self._case_attrs.pop(case_id, None)
+        self._clear_case_state(case_id)
         engine.schedule(SimEvent(
             timestamp=engine.now,
             priority=20,
