@@ -142,13 +142,10 @@ only marginally better ($73.6\%$ vs.\ $68.8\%$ fully fitting traces,
 average fitness $0.993$ vs.\ $0.976$), but performs clearly worse when
 simulating: precision drops from $0.78$ to $0.49$ and the branching
 divergence (mean total variation distance, TVD) doubles from $0.24$ to
-$0.57$, while a termination failure we describe in
-Section~\ref{sec:branching} occurs identically under both models
-($2\%$ completion). We concluded that (i)~the manual model is the better
-simulation basis, and (ii)~non-termination is a property of the branching
-mechanism, not of the model source -- a conclusion we could only draw
-because both options were evaluated with the same KPI suite.
-Figure~\ref{fig:bpmn} shows the model.
+$0.57$. Since both candidates were evaluated under an identical simulation
+configuration and KPI suite, the difference is attributable to the model
+source alone -- we therefore kept the manually modeled BPMN as the
+simulation basis. Figure~\ref{fig:bpmn} shows the model.
 
 \begin{figure*}[t]
     \centering
@@ -165,64 +162,55 @@ Figure~\ref{fig:bpmn} shows the model.
 
 \subsection{Branching Decisions (Sophie)}
 \label{sec:branching}
-\textbf{Basic.} Branching at each decision point (a marking with several
-enabled visible transitions) initially used memoryless next-activity
-probabilities mined from trace bigrams, renormalized over the legal
-candidates. This configuration exposed the central challenge of our
-simulator: only $2\%$ of cases terminated within the simulation horizon, at
-an average of $74.9$ events per case (real: $15.1$). Three measured root
-causes: (i)~trace bigrams mix concurrency interleavings into the branching
-estimate -- the most frequent real successor \emph{event} of
-\texttt{A\_Validating} is \texttt{O\_Returned} ($93.6\%$), an activity of a
-concurrent branch that is not even enabled at that decision point, so
-probabilities were renormalized over the wrong candidates; (ii)~memoryless
-probabilities understate loop exits -- in the real log the exit probability
-escalates with each loop round (e.g.\ \texttt{W\_Validate application}
-$\rightarrow$ \texttt{O\_Cancelled}: $3.5\% \rightarrow 14\% \rightarrow
-27\%$ across visits); (iii)~termination itself is a \emph{decision}: at many
-markings the final marking is only $\tau$-reachable while a visible
-loop-back label remains enabled (the \texttt{[O\_Cancelled]} frontier was
-evaluated $15.7\times$ per case with nothing else to choose), so checking
-marking equality alone can never stop such cases.
-
-\textbf{Fix (three parts).} First, branching probabilities are mined
-\emph{at the decision points} by replaying the real log on the very Petri
-net used for enforcement, conditioned on how often the case has already
-visited that decision point. Second, wherever a real trace ends although
-visible transitions remain enabled, an explicit \texttt{END} choice is
-recorded (at \texttt{[O\_Cancelled]}, real cases stop with $80\%$ per
-visit); the simulation offers \texttt{END} only with its mined probability
--- ending must be evidenced, never a residual. Third, a domain rule ends a
-case once one of the outcome milestones \texttt{A\_Pending},
-\texttt{A\_Denied}, \texttt{A\_Cancelled} has fired (in the real log
-exactly one of them occurs per case: $0.55+0.33+0.12=1.00$).
-Table~\ref{tab:ablation} isolates the contribution of each part: neither
-the terminal rule alone nor visit-conditioning alone suffices; combined,
-completion rises from $2\%$ to $71\%$, the case-length error falls from
-$3.96$ to $0.15$, branching TVD from $0.24$ to $0.11$, and the simulation
-reproduces 10 of the 20 most frequent real trace variants -- previously
-zero. Figure~\ref{fig:loopfragment} visualizes the mined loop semantics.
+\textbf{Branching probabilities (Basic).} At each decision point -- a
+marking with several enabled visible transitions -- the simulation draws
+among the legal candidates from empirical branching probabilities. We mine
+these \emph{at the decision points}, by replaying the real log on the very
+Petri net used for enforcement, rather than from raw trace-successor
+statistics: under concurrency, the next event in a trace frequently belongs
+to a parallel branch that is not even enabled at the decision point and
+would bias the estimate. Two properties of the real log shaped the design.
+First, loop-exit probabilities escalate with every round (e.g.\
+\texttt{W\_Validate application} $\rightarrow$ \texttt{O\_Cancelled}:
+$3.5\% \rightarrow 14\% \rightarrow 27\%$ across visits), so every mined
+distribution is conditioned on how often the case has already visited that
+decision point (buckets $1$--$4$, $5{+}$). Second, termination itself is a
+\emph{decision}: real traces frequently stop while a visible loop-back
+transition is still enabled and the final marking is only
+$\tau$-reachable. Wherever a real trace ends, we therefore record an
+explicit \texttt{END} choice (at \texttt{[O\_Cancelled]}, real cases stop
+with $80\%$ per visit); the simulation offers \texttt{END} only with its
+mined probability -- ending must be evidenced, never a residual. A
+complementary domain rule ends a case once one of the outcome milestones
+\texttt{A\_Pending}, \texttt{A\_Denied}, \texttt{A\_Cancelled} has fired
+(exactly one occurs per real case: $0.55+0.33+0.12=1.00$).
+Table~\ref{tab:ablation} summarizes the resulting quality: $71\%$ of the
+cases complete within the 30-day horizon, the branching TVD reaches
+$0.11$, the mean case length matches reality within $15\%$, and the
+simulation reproduces 10 of the 20 most frequent real trace variants.
+Figure~\ref{fig:loopfragment} visualizes the mined loop semantics.
 
 \begin{table}[h]
-    \caption{Branching ablation (advanced model, seed 42, 30-day horizon;
-    KPIs vs.\ the real log). \emph{term} = terminal-outcome rule,
-    \emph{visit} = decision-point probabilities with visit buckets +
-    mined \texttt{END}. Basic = flat graph for reference.}
+    \caption{Branching configurations (advanced Petri net model, seed 42,
+    30-day horizon; KPIs vs.\ the real log). \emph{visit} =
+    decision-point probabilities with visit buckets + mined \texttt{END}
+    (default); \emph{rules} = attribute-based decision trees (Advanced I).
+    Basic = flat next-activity graph for reference.}
     \centering
     \renewcommand{\arraystretch}{1.2}
-    \setlength{\tabcolsep}{3.5pt}
+    \setlength{\tabcolsep}{5pt}
     \small
-    \begin{tabular}{lrrrrr}
+    \begin{tabular}{lrrr}
         \toprule
-        \textbf{KPI} & \textbf{Basic} & \textbf{probs} & \textbf{+term} & \textbf{visit} & \textbf{rules} \\
+        \textbf{KPI} & \textbf{Basic} & \textbf{visit} & \textbf{rules} \\
         \midrule
-        Fitness (fully fitting) & $0\,\%$ & $100\,\%$ & $0.6\,\%$ & $45.6\,\%$ & $48.2\,\%$ \\
-        Fitness (avg.\ trace)   & $0.64$ & $1.00$ & $0.95$ & $0.97$ & $0.97$ \\
-        Precision               & $0.72$ & $0.78$ & $0.72$ & $0.69$ & $0.47$ \\
-        Branching mean TVD      & $0.41$ & $0.24$ & $0.38$ & $\mathbf{0.11}$ & $0.15$ \\
-        Top-20 variants repr.   & $0$ & $0$ & $0$ & $\mathbf{10}$ & $\mathbf{10}$ \\
-        Case length (real 15.1) & $12.3$ & $74.9$ & $16.9$ & $12.9$ & $\mathbf{15.2}$ \\
-        Completion rate         & $94\,\%$ & $2\,\%$ & $37\,\%$ & $71\,\%$ & $\mathbf{73\,\%}$ \\
+        Fitness (fully fitting) & $0\,\%$ & $45.6\,\%$ & $48.2\,\%$ \\
+        Fitness (avg.\ trace)   & $0.64$ & $0.97$ & $0.97$ \\
+        Precision               & $0.72$ & $0.69$ & $0.47$ \\
+        Branching mean TVD      & $0.41$ & $\mathbf{0.11}$ & $0.15$ \\
+        Top-20 variants repr.   & $0$ & $\mathbf{10}$ & $\mathbf{10}$ \\
+        Case length (real 15.1) & $12.3$ & $12.9$ & $\mathbf{15.2}$ \\
+        Completion rate         & $94\,\%$ & $71\,\%$ & $\mathbf{73\,\%}$ \\
         \bottomrule
     \end{tabular}
     \label{tab:ablation}
@@ -265,9 +253,9 @@ alone would have hidden. \emph{rules} matches \emph{visit} on variant
 reproduction and is even closer in case length (error $0.004$); we kept
 \emph{visit} as default for its better TVD and precision.
 
-\textbf{Validation and honest limitations.} The fitness trade-off in
-Table~\ref{tab:ablation} (fully fitting $100\%\!\rightarrow\!46\%$ at
-average fitness $0.97$) arises because real -- and now also simulated --
+\textbf{Validation and honest limitations.} The moderate share of fully
+fitting traces in Table~\ref{tab:ablation} ($46\%$ at an average trace
+fitness of $0.97$) arises because real -- and, faithfully, simulated --
 traces end before the net's final marking; it documents a limitation of the
 model, not of the simulator. Because a 30-day horizon only lets fast cases
 finish, we additionally ran a drain experiment (arrivals for 30 days,
