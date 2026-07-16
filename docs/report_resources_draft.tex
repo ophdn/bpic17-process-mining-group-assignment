@@ -124,6 +124,34 @@ the simulator:
         adopt it: it would couple \S1.6 to the \S1.7 org model, and the thinnest
         resources are not in the permission pool, so they are never allocated
         regardless.
+  \item \emph{Cross-check against \S1.7 --- the two halves of the bank keep
+        different hours.} The windows are fitted purely from \emph{when} people
+        are present; the \S1.7 groups are discovered purely from \emph{what} they
+        do. Neither pipeline knows about the other, yet the fitted clock splits
+        along exactly the same seam: the \textbf{front office} opens $\sim$09:07
+        and runs to $\sim$20:47 (envelope 11.7\,h) and turns up on Saturdays
+        ($P(\text{works})$ up to 0.22), whereas the \textbf{back office} is a
+        standard office operation ($\sim$08:28--16:58, envelope 8.5\,h, and
+        essentially never weekends); the two-person bridge group sits between the
+        halves on the clock as well (09:04--19:20). A customer-facing channel and
+        an administrative one, recovered twice from two independent signals ---
+        the strongest evidence we have that the per-resource windows capture real
+        organisational structure rather than fitting noise.
+  \item \emph{Limitation / future work --- shifts inside the front office.} An
+        11.7\,h envelope does \emph{not} mean anyone works 11.7-hour days: a
+        window is $[q_{10},q_{90}]$ across a resource's active days, i.e.\ an
+        \emph{outer envelope}, and combined with $P(\text{works})\approx0.5$ it is
+        far more plausibly \textbf{shift coverage} --- different people covering a
+        09:00--21:00 service window on different days. One window per resource
+        cannot express that, and averages a morning and an evening worker into a
+        single implausible all-day person. Fitting shift patterns (or per-group
+        windows) within the front office is the natural next step; it shares a
+        root with the Tier~B limitation above --- both are cases where one window
+        per resource is the wrong \emph{shape} for the underlying roster.
+  \item \emph{VIS-PLACEHOLDER:} per-group working-hours clock --- median
+        Mon--Fri open$\to$close bar for each of the ten \S1.7 groups, showing the
+        $\sim$4\,h later front-office close and the bridge group between the
+        poles; the \S1.6/\S1.7 cross-check in one figure.
   \item \emph{Why quantiles over min/max:} min/max reaches 100\% coverage but
         wastes half the modelled day (49.4\% utilisation) on outlier-stretched
         windows; $q_{10}/q_{90}$ covers \textbf{97.4\%} of real work events at
@@ -236,6 +264,41 @@ shared across the group).
         hardcoded top-20 baseline) --- and does so while being \emph{more}
         selective (about half as many resources permitted per activity). It
         wins by being more right, not more permissive.
+  \item \emph{Anatomy --- the discovered groups are a readable org chart.} Naming
+        each group from the activities its members most perform recovers the
+        two-phase shape of the loan process, without the miner ever being shown a
+        process model: a \textbf{front office} (4 pools, 87 staff) that creates
+        and completes applications and builds and sends offers; a \textbf{back
+        office} (4 groups, 54 staff) that validates and decides --- one of which
+        performs \textbf{95\% of all} \texttt{W\_Assess potential fraud}, another
+        73\% of \texttt{A\_Validating}, another 70\% of \texttt{A\_Denied}; a
+        two-person \emph{bridge} whose work mixes both halves; and the automated
+        \texttt{User\_1} isolated in a group of one. Measured on each group's own
+        work mix, the front/back seam is near-total (total-variation distance
+        \textbf{93}/100, closest pair 88.7), and 86\%/92\% of handoffs stay inside
+        their own half. That the model is \emph{interpretable} at all is a
+        practical argument for the advanced technique over the basic matrix.
+  \item \emph{Honest finding --- the four front-office ``pools'' are one team.}
+        G1--G4 have essentially identical work mixes (pairwise distance
+        \textbf{6.0}, against 93 across the front/back seam) and comparable
+        intensity ($\approx$48--74 events per active day); what separates them is
+        only \emph{how often they show up} (median active days 120 / 93 / 57 /
+        22). Since AHC clusters on volume-scaled context counts, and total volume
+        $=$ intensity $\times$ days present, the four-way split is an
+        \textbf{artifact of presence, not four roles} --- so we report one
+        front-office team stratified by tenure rather than claim four. The
+        deployed model is unaffected: all four pools inherit the same front-office
+        capabilities. The same check corrects a tempting misreading --- a group's
+        share of a \emph{bank-wide} activity measures its \emph{size}, not its
+        speciality: the busiest pool performs 47\% of all lead-handling while
+        lead-handling is only 1.5\% of its own work (and 2.0\% of a smaller
+        pool's).
+  \item \emph{Where the sparse staff sit.} All 22 Tier~B (sparse) resources in
+        the permission pool fall into exactly two of the ten groups (12 and 10),
+        every other group being pure Tier~A --- an independent rediscovery of the
+        \S1.6 sparse-resource finding, and evidence that they are an
+        \emph{addition} to the full-time teams (same work mix, distance 6.0) and
+        not a function of their own.
   \item How the triple is enforced at runtime: the case type rides on the event
         payload (a loan goal sampled at arrival) and the time type comes from
         the clock the 1.6 calendar already needs, so both dimensions are
@@ -249,6 +312,17 @@ shared across the group).
         work-distribution TV-distance for the three permission models
         (hardcoded / observed / org), annotated with permitted
         resources-per-activity.
+  \item \emph{VIS-PLACEHOLDER:} force-directed resource map --- all 144
+        resources positioned by similarity of their work profile (spring layout
+        over a $k$-NN similarity graph), coloured by discovered group and sized
+        by volume: shows the front-office and back-office poles, the bridge group
+        physically in the gap between them, and \texttt{User\_1} isolated at the
+        front-office edge. Pairs with the group table (id, role, signature
+        activities, headcount).
+  \item \emph{VIS-PLACEHOLDER:} group $\times$ activity heat-map of each group's
+        \emph{own} work mix (rows normalised to 100\%) --- the four identical
+        front-office rows beside the four distinct back-office rows, which is the
+        one-team-not-four finding in a single image.
 \end{itemize}
 
 \textbf{Resource allocation and contention (Section 1.8 / Part~II baseline).}
