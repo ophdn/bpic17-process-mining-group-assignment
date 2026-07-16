@@ -109,6 +109,19 @@ def average_cycle_time(
         start = df.groupby("case:concept:name")["time:timestamp"].min()
         basis = "first_event (pass arrival_times for the slide-21 definition)"
 
+    # Coerce both sides to datetime64 before subtracting. A Series built from
+    # a dict of datetime.datetime (the arrival_times path) is inferred as
+    # object-dtype by pandas in some cases (the inference is content-dependent
+    # and flaky), and object - datetime64 yields an object result whose .dt
+    # accessor raises — which crashed a whole multi-run experiment grid on the
+    # first heavily-loaded advanced-model run. Explicit coercion is vectorized
+    # and immune to the inference.
+    start = pd.to_datetime(start)
+    last = pd.to_datetime(last)
+    if len(last) == 0:
+        return {"avg_cycle_time_s": float("nan"), "p95_cycle_time_s": float("nan"),
+                "n_cases": 0, "start_basis": basis}
+
     cycle_s = (last - start).dt.total_seconds()
     return {
         "avg_cycle_time_s": float(cycle_s.mean()),
@@ -255,6 +268,10 @@ def _milestone_times(
         start = start.loc[first_hit.index]
         basis = "first_event (pass arrival_times for the slide-21-consistent definition)"
 
+    # Explicit datetime coercion — see average_cycle_time for why (flaky
+    # object-vs-datetime64 inference on dict-built Series breaks .dt).
+    first_hit = pd.to_datetime(first_hit)
+    start = pd.to_datetime(start)
     elapsed_s = (first_hit - start).dt.total_seconds()
     return {
         "mean_s": float(elapsed_s.mean()) if len(elapsed_s) else float("nan"),

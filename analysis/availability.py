@@ -106,16 +106,38 @@ def fit_weekly(
     presence: pd.DataFrame,
     span_days: Iterable[pd.Timestamp],
     min_active_days: int = MIN_ACTIVE_DAYS,
+    sparse_floor: Optional[int] = None,
 ) -> WeeklyAvailability:
     """Fit the weekly shift profile from per-resource-per-day presence.
 
     `presence` is the frame from `loader.daily_presence`; `span_days` is every
     calendar day the log covers (needed to turn "days worked" into a rate).
+
+    Two tiers of resource, by how much presence data they have:
+
+    Tier A — well-observed (>= `min_active_days` active days). A full
+        per-(resource, weekday) window `[q10 first, q90 last]`, as the module
+        docstring describes.
+
+    Tier B — sparse (`sparse_floor` <= active days < `min_active_days`), fitted
+        only when `sparse_floor` is set. Too few distinct days to trust a shift
+        *per weekday*, but usually plenty of events (a resource may log hundreds
+        of events across a dozen days). So we fit a *single* pooled window per
+        resource from all its events and open it on the weekdays it was actually
+        seen working — a coarser, weekday-agnostic assumption. This is strictly
+        better than the runtime fallback it replaces (a resource with no window
+        is treated as on shift 24/7, the opposite of sparse), which is why the
+        deployed model sets `sparse_floor=1`: every human with any W_ signal
+        gets a data-driven window, and only genuine system accounts (no W_
+        lifecycle at all) remain windowless.
+
+    Default `sparse_floor=None` keeps Tier A only, reproducing the original fit
+    bit-for-bit.
     """
     dow_occurrences = pd.Series([d.dayofweek for d in span_days]).value_counts()
 
-    keep = presence.groupby("org:resource").size()
-    keep = keep[keep >= min_active_days].index
+    active_days = presence.groupby("org:resource").size()
+    keep = active_days[active_days >= min_active_days].index
     p = presence[presence["org:resource"].isin(keep)]
 
     windows: Dict[str, Dict[int, Tuple[float, float]]] = {}
@@ -128,6 +150,26 @@ def fit_weekly(
             continue
         windows.setdefault(res, {})[int(dow)] = (start, end)
         p_work.setdefault(res, {})[int(dow)] = float(len(g) / dow_occurrences[dow])
+
+    if sparse_floor is not None:
+        sparse = active_days[(active_days >= sparse_floor)
+                             & (active_days < min_active_days)].index
+        for res in sparse:
+            g = presence[presence["org:resource"] == res]
+            # One pooled window from ALL the resource's events (weekday-agnostic):
+            # too few distinct days to split by weekday, but the pooled quantiles
+            # are stable. Fall back to the observed extremes if the quantile
+            # window is degenerate (very few events on a single day).
+            start = float(g["first"].quantile(START_Q))
+            end = float(g["last"].quantile(END_Q))
+            if end <= start:
+                start, end = float(g["first"].min()), float(g["last"].max())
+            if end <= start:
+                continue            # a single instantaneous event — nothing to fit
+            for dow, gd in g.groupby("dow"):
+                windows.setdefault(res, {})[int(dow)] = (start, end)
+                p_work.setdefault(res, {})[int(dow)] = float(
+                    len(gd) / dow_occurrences[int(dow)])
 
     return WeeklyAvailability(windows=windows, p_work=p_work)
 
@@ -329,6 +371,7 @@ class YearlyAvailability:
     weekly: WeeklyAvailability
     holidays: set          # of datetime.date
     vacations: Dict[str, set]   # resource -> set of dates on leave
+    system: set = field(default_factory=set)   # automated accounts (no office hours)
 
     def is_available(self, resource: str, when) -> bool:
         """Is *resource* on duty at *when*?
@@ -362,6 +405,7 @@ class YearlyAvailability:
                 r: sorted(d.isoformat() for d in ds)
                 for r, ds in self.vacations.items() if ds
             },
+            "system": sorted(self.system),
         }
         path.write_text(json.dumps(payload, indent=1))
         return path
@@ -382,6 +426,7 @@ class YearlyAvailability:
             holidays={_dt.date.fromisoformat(s) for s in d["holidays"]},
             vacations={r: {_dt.date.fromisoformat(s) for s in ds}
                        for r, ds in d["vacations"].items()},
+            system=set(d.get("system", ())),
         )
 
 
@@ -393,6 +438,7 @@ def build_year_plan(
     year_end: pd.Timestamp,
     holiday_dates: Optional[Iterable] = None,
     seed: int = 42,
+    system: Optional[Iterable[str]] = None,
 ) -> YearlyAvailability:
     """Project a forward-looking year: holidays are placed, vacations sampled.
 
@@ -427,7 +473,8 @@ def build_year_plan(
             booked.update(d.date() for d in workdays[start:start + length])
         vacations[res] = booked
 
-    return YearlyAvailability(weekly=weekly, holidays=hol, vacations=vacations)
+    return YearlyAvailability(weekly=weekly, holidays=hol, vacations=vacations,
+                              system=set(system or ()))
 
 
 # ──────────────────────────────────────────────────────────────────────────
