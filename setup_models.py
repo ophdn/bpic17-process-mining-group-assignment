@@ -122,7 +122,9 @@ def find_log(explicit: str | None) -> Path:
 
 def run_trainer(script: str, log_path: Path, extra: list[str]) -> None:
     """Invoke a training script as a subprocess from the repo root."""
-    cmd = [sys.executable, script, "--log", str(log_path), *extra]
+    # Quantile training is intentionally long-running. Unbuffered mode keeps
+    # per-quantile progress visible when setup itself is run through a pipe/CI.
+    cmd = [sys.executable, "-u", script, "--log", str(log_path), *extra]
     print(f"[setup] $ {' '.join(cmd)}")
     subprocess.run(cmd, cwd=REPO_ROOT, check=True)
 
