@@ -3,7 +3,9 @@
 % report. Every number is reproducible from notebooks 01/02 and the
 % models/*.json they emit. VIS-PLACEHOLDER bullets mark figures to export.
 
-\subsection{Resource Availability, Permissions, and Allocation (Johannes)}
+\subsection{Resource Availability, Permissions, and Allocation}
+
+\textit{Johannes Terhorst}
 
 The resource perspective adds three components on top of the engine, each
 following the same \emph{fit offline, load at runtime} split as the rest of
@@ -62,6 +64,27 @@ the simulator:
         is not inflated. The caveat is therefore general rather than active: on a
         different log with automated suspension this check would need repeating,
         and the $q_{90}$ window trim bounds the damage in any case.
+  \item \emph{Two regimes in the lifecycle --- work vs waiting.} The intervals
+        between \texttt{W\_} transitions are bimodal: active work
+        (\texttt{start}/\texttt{resume}$\to$next) averages 5.8\,min and almost
+        never spans a night (0.3\% cross midnight), whereas waiting
+        (\texttt{suspend}$\to$\texttt{resume}, i.e.\ customer response) averages
+        69.9\,h and crosses nights and weekends 55\% of the time. Across the log
+        that is 24{,}634 active-hours against 15.05\,M waiting-hours ---
+        \textbf{99.8\% of the elapsed \texttt{start}$\to$\texttt{complete} time
+        is waiting, not work}. This is exactly why presence is reconstructed from
+        dated transition \emph{points} rather than \texttt{start}$\to$%
+        \texttt{complete} spans (which would drag weekend/overnight waiting into
+        the workday); it is also a caveat for any processing-time model fitted on
+        the raw span (cf.\ \S1.3), where the true active work is only minutes.
+  \item \emph{\texttt{schedule} is a human signal, and harmless to availability.}
+        \texttt{schedule} (a work item offered to a worklist) could be a system
+        event, but it carries a resource 100\% of the time and in 85\% of cases
+        the \emph{same} resource \texttt{start}s the item within one second --- a
+        co-emitted marker, not an independent action (the other 13\% are a real
+        worklist queue, p90 12\,h). Including it adds \emph{zero} new
+        (resource, day) presence cells (+0.00\%), so the window model is robust
+        to it either way.
   \item \emph{Basic --- weekly shift profile, in two tiers.} \emph{Tier A}
         (well-observed resources, $\geq$20 active days): a per-(resource,
         weekday) window fitted as $[q_{10}\text{ first event},\,
