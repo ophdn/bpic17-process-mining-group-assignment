@@ -198,16 +198,25 @@ def average_resource_occupation(
         avail = pd.Series(span, index=busy.index, dtype=float)
         basis = "log_span (pass availability_seconds for the slide-21 definition)"
 
-    # Resources that were available but never worked count with occupation 0.
-    occupation = (busy.reindex(avail.index).fillna(0.0) / avail).to_dict()
     if resource_subset is not None:
         keep = set(resource_subset)
-        occupation = {r: v for r, v in occupation.items() if r in keep}
+        avail = avail[avail.index.isin(keep)]
+
+    # Resources that were available but never worked count with occupation 0.
+    # A resource with no scheduled availability inside a short horizon has no
+    # defined occupation ratio (0/0), so exclude it and report the coverage
+    # instead of allowing NaN to poison the aggregate mean.
+    zero_availability = sorted(avail.index[avail <= 0].astype(str))
+    valid_avail = avail[avail > 0]
+    occupation = (busy.reindex(valid_avail.index).fillna(0.0) / valid_avail).to_dict()
     return {
         "avg_resource_occupation": float(np.mean(list(occupation.values())))
             if occupation else float("nan"),
         "per_resource": {r: round(v, 4) for r, v in sorted(occupation.items())},
         "availability_basis": basis,
+        "n_resources_evaluated": int(len(occupation)),
+        "n_resources_zero_availability": int(len(zero_availability)),
+        "zero_availability_resources": zero_availability,
     }
 
 
@@ -250,11 +259,12 @@ def resource_fairness(
 #   - time_to_first_offer / time_to_decision: customer-facing KPIs of a
 #     loan process (how long until the applicant hears something), straight
 #     from the A_/O_ milestone events already in the log.
-#   - handover_rate: familiarity / context-switch cost -- the metric where
-#     Piled Execution's actual mechanism (same-activity batching) should
-#     show up, unlike the raw back-to-back-pairs count in
-#     output/piled_execution_eval.md, which got confounded by cross-policy
-#     RNG-order divergence over a full run.
+#   - handover_rate: case continuity -- whether successive steps of one case
+#     stay with the same person. This is useful to customers, but it is not a
+#     direct measure of Piled Execution's same-activity batching mechanism.
+#   - resource_activity_switch_rate: direct context-switching measure for
+#     Piled Execution -- how often a resource changes activity between two
+#     consecutive sessions.
 #   - rolling_workload_balance: resource_fairness (slide 21) is a single
 #     number over the WHOLE horizon, so it can't tell "fair on average" from
 #     "fair on average because bursty overload cancels out with bursty
@@ -348,6 +358,29 @@ def handover_rate(df: pd.DataFrame) -> dict:
     }
 
 
+def resource_activity_switch_rate(df: pd.DataFrame) -> dict:
+    """Share of consecutive sessions handled by a resource whose activity changes.
+
+    This directly evaluates Piled Execution's mechanism: keeping a resource on
+    the same activity should reduce between-session setup and context switching.
+    The case-level handover metric answers a different question and should not
+    be used as evidence that activity piling works.
+    """
+    inst = paired_instances(df).sort_values(["resource", "start", "complete"])
+    inst = inst[inst["resource"].notna() & (inst["resource"] != "")]
+
+    same_resource = inst["resource"] == inst["resource"].shift(1)
+    changed_activity = inst["activity"] != inst["activity"].shift(1)
+    n_transitions = int(same_resource.sum())
+    n_switches = int((same_resource & changed_activity).sum())
+    return {
+        "activity_switch_rate": (
+            float(n_switches) / n_transitions if n_transitions else float("nan")),
+        "n_resource_transitions": n_transitions,
+        "n_activity_switches": n_switches,
+    }
+
+
 def rolling_workload_balance(
     df: pd.DataFrame, window: str = "1D",
     resource_subset: Optional[Iterable[str]] = None,
@@ -379,10 +412,15 @@ def rolling_workload_balance(
     inst["window"] = inst["start"].dt.floor(window)
 
     per_window = inst.groupby(["window", "resource"])["duration_s"].sum().unstack(fill_value=0.0)
+    if resource_subset is not None:
+        # Include staff who did no work in a window, or in the entire run, as
+        # zeros. Omitting them understates imbalance and makes the metric's
+        # resource population vary between policies.
+        per_window = per_window.reindex(columns=sorted(set(resource_subset)), fill_value=0.0)
     window_seconds = pd.Timedelta(window).total_seconds()
     occupation = per_window / window_seconds
 
-    window_std = occupation.std(axis=1)
+    window_std = occupation.std(axis=1, ddof=0)
     return {
         "mean_window_std": float(window_std.mean()),
         "max_window_std": float(window_std.max()),
@@ -434,6 +472,7 @@ def evaluate(
             "time_to_first_offer": time_to_first_offer(df, arrival_times),
             "time_to_decision": time_to_decision(df, arrival_times),
             "handover_rate": handover_rate(df),
+            "resource_activity_switch_rate": resource_activity_switch_rate(df),
             "rolling_workload_balance": rolling_workload_balance(
                 df, resource_subset=resource_subset),
         },
@@ -467,12 +506,16 @@ def print_report(label: str, m: dict) -> None:
     if cm:
         tfo, td = cm["time_to_first_offer"], cm["time_to_decision"]
         ho, wb = cm["handover_rate"], cm["rolling_workload_balance"]
+        switches = cm.get("resource_activity_switch_rate", {})
         print(f"  time to first offer:     {tfo['mean_s']/86400:>14.2f} d "
               f"({tfo['n_cases_reaching_it']}/{tfo['n_cases_total']} cases reach it)")
         print(f"  time to decision:        {td['mean_s']/86400:>14.2f} d "
               f"({td['n_cases_reaching_it']}/{td['n_cases_total']} cases reach it)")
         print(f"  handover rate:           {ho['handover_rate']:>14.4f} "
               f"(share of steps that switch resource)")
+        if switches:
+            print(f"  activity-switch rate:    {switches['activity_switch_rate']:>14.4f} "
+                  f"(share of a resource's sessions that change activity)")
         print(f"  rolling workload std:    {wb['mean_window_std']:>14.4f} "
               f"(mean per-{wb.get('window', '?')} std, max={wb.get('max_window_std', float('nan')):.4f})")
 
