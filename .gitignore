@@ -236,6 +236,7 @@ pyproject.toml
 
 # documentation
 *.pdf
+!visualization/*.pdf
 
 # generated data
 *.csv
