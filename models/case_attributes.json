@@ -1,0 +1,20 @@
+{
+ "distributions": {
+  "case:LoanGoal": {
+   "Car": 0.296042,
+   "Home improvement": 0.243391,
+   "Existing loan takeover": 0.177759,
+   "Other, see explanation": 0.094735,
+   "Unknown": 0.075058,
+   "Not speficied": 0.0338,
+   "Remaining debt home": 0.026723,
+   "Extra spending limit": 0.019836,
+   "Caravan / Camper": 0.011711,
+   "Motorcycle": 0.008728,
+   "Boat": 0.006379,
+   "Tax payments": 0.004824,
+   "Business goal": 0.000952,
+   "Debt restructuring": 6.3e-05
+  }
+ }
+}
