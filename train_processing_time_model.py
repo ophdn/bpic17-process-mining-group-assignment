@@ -85,7 +85,11 @@ UNKNOWN = "__UNKNOWN__"   # unseen activity / resource at sample time
 NO_PREV = "__START__"     # first activity in a case has no predecessor
 
 # Duration sanity bounds
-MAX_DURATION_SECONDS = 365 * 24 * 3600  # drop instances longer than a year
+MAX_DURATION_SECONDS = 365 * 24 * 3600  # legacy elapsed span: drop > a year
+# Active-session target (implementationplan §5.2): a single hands-on work session is
+# minutes-to-hours, never the multi-day elapsed span, so the old year cap only made
+# sense for the elapsed target. Cap active sessions at 7 days.
+ACTIVE_MAX_DURATION_SECONDS = 7 * 24 * 3600
 
 # Quantile grid for the probabilistic (Advanced I) model
 QUANTILES = [round(q, 2) for q in np.arange(0.05, 0.96, 0.05)]
@@ -221,6 +225,94 @@ def build_instances(df: pd.DataFrame) -> pd.DataFrame:
     return inst
 
 
+def build_active_sessions(df: pd.DataFrame) -> pd.DataFrame:
+    """Retarget the model to *active-session seconds* (implementationplan §5.2).
+
+    Segments each W_ work-item instance from the lifecycle grammar
+    (schedule → start → (suspend → resume)* → complete|ate_abort|withdraw) and
+    emits **one row per active running session** (start/resume → next
+    suspend/terminal). Feature contract **option A (LOCKED)**: the 8 context
+    features are computed once at the work item's *first* start and duplicated
+    across every session row of that item — no session_index in v1 — because the
+    runtime carries exactly that per-work-item context.
+    """
+    df = df.sort_values(["case_id", "timestamp"]).reset_index(drop=True)
+
+    instances = []  # one dict per W_ work-item instance
+    for case_id, cgrp in df.groupby("case_id", sort=False):
+        w = cgrp[cgrp["activity"].str.startswith("W_")]
+        for act, agrp in w.groupby("activity", sort=False):
+            cur = None
+            for row in agrp.itertuples(index=False):
+                lc, ts, res = row.lifecycle, row.timestamp, row.resource
+                if lc == "schedule":
+                    if cur is None:
+                        cur = {"first_start": None, "resource": UNKNOWN,
+                                "running_since": None, "sessions": []}
+                elif lc == "start":
+                    if cur is None:
+                        cur = {"first_start": ts, "resource": res,
+                                "running_since": ts, "sessions": []}
+                    else:
+                        if cur["first_start"] is None:
+                            cur["first_start"] = ts
+                            cur["resource"] = res
+                        cur["running_since"] = ts
+                elif lc == "resume":
+                    if cur is not None:
+                        cur["running_since"] = ts
+                elif lc == "suspend":
+                    if cur is not None and cur["running_since"] is not None:
+                        seg = (ts - cur["running_since"]).total_seconds()
+                        if seg > 0:
+                            cur["sessions"].append(seg)
+                        cur["running_since"] = None
+                elif lc in ("complete", "ate_abort", "withdraw"):
+                    if cur is not None:
+                        if cur["running_since"] is not None and lc != "withdraw":
+                            seg = (ts - cur["running_since"]).total_seconds()
+                            if seg > 0:
+                                cur["sessions"].append(seg)
+                        if cur["first_start"] is not None and cur["sessions"]:
+                            instances.append({"case_id": case_id, "activity": act,
+                                              "resource": cur["resource"],
+                                              "first_start": cur["first_start"],
+                                              "sessions": cur["sessions"]})
+                        cur = None
+            if cur is not None and cur["first_start"] is not None and cur["sessions"]:
+                instances.append({"case_id": case_id, "activity": act,
+                                  "resource": cur["resource"],
+                                  "first_start": cur["first_start"],
+                                  "sessions": cur["sessions"]})
+
+    if not instances:
+        raise ValueError("No W_ active sessions reconstructed — check the "
+                         "lifecycle:transition values in the log.")
+
+    idf = pd.DataFrame(instances).sort_values(
+        ["case_id", "first_start"]).reset_index(drop=True)
+    grp = idf.groupby("case_id", sort=False)
+    idf["case_position"] = grp.cumcount()
+    idf["n_previous_activities"] = idf["case_position"]
+    idf["previous_activity"] = grp["activity"].shift(1).fillna(NO_PREV)
+    first_ts = grp["first_start"].transform("min")
+    idf["case_age_seconds"] = (idf["first_start"] - first_ts).dt.total_seconds()
+    idf["day_of_week"] = idf["first_start"].dt.dayofweek
+    idf["hour_of_day"] = idf["first_start"].dt.hour
+    idf["timestamp"] = idf["first_start"]  # temporal-split ordering key
+
+    # Expand instances → one row per active session (features duplicated).
+    idf = idf.explode("sessions").reset_index(drop=True)
+    idf["duration_s"] = idf["sessions"].astype(float)
+    n_before = len(idf)
+    idf = idf[(idf["duration_s"] > 0) &
+              (idf["duration_s"] <= ACTIVE_MAX_DURATION_SECONDS)].copy()
+    print(f"[instances] {len(instances):,} W_ work-item instances → "
+          f"{n_before:,} active sessions → {len(idf):,} after filter "
+          f"(0 < d ≤ 7d).")
+    return idf
+
+
 def fit_label_encoder(values: pd.Series, sentinels: list[str]) -> LabelEncoder:
     """Fit a LabelEncoder that always contains the given sentinels, so the
     simulation can fall back to a valid index for unseen labels."""
@@ -293,9 +385,18 @@ def evaluate_quantile_models(quantile_models: dict, quantiles: list,
 # Training
 # ════════════════════════════════════════════════════════════════════════════
 
-def train(log_path: Path, probabilistic: bool, output_path: Path) -> None:
+def train(log_path: Path, probabilistic: bool, output_path: Path,
+          active: bool = False, metrics_output: Path | None = None) -> None:
     df = load_log(log_path)
-    inst = build_instances(df)
+    if active:
+        print("[mode] active — target = active-session seconds (W_ items).")
+        inst = build_active_sessions(df)
+        target_name = "active_session_seconds"
+        lifecycle_schema = "active_v1"
+    else:
+        inst = build_instances(df)
+        target_name = "elapsed_start_complete_seconds"
+        lifecycle_schema = "legacy"
 
     encoders = {
         "activity": fit_label_encoder(inst["activity"], [UNKNOWN]),
@@ -364,6 +465,11 @@ def train(log_path: Path, probabilistic: bool, output_path: Path) -> None:
         "feature_names": FEATURE_NAMES,
         "metrics": metrics,
         "target_transform": "log1p",
+        # Lifecycle contract metadata (implementationplan §5.2): a legacy runtime
+        # loading an active artifact (or vice-versa) can check these and fail loudly
+        # rather than silently mispredicting an elapsed span as an active session.
+        "target": target_name,
+        "lifecycle_schema": lifecycle_schema,
         "sentinels": {"unknown": UNKNOWN, "no_prev": NO_PREV},
         "quantile_models": None,
         "quantiles": None,
@@ -410,7 +516,9 @@ def train(log_path: Path, probabilistic: bool, output_path: Path) -> None:
         "quantile_eval": artifact["metrics"].get("quantile_eval"),
         "quantiles": QUANTILES if probabilistic else None,
     }
-    metrics_path = Path("output/models/processing_time_metrics.json")
+    metrics_json["target"] = target_name
+    metrics_json["lifecycle_schema"] = lifecycle_schema
+    metrics_path = metrics_output or Path("output/models/processing_time_metrics.json")
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
     with open(metrics_path, "w", encoding="utf-8") as f:
         json.dump(metrics_json, f, indent=2, default=float)
@@ -427,12 +535,22 @@ def main() -> None:
                         help="Also train quantile models (Advanced I)")
     parser.add_argument("--output", type=Path, default=OUTPUT_PATH,
                         help="Output joblib path")
+    parser.add_argument("--metrics-output", type=Path, default=None,
+                        help="Metrics JSON path (default: "
+                             "output/models/processing_time_metrics.json). Use a "
+                             "_active path so the active model never overwrites the "
+                             "legacy metrics (implementationplan §4.8).")
+    parser.add_argument("--lifecycle", action="store_true",
+                        help="Train the active-session-seconds target from the "
+                             "suspend/resume lifecycle grammar (implementationplan "
+                             "§5.2) instead of the legacy elapsed start→complete span.")
     args = parser.parse_args()
 
     if not args.log.exists():
         sys.exit(f"error: log not found: {args.log}")
 
-    train(args.log, args.probabilistic, args.output)
+    train(args.log, args.probabilistic, args.output,
+          active=args.lifecycle, metrics_output=args.metrics_output)
 
 
 if __name__ == "__main__":
