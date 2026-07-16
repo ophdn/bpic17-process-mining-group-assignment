@@ -446,12 +446,12 @@ class ProcessComponent:
             type. Defaults to None, in which case no attributes are sampled and
             every downstream check sees a wildcard — i.e. behaviour is unchanged.
 
-            NOTE (merge follow-up): PetriNetProcessComponent's "rules" mode
-            samples its own case attributes into ``self._case_attrs`` for the
-            Section 1.5 decision classifiers. Both samplers draw a loan goal, so
-            in that mode a case can carry two independently drawn goals — the
-            classifiers use one, the permission check the other. They must be
-            unified onto a single draw. See docs/manuals/merge_1.7_plan.md.
+            In PetriNetProcessComponent's "rules" mode this sampler is NOT
+            drawn: the Section 1.5 spawn attributes in ``self._case_attrs``
+            are the single source of truth there, and the subclass's
+            ``_payload()`` derives ``case_type`` from that same draw — so the
+            decision classifiers and the permission check can never disagree
+            on a case's loan goal. See docs/manuals/merge_1.7_plan.md, item A.
         crn : bool, optional
             Common Random Numbers (see module docstring). Default False
             preserves every existing evidence log bit-for-bit. Requires

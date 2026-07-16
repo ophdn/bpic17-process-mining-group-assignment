@@ -87,26 +87,42 @@ context.
 
 ## OPEN — must be resolved before this is correct
 
-### A. Duplicate case-attribute sampling (**highest priority**)
+### A. Duplicate case-attribute sampling — **RESOLVED**
 
-Both sides independently sample a loan goal per case:
+Both sides independently sampled a loan goal per case:
 
 - **main**: `PetriNetProcessComponent._sample_case_attributes()` → `self._case_attrs[case_id]`,
   consumed by the §1.5 decision-point classifiers ("rules" branching mode).
 - **this branch**: `CaseAttributeSampler` → `self._ctx[case_id]["attrs"]` → event payload,
   consumed by the §1.7 permission model.
 
-In `--branching-mode rules` **a case therefore carries two independently drawn
-loan goals**: the classifier branches on one, the permission check gates on the
-other. They disagree. This is a correctness bug, not a style issue.
+In `--branching-mode rules` **a case therefore carried two independently drawn
+loan goals**: the classifier branched on one, the permission check gated on the
+other.
 
-**Proposed fix:** make main's `_case_attrs` the single source of truth. Have
-`ProcessComponent._payload()` read the case's attributes from there when present,
-and keep `CaseAttributeSampler` only as the fallback for the non-Petri path
-(which has no `_case_attrs`). Then delete the duplicate draw.
+**What the fix revealed:** the situation on the Petri path was worse than
+"two disagreeing draws" — the Petri `__PROCESS_START__` override never put
+`"attrs"` into `self._ctx` at all, so `_payload()` returned `{}` on **every
+Petri run**, in every mode. `_matches()` treats a missing case type as a
+wildcard, so the org model's case dimension has silently never been enforced
+in simulation (which also means the k-Batching `unpermitted: 4` of item D was
+measured *without* case-type gating — expect it to change).
 
-Open question for whoever owns §1.5: is `_case_attrs` intended to be the canonical
-per-case attribute store? If so this is straightforward.
+**Resolution (as proposed, one commit, revertable):**
+
+- `PetriNetProcessComponent._payload()` override: when `self._case_attrs` has
+  an entry ("rules" mode), it is the single source of truth — `case_type` is
+  derived from *that* draw (`CT.` + loan goal, same scheme as the parent).
+  The classifiers and the permission model can no longer disagree.
+- In non-"rules" Petri modes, `__PROCESS_START__` now threads the injected
+  `CaseAttributeSampler` into `self._ctx["attrs"]` exactly like the parent
+  does — fixing the always-empty payload.
+- In "rules" mode the `CaseAttributeSampler` is not drawn at all: the
+  duplicate draw is gone.
+
+RNG note: `CaseAttributeSampler` owns a private `random.Random`, so sampling
+it in visit/probs modes does not perturb the process RNG stream; runs without
+`--permissions orgmodel` (sampler is None) are bit-for-bit unchanged.
 
 ### B. CRN does not cover case-attribute sampling
 

@@ -200,6 +200,15 @@ class PetriNetProcessComponent(ProcessComponent):
                 "start_t": engine.now,
                 "position": 0,
                 "prev_act": None,
+                # Case attributes for the event payload (§1.7 permission
+                # model). In "rules" mode ``self._case_attrs`` is the single
+                # source of truth and ``_payload()`` reads from it, so the
+                # CaseAttributeSampler must not also draw — one case carrying
+                # two independently drawn loan goals is exactly item A of
+                # docs/manuals/merge_1.7_plan.md.
+                "attrs": ({} if self.branching_mode == "rules"
+                          else (self._case_attributes.sample()
+                                if self._case_attributes else {})),
             }
             self._markings[case_id] = Marking(self.im)
             if self.branching_mode == "rules":
@@ -277,6 +286,25 @@ class PetriNetProcessComponent(ProcessComponent):
             event_type=EventType.CASE_COMPLETE,
             case_id=case_id,
         ))
+
+    def _payload(self, case_id: str) -> dict:
+        """Single source of truth for case attributes (merge_1.7_plan.md, A).
+
+        In "rules" mode the §1.5 spawn attributes in ``self._case_attrs`` are
+        canonical — the decision-point classifiers branch on them — so the
+        permission model must gate on the *same* draw, not on a second one.
+        ``case_type`` is derived exactly like the parent derives it from the
+        sampler ("CT." + loan goal, OrdinoR's naming). Other modes have no
+        ``_case_attrs`` entry and fall through to the parent's sampler path.
+        """
+        attrs = self._case_attrs.get(case_id)
+        if attrs is None:
+            return super()._payload(case_id)
+        payload = dict(attrs)
+        goal = attrs.get("loan_goal")
+        if goal is not None:
+            payload["case_type"] = f"CT.{goal}"
+        return payload
 
     # ------------------------------------------------------------------
     # Petri net mechanics
