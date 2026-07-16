@@ -128,7 +128,8 @@ def load_log(path: Path) -> pd.DataFrame:
     """Load an XES or CSV event log into a canonical-column DataFrame.
 
     Returns a DataFrame with columns:
-        case_id, activity, timestamp (datetime), resource, lifecycle
+        case_id, activity, timestamp (datetime), resource, lifecycle,
+        event_order
     """
     suffixes = [s.lower() for s in path.suffixes]
     is_xes = suffixes[-2:] == [".xes", ".gz"] or suffixes[-1:] == [".xes"]
@@ -164,6 +165,13 @@ def load_log(path: Path) -> pd.DataFrame:
     df["activity"] = df["activity"].astype(str)
     df["case_id"] = df["case_id"].astype(str)
     df = df.dropna(subset=["timestamp"])
+    # Lifecycle segmentation needs a deterministic tie-breaker when multiple
+    # transitions in the same case share a timestamp.  Preserve source-log
+    # order for those ties, then number the resulting per-case event stream.
+    df = df.sort_values(
+        ["case_id", "timestamp"], kind="mergesort"
+    ).reset_index(drop=True)
+    df["event_order"] = df.groupby("case_id", sort=False).cumcount()
     print(f"[load] {len(df):,} events, {df['case_id'].nunique():,} cases, "
           f"{df['activity'].nunique()} activities.")
     return df

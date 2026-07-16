@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pandas as pd
 
@@ -12,13 +14,54 @@ from extract_log_info import (
     extract_lifecycle,
     extract_processing_times,
 )
-from train_processing_time_model import build_active_sessions
+from train_processing_time_model import build_active_sessions, load_log
 
 
 UTC = timezone.utc
 
 
 class LifecycleExtractionTests(unittest.TestCase):
+    def test_processing_time_loader_preserves_lifecycle_and_adds_event_order(self):
+        rows = pd.DataFrame([
+            {
+                "case:concept:name": "case-b",
+                "concept:name": "W_Test",
+                "time:timestamp": "2016-01-04T09:00:02Z",
+                "org:resource": "r2",
+                "lifecycle:transition": "COMPLETE",
+            },
+            {
+                "case:concept:name": "case-a",
+                "concept:name": "W_Test",
+                "time:timestamp": "2016-01-04T09:00:01Z",
+                "org:resource": "r1",
+                "lifecycle:transition": "START",
+            },
+            {
+                "case:concept:name": "case-a",
+                "concept:name": "W_Test",
+                "time:timestamp": "2016-01-04T09:00:01Z",
+                "org:resource": "r1",
+                "lifecycle:transition": "SUSPEND",
+            },
+        ])
+
+        with TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "events.csv"
+            rows.to_csv(path, index=False)
+            loaded = load_log(path)
+
+        self.assertEqual(
+            loaded.columns.tolist(),
+            [
+                "case_id", "activity", "timestamp", "resource", "lifecycle",
+                "event_order",
+            ],
+        )
+        self.assertEqual(loaded["case_id"].tolist(), ["case-a", "case-a", "case-b"])
+        self.assertEqual(loaded["lifecycle"].tolist(), ["start", "suspend", "complete"])
+        self.assertEqual(loaded["event_order"].tolist(), [0, 1, 0])
+
     def test_elapsed_extractor_does_not_cross_join_repeated_activity(self):
         base = pd.Timestamp("2016-01-04T09:00:00Z")
         rows = [
