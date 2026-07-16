@@ -33,6 +33,28 @@ the simulator:
         (\texttt{User\_1}, active on 99.2\% of calendar days, above the
         structural 71.4\%-weekday ceiling a human cannot exceed) and is
         excluded by a recomputed rule, not by name.
+  \item \emph{Presence from the full lifecycle, bucketed by calendar date.} A
+        resource is marked present on a day from its first to its last
+        \texttt{W\_} signal \emph{that day}, using \emph{every} transition
+        (schedule / start / suspend / resume / complete), not just start and
+        complete. Each transition is counted on the date it actually occurred
+        and never interpolated across a start-to-complete gap --- so a task
+        started Friday and resumed Monday contributes a Friday point and a
+        Monday point, and the intervening weekend gets nothing. Verified on the
+        log: of 12{,}475 work items spanning $\geq$2 calendar days, across
+        87{,}755 intervening days, \emph{zero} produced presence on a day with
+        no real event. This is what keeps overnight and weekend-spanning tasks
+        from fabricating availability.
+  \item \emph{Limitation --- we can only see logged interactions.} The flip side
+        of using the full lifecycle is that an \emph{automated} transition still
+        counts as a presence signal. If the source system auto-suspends all open
+        work at a fixed hour (say 22:00), that timestamp enters the day's window
+        even though the resource may have stopped working earlier --- the log
+        cannot distinguish a person closing a task from a nightly batch
+        suspending it. The $q_{90}$ window trims the top 10\% of late events,
+        bounding the damage, but the deeper point stands: availability mined from
+        an event log is only ever as good as what the log records, and automated
+        lifecycle events can inflate the apparent end of a workday.
   \item \emph{Basic --- weekly shift profile, in two tiers.} \emph{Tier A}
         (well-observed resources, $\geq$20 active days): a per-(resource,
         weekday) window fitted as $[q_{10}\text{ first event},\,
