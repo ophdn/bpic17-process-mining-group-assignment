@@ -524,12 +524,18 @@ def main():
                 print(f"WARNING: policy={policy} seed={seed}: empty log after "
                       f"warm-up filter, skipping this run.")
                 continue
-            m = opt_metrics.evaluate(
-                df,
-                arrival_times=meta["arrival_times"],
-                availability_seconds=meta["availability_seconds"],
-                completed_case_ids=meta["completed_case_ids"],
-            )
+            # One failing run must not abort a multi-hour grid: log and skip.
+            try:
+                m = opt_metrics.evaluate(
+                    df,
+                    arrival_times=meta["arrival_times"],
+                    availability_seconds=meta["availability_seconds"],
+                    completed_case_ids=meta["completed_case_ids"],
+                )
+            except Exception as e:  # noqa: BLE001 — resilience over precision here
+                print(f"WARNING: policy={policy} seed={seed}: evaluate() failed "
+                      f"({type(e).__name__}: {e}), skipping this run.", file=sys.stderr)
+                continue
             rows.append(flatten_result(policy, seed, args.scenario, m, meta["engine_stats"]))
             ct = m["cycle_time"]
             print(f"  [{policy:>7} seed={seed:>2}] "
