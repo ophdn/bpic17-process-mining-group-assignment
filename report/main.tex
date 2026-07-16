@@ -121,17 +121,18 @@ drop-in replacement for the parametric component (same
 \texttt{bootstrap}/\texttt{on\_arrival} interface), toggled by
 \texttt{USE\_MDN\_ARRIVALS} in \texttt{main.py} (default off).
 
-\textbf{Validation status.} \texttt{scripts/eval\_arrivals.py} implements
-the intended KPI comparison -- real vs.\ parametric vs.\ MDN arrivals on
-hour-of-day MAE, weekday MAE, and an inter-arrival KS statistic, deliberately
-refusing to substitute the simulated log for ground truth -- but requires
-the raw BPIC-17 log, which is gitignored and was not available on the
-machine this was implemented on. This is the one open item on this
-subsection: whoever has the raw log should run it once
-(\texttt{BPIC17\_LOG=\ldots{} python scripts/eval\_arrivals.py}) to produce
-\texttt{output/arrival\_model\_eval.md} before the report is finalized, and
-the team should jointly decide whether to flip the default based on the
-result -- it changes every teammate's simulated logs.
+\textbf{Validation.} \texttt{scripts/eval\_arrivals.py} compares real vs.\
+parametric vs.\ MDN arrivals over the first 90 days (seed 42), deliberately
+using the raw log -- never a simulated one -- as ground truth. The MDN
+dominates on all three metrics: hour-of-day MAE $0.0036$ vs.\ $0.0295$,
+weekday MAE $0.0029$ vs.\ $0.0344$, and an inter-arrival
+Kolmogorov--Smirnov statistic of $0.0154$ ($p = 0.39$) vs.\ $0.0870$
+($p \approx 10^{-24}$) -- i.e.\ the MDN's inter-arrival distribution is
+statistically indistinguishable from the real process, while the
+parametric one is clearly rejected (full table:
+\texttt{output/arrival\_model\_eval.md}). Whether to enable the MDN as the
+team-wide default remains a joint decision, as it changes every simulated
+event log.
 
 \subsection{Processing Times (Daniel)}
 % TODO (Daniel): fitted distributions (Basic 1), contextual GBR point model

@@ -321,7 +321,7 @@ Report: jede Person schreibt die Subsections der eigenen Pakete
 | Mo 13. – Di 14. | A2 (Contention + Service/Wait-Split, Daniel+Johannes). Sophie baut `AllocationPolicy`-Interface + `opt_metrics.py` exakt nach Folie 21. Mario: Experiment-Runner. |
 | Mi 15. | **Phase-A-Gate:** `compare_process_models.py` — Case-Dauer ≤ ±20 %, Terminierung ≥ 90 %? Wenn nein: Rest-Puffer hier investieren, D-Start verschieben. Simple Policies (R-RRA/R-RMA/R-SHQ) + k-Batching lauffähig. |
 | Do 16. – Fr 17. | D1 (Daniel) + D2 (Johannes) minimal lauffähig; Experimente (≥ 10 Seeds) laufen nachts. Report-Gerüst steht (TUM-Template), jede*r schreibt eigene Subsections. |
-| Sa 18. | Management-Frage 1: Leave-Two-Out-Läufe + Auswertung. Plots + Ergebnistabellen final. Report-Review im Team. |
+| Sa 18. | Management-Frage 1: Leave-Two-Out-Läufe + Auswertung. Plots + Ergebnistabellen final. Report-Review im Team. **Zahlen-Freeze:** ALLE Report-Tabellen (inkl. `tab:ablation`) mit der finalen Gesamt-Konfiguration neu erzeugen — der Contention-Umbau vom 16.07. verschiebt Completion-Raten und Case-Dauern (gemessen: advanced+visit 71 % → 18 % Completion, Dauer-Fehler 0,99 → 0,60; Branching-KPIs TVD/Varianten stabil). Vergleich: `output/validation/branching_probs_vs_rules/advanced_postmerge.json`. |
 | So 19. | Puffer + Feinschliff + **Abgabe**. |
 
 ## 6. 1,0-Checkliste
