@@ -18,19 +18,48 @@ simulation/
 │   ├── events.py                ← SimEvent dataclass + EventType enum
 │   └── logger.py                ← Writes the event log to CSV
 ├── components/
-│   ├── arrival.py                ← Section 1.2: LogNormal case arrivals
+│   ├── arrival.py                ← Section 1.2 Basic: LogNormal case arrivals
+│   ├── arrival_mdn.py            ← Section 1.2 Advanced: time-dependent MDN arrivals
 │   ├── process.py                ← Section 1.3+1.5 Basic: fitted durations + branching probs
 │   ├── petri_process.py          ← Section 1.4 Advanced: BPMN → Petri net control-flow enforcement
-│   └── resource.py               ← Section 1.6+1.7+1.8: permissions + allocation
-├── models/                       ← engine input artifacts (things the simulation *loads*)
-│   └── bpic17_process.bpmn       ← discovered process model (Section 1.4 Advanced)
+│   ├── case_attributes.py        ← Section 1.5/1.7: samples a case type (loan goal) per case
+│   ├── permissions.py            ← Section 1.7: permission models (loads JSON; runtime side)
+│   └── resource.py               ← Section 1.6+1.7+1.8: availability + permissions + allocation
+├── policies.py                  ← Section 1.8: push-selection seam (which allowed resource wins)
+├── expected_duration.py         ← Section 1.8: expected-duration cost model for k-Batching
+├── models/                       ← engine input artifacts the simulation *loads*
+│   ├── bpic17_process.bpmn       ← discovered process model (Section 1.4 Advanced)
+│   ├── processing_time_model.joblib   ← trained ML durations (gitignored; see PROCESSING_TIMES.md)
+│   └── decision_rules.joblib     ← trained decision-point classifiers (gitignored; §1.5 rules)
 └── main.py                       ← entry point — wires all components together
+analysis/                        ← Section 1.6/1.7 FITTING side (needs pandas/sklearn/ordinor)
+├── loader.py                    ← shared BPIC-17 log loading
+├── availability.py              ← fits Weekly (Basic) / Yearly (Advanced) shift calendars
+└── permissions.py               ← fits observed matrix (Basic) / OrdinoR org model (Advanced)
+notebooks/
+├── 01_resource_availability.ipynb   ← §1.6 fitting narrative + design decisions
+└── 02_resource_permissions.ipynb    ← §1.7 fitting narrative + design decisions
+models/                          ← fitted JSON the simulation loads (committed; light to read)
+├── availability_model.json      ← §1.6 per-resource shifts / holidays / vacation
+├── permissions_orgmodel.json    ← §1.7 Advanced OrdinoR organizational model
+├── permissions_observed.json    ← §1.7 Basic resource×activity matrix
+└── case_attributes.json         ← §1.5/1.7 loan-goal distribution for case sampling
 scripts/
 ├── metrics.py                       ← reusable KPI functions (see docs/paper_insights_*.md)
 └── compare_process_models.py        ← runs Basic vs. Advanced and reports all KPIs
 docs/
-└── paper_insights_discovering_simulation_models.md  ← validation methodology background
+├── paper_insights_discovering_simulation_models.md  ← validation methodology background
+└── manuals/
+    └── resource_allocation_heuristics.md            ← §1.8 pattern rationale (R-RBA/R-DE/…)
 ```
+
+**The recurring split — fit offline, load at runtime.** Every learned resource
+model is *fitted* by the heavy `analysis/` code (pandas, scikit-learn, ordinor)
+in a notebook and written to `models/*.json`; the simulation only ever *loads*
+that JSON. So a normal run needs none of the data-science stack, stays
+deterministic, and the fitting stays reproducible in its notebook. Availability
+(§1.6) and permissions (§1.7) both follow this pattern, exactly like the §1.3
+processing-time and §1.4 process models before them.
 
 ---
 
@@ -151,6 +180,116 @@ You can register **multiple components for the same event type** — they are ca
 
 ---
 
+## Resources: availability, permissions, allocation (Sections 1.6–1.8)
+
+All three resource sections live in **one component**, `components/resource.py`,
+because they answer three parts of the *same* question the instant a work item
+becomes enabled: **may** anyone do it (1.7 permissions), is anyone **on shift**
+to do it (1.6 availability), and **which** free-and-qualified person actually
+gets it (1.8 allocation). This section is the "how the models plug into the
+engine" overview.
+
+### The two-phase protocol that makes it work
+
+The engine dispatches every event to *all* handlers and no handler can veto an
+event. That single fact drives the whole design: a work item is **requested**,
+then later **started** — never both at once.
+
+```
+ProcessComponent  ──ACTIVITY_REQUEST──▶  ResourceComponent   "this item is enabled"
+                                              │
+                                              │  allocate (see filter below)
+                                              ▼
+ResourceComponent ──ACTIVITY_START───▶  (everyone, incl. logger)   "a resource holds it; work begins"
+                                              │
+                                              │  duration sampled, ACTIVITY_COMPLETE scheduled
+                                              ▼
+ProcessComponent  ──(on complete)────▶  ResourceComponent.release()  ──RESOURCE_AVAILABLE──▶ drain queue
+```
+
+- **`ProcessComponent` only ever emits `ACTIVITY_REQUEST`.** A request is
+  invisible to every component except `ResourceComponent`, so a queued item
+  genuinely cannot run and cannot be logged while it waits.
+- **`ResourceComponent` is the only thing that emits `ACTIVITY_START`,** and
+  only *after* it holds a resource. That is why `org:resource` is always
+  populated in the log, and why waiting time falls out for free as
+  `start_time − request_time`.
+- If this were skipped and a queued item stayed an `ACTIVITY_START`, the
+  ProcessComponent would run it while it sat in the queue *and* again when
+  re-scheduled — forking the case. (This was a real bug; see
+  `docs/manuals/case_forking_bug.md`.)
+
+### Three injected models, one allocation filter
+
+`ResourceComponent` never hard-codes any resource rule. It takes three
+collaborators in its constructor, each swappable without touching the engine:
+
+| Injected model | Section | Question it answers | Default | Basic / Advanced |
+|---|---|---|---|---|
+| **permission model** (`components/permissions.py`) | 1.7 | *who is allowed?* | OrdinoR org model | `StaticPermissions` (observed matrix, Basic) · `OrgModelPermissions` (OrdinoR, Advanced) |
+| **availability calendar** (`analysis/availability.py`) | 1.6 | *who is on shift?* | Yearly calendar | `WeeklyAvailability` (Basic) · `YearlyAvailability` (holidays + vacation, Advanced) |
+| **allocation policy** (`policies.py`) | 1.8 | *which allowed one wins?* | `RandomPolicy` | `RandomPolicy` (R-RMA); round-robin / shortest-queue are the Part II upgrade path |
+
+When a request arrives, `_allocate` runs them as a **pipeline** — each stage
+only ever narrows the set, so a later stage can never override an earlier one:
+
+```
+permission model  →  candidates permitted for (activity, case type, time)
+      │  (§1.7)
+      ▼
+live capacity     →  keep only those with a free slot (_busy < capacity)
+      ▼
+availability      →  keep only those on shift right now              (§1.6)
+      ▼
+allocation policy →  pick one of the survivors                      (§1.8)
+```
+
+If the survivor set is empty the item is **queued** (Distribution on Enablement,
+R-DE) and re-offered the instant a qualified resource frees up via
+`RESOURCE_AVAILABLE`. If *nobody* is permitted at all, queuing would strand the
+case forever, so the item runs unassigned (`resource=None`) and is counted in
+`stats()["unpermitted_activities"]`.
+
+### Why the permission model is richer than a lookup table
+
+The Advanced permission model (OrdinoR, `OrgModelPermissions`) gates on an
+**execution context** — the triple *(case type, activity type, time type)* — not
+just the activity. So "validate an application" can be permitted *for car loans*
+*on weekdays* and not otherwise. The engine can actually enforce all three
+dimensions:
+
+- **time type** — `ResourceComponent` already tracks wall-clock time for the
+  §1.6 calendar, so `when=` is free.
+- **case type** — `components/case_attributes.py` samples a loan goal per case
+  and it rides on every event's `payload`, surfacing as `case_type`.
+- a wildcard (⊥) on any dimension means "any", and a *missing* value also matches
+  as a wildcard (we never deny work just because a field is absent).
+
+> **Integration note (recently fixed).** In the Petri-net process, the case-type
+> attribute was previously never written onto the payload, so the org model's
+> case dimension silently matched everything. It is now sourced from a single
+> per-case draw shared with the §1.5 decision classifiers — see
+> `docs/manuals/merge_1.7_plan.md`, item A.
+
+### Batch allocation variants (Section 1.8 Advanced)
+
+Two optional disciplines replace the default one-at-a-time R-RBA pick:
+
+- **Piled Execution** (`--piled-execution`, R-PE / Pattern 38): on each release
+  the just-freed resource first grabs a waiting item of the *same* activity type
+  it just finished (its "pile"), then falls back to FIFO. One task per release.
+- **k-Batching** (`--k-batching K`, Zeng & Zhao): work items *never* allocate on
+  arrival; they queue and are released in batches of *K*, solved as a
+  parallel-machines assignment (`scipy.optimize.linear_sum_assignment` over
+  `expected_duration.py`) minimising total expected processing time. A safety
+  valve flushes early if the oldest item has waited too long. Mutually exclusive
+  with Piled Execution.
+
+See `docs/manuals/resource_allocation_heuristics.md` for the full pattern
+rationale (R-RBA, R-DE, and the upgrade path).
+
+---
+
 ## How to run
 
 From the repo root, inside the virtualenv:
@@ -160,9 +299,26 @@ From the repo root, inside the virtualenv:
 .venv/bin/python -m simulation.main --process-model basic      # flat next-activity probability graph (Section 1.4 Basic)
 .venv/bin/python -m simulation.main --mode ml_model            # contextual point-estimate ML durations
 .venv/bin/python -m simulation.main --mode ml_probabilistic    # contextual probabilistic ML durations
-.venv/bin/python -m simulation.main --availability always       # Section 1.6: resources never off-shift (baseline)
-.venv/bin/python -m simulation.main --piled-execution           # Section 1.8: Piled Execution (R-PE) batch allocation
+
+# Resources (Sections 1.6–1.8)
+.venv/bin/python -m simulation.main --availability calendar     # §1.6: fitted per-resource shifts/holidays/vacation (DEFAULT)
+.venv/bin/python -m simulation.main --availability always       # §1.6: resources never off-shift (baseline)
+.venv/bin/python -m simulation.main --permissions orgmodel      # §1.7: OrdinoR organizational model (Advanced, DEFAULT)
+.venv/bin/python -m simulation.main --permissions observed      # §1.7: learned resource×activity matrix (Basic)
+.venv/bin/python -m simulation.main --permissions hardcoded     # §1.7: original top-20 map (baseline)
+.venv/bin/python -m simulation.main --piled-execution           # §1.8: Piled Execution (R-PE) same-activity batching
+.venv/bin/python -m simulation.main --k-batching 5              # §1.8: k-Batching (batch assignment, K=5)
+
+# Section 1.5 rules mode needs a trained artifact first (gitignored):
+.venv/bin/python train_decision_rules.py --log "data/BPI Challenge 2017.xes.gz"
+.venv/bin/python -m simulation.main --branching-mode rules      # §1.5 Advanced: data-driven decision points
 ```
+
+The final line of a run prints the resource-pool summary — availability and
+permission model in use, work items started, mean wait for a resource, items
+still queued at the horizon, and `activities nobody may perform` (the count of
+work items no permitted resource existed for; a nonzero value means the
+permission model's case/time gating is genuinely binding).
 
 Output is always saved to `<repo_root>/output/event_log.csv`, regardless of
 the working directory you run from.
@@ -215,9 +371,9 @@ engine = SimulationEngine(..., start_datetime=datetime(2017, 1, 1))
 | **1.3** Processing Times | ✅ Done (3 modes: distribution / ml_model / ml_probabilistic) | `components/process.py`, `train_processing_time_model.py` — see [PROCESSING_TIMES.md](simulation/PROCESSING_TIMES.md) |
 | **1.4** Process Model | ✅ Done (Basic: probability graph; Advanced: BPMN → Petri net enforcement) | `components/process.py`, `components/petri_process.py`, `models/bpic17_process.bpmn` |
 | **1.5** Branching Decisions | ✅ Done (Basic: empirical branching probabilities) | `components/process.py` (`BRANCHING_PROBS`) |
-| **1.6** Resource Availabilities | ✅ Done (Basic: fixed capacity per resource; Advanced: fitted shift/holiday/vacation calendar, default via `--availability calendar`) | `components/resource.py`, `analysis/availability.py` |
-| **1.7** Resource Permissions | ✅ Done (Basic: resource→activity permission map) | `components/resource.py` |
-| **1.8** Resource Allocation | ✅ Done (Basic: random allocation among permitted resources; optional Piled Execution/R-PE batch allocation via `--piled-execution`) | `components/resource.py` — see [resource_allocation_heuristics.md](docs/manuals/resource_allocation_heuristics.md) |
+| **1.6** Resource Availabilities | ✅ Done (Basic: fixed capacity per resource; Advanced: fitted shift/holiday/vacation calendar, default via `--availability calendar`) | `components/resource.py`, `analysis/availability.py`, `notebooks/01_resource_availability.ipynb` |
+| **1.7** Resource Permissions | ✅ Done (Basic: observed resource×activity matrix via `--permissions observed`; Advanced: OrdinoR organizational model with case/time context, default via `--permissions orgmodel`) | `components/resource.py`, `components/permissions.py`, `analysis/permissions.py`, `notebooks/02_resource_permissions.ipynb` |
+| **1.8** Resource Allocation | ✅ Done (R-RBA role filter + R-DE queueing; `RandomPolicy` push-selection via the `policies.py` seam; optional Piled Execution `--piled-execution` and k-Batching `--k-batching K`) | `components/resource.py`, `policies.py`, `expected_duration.py` — see [resource_allocation_heuristics.md](docs/manuals/resource_allocation_heuristics.md) |
 
 Every section above still has open Advanced variants beyond what's marked
 done (see the "Upgrade path" note at the top of each component file).
