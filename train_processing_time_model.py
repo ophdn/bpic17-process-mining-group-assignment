@@ -3,11 +3,10 @@ train_processing_time_model.py
 ==============================
 Trains contextual processing-time models for the BPIC-17 simulation.
 
-Two models are produced from the same features/target:
+Two model families are produced from the same feature contract:
 
   Basic option 2 (Section 1.3) — a *point-estimation* Gradient Boosting
-      regressor that predicts the expected log-duration for an activity
-      instance given its context.
+      regressor that predicts the expected log-duration given its context.
 
   Advanced I (Section 1.3) — a set of *quantile* Gradient Boosting
       regressors (q = 0.05 … 0.95) that describe the full conditional
@@ -15,7 +14,11 @@ Two models are produced from the same features/target:
       durations instead of a single point estimate (enable with
       --probabilistic).
 
-Both are persisted into a single joblib artifact together with the label
+In legacy mode the target is elapsed ``start → complete`` time. With
+``--lifecycle`` it is one active ``start/resume → suspend/terminal`` session;
+the work-item context is computed at first start and reused for later sessions.
+
+Both estimators are persisted into a single joblib artifact together with the label
 encoders, feature order and evaluation metrics, so the simulation can
 reconstruct the exact feature vector at sample time.
 
@@ -24,10 +27,14 @@ Usage
     # inside the project virtualenv
     python train_processing_time_model.py --log BPIChallenge2017.xes
     python train_processing_time_model.py --log BPIChallenge2017.xes --probabilistic
+    python train_processing_time_model.py --log BPIChallenge2017.xes --probabilistic \
+        --lifecycle --output simulation/models/processing_time_model_active.joblib \
+        --metrics-output output/models/processing_time_metrics_active.json
 
 Output
 ------
-    simulation/models/processing_time_model.joblib
+    simulation/models/processing_time_model.joblib          (legacy)
+    simulation/models/processing_time_model_active.joblib   (active lifecycle)
 """
 
 from __future__ import annotations

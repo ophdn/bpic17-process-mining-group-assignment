@@ -10,8 +10,12 @@ BPIC-17 event log in the repo:
     # put BPIChallenge2017.xes (or .xes.gz) in the repo root (or data/)
     python setup_models.py
 
+    # Build the versioned active lifecycle tables and duration artifact:
+    python setup_models.py --lifecycle active
+
     # then the ML-dependent modes work:
     python -m simulation.main --mode ml_probabilistic
+    python -m simulation.main --lifecycle-mode active --mode ml_probabilistic
     python -m simulation.main --branching-mode rules
 
 Artifacts produced (from the raw log):
@@ -22,6 +26,12 @@ Artifacts produced (from the raw log):
       are written in one pass.
   simulation/models/decision_rules.joblib          (Section 1.5
       --branching-mode rules).
+
+With ``--lifecycle active`` the script writes only the versioned active family:
+
+  simulation_inputs_active.json
+  simulation/models/processing_time_model_active.joblib
+  output/models/processing_time_metrics_active.json
 
 Everything else the simulation loads (the BPMN, the fitted availability
 model, the visit-conditioned branching probabilities) is committed, so the

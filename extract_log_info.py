@@ -13,9 +13,11 @@ Usage
     # CSV also works (needs case_id, activity, timestamp, resource columns):
     python extract_log_info.py --log path/to/log.csv
 
-Output
-------
-    simulation_inputs.json   <- paste this to Claude
+Outputs
+-------
+    simulation_inputs.json          legacy simulation inputs
+    simulation_inputs_active.json   legacy-compatible inputs plus the active
+                                    lifecycle parameter block
 """
 
 import argparse
@@ -34,7 +36,8 @@ warnings.filterwarnings("ignore")
 # Windows consoles default to cp1252, which cannot encode characters like
 # "→" in the progress output — force UTF-8 so a cosmetic print never kills
 # a multi-minute extraction run.
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # ── column name aliases (handles BPIC-17 and generic CSV logs) ──────────────
 COL_ALIASES = {
