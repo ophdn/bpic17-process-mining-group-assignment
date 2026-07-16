@@ -45,16 +45,23 @@ the simulator:
         87{,}755 intervening days, \emph{zero} produced presence on a day with
         no real event. This is what keeps overnight and weekend-spanning tasks
         from fabricating availability.
-  \item \emph{Limitation --- we can only see logged interactions.} The flip side
-        of using the full lifecycle is that an \emph{automated} transition still
-        counts as a presence signal. If the source system auto-suspends all open
-        work at a fixed hour (say 22:00), that timestamp enters the day's window
-        even though the resource may have stopped working earlier --- the log
-        cannot distinguish a person closing a task from a nightly batch
-        suspending it. The $q_{90}$ window trims the top 10\% of late events,
-        bounding the damage, but the deeper point stands: availability mined from
-        an event log is only ever as good as what the log records, and automated
-        lifecycle events can inflate the apparent end of a workday.
+  \item \emph{Limitation, tested --- automated lifecycle events.} The flip side
+        of using the full lifecycle is that an \emph{automated} transition would
+        still count as a presence signal: if the source system auto-suspended all
+        open work at a fixed hour, that timestamp would enter the day's window
+        even though the resource had stopped earlier, and the log could not tell
+        a person closing a task from a nightly batch. We checked BPIC-17 for this
+        and it does \emph{not} occur --- three fingerprints of an automated
+        suspend are all absent: (i) the \texttt{suspend} hour-of-day curve tracks
+        the \texttt{start} curve (peaks 9--11h, 14--16h; $\sim$0\% at 22:00),
+        rather than spiking at one hour; (ii) timestamps are irregular
+        (only 1.7\% on second~\texttt{:00}), not the round times a batch job
+        produces; (iii) at most 2 cases ever share one exact \texttt{suspend}
+        instant --- a ``suspend everything'' job would hit hundreds at once.
+        So here \texttt{suspend} is a genuine human interaction and the workday
+        is not inflated. The caveat is therefore general rather than active: on a
+        different log with automated suspension this check would need repeating,
+        and the $q_{90}$ window trim bounds the damage in any case.
   \item \emph{Basic --- weekly shift profile, in two tiers.} \emph{Tier A}
         (well-observed resources, $\geq$20 active days): a per-(resource,
         weekday) window fitted as $[q_{10}\text{ first event},\,
