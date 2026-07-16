@@ -378,6 +378,8 @@ def run_once(
             "permissions": permissions,
             "lifecycle_mode": lifecycle_mode,
             "processing_time_mode": processing_time_mode,
+            "excluded_resources": sorted(excluded or ()),
+            "resource_pool_size": len(resource_pool),
         },
     }
     return df, meta
