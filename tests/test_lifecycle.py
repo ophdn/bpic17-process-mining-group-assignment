@@ -3,8 +3,12 @@ from __future__ import annotations
 import unittest
 from datetime import datetime
 
+from pm4py.objects.petri_net.obj import Marking, PetriNet
+from pm4py.objects.petri_net.utils import petri_utils
+
 from simulation.components.lifecycle_params import LifecycleParameters
 from simulation.components.permissions import StaticPermissions
+from simulation.components.petri_process import PetriNetProcessComponent
 from simulation.components.process import ProcessComponent
 from simulation.components.resource import ResourceComponent
 from simulation.core.engine import SimulationEngine
@@ -80,6 +84,49 @@ class _CountingResource(ResourceComponent):
         super().release(engine, resource, activity)
 
 
+class _FirstPolicy:
+    def select(self, activity, candidates, state):
+        return candidates[0]
+
+
+class _LastPolicy:
+    def select(self, activity, candidates, state):
+        return candidates[-1]
+
+
+class _ScriptedPetri(PetriNetProcessComponent, _ScriptedProcess):
+    """Petri path backed by the smallest legal W_Test → A_Next net."""
+
+    def __init__(self, *args, **kwargs):
+        # Avoid BPMN I/O while retaining PetriNetProcessComponent's terminal
+        # handlers. The sampling seam comes from _ScriptedProcess.
+        _ScriptedProcess.__init__(self, *args, **kwargs)
+        self.net = PetriNet("lifecycle-parity")
+        p0, p1, p2 = (PetriNet.Place(name) for name in ("p0", "p1", "p2"))
+        tw = PetriNet.Transition("tw", WORK)
+        tn = PetriNet.Transition("tn", NEXT)
+        self.net.places.update({p0, p1, p2})
+        self.net.transitions.update({tw, tn})
+        petri_utils.add_arc_from_to(p0, tw, self.net)
+        petri_utils.add_arc_from_to(tw, p1, self.net)
+        petri_utils.add_arc_from_to(p1, tn, self.net)
+        petri_utils.add_arc_from_to(tn, p2, self.net)
+        self.im = Marking({p0: 1})
+        self.fm = Marking({p2: 1})
+        self._markings = {}
+        self._fm_reach_cache = {}
+        self.branching_mode = "probs"
+        self._branching_by_visit = {}
+        self._dp_probs = {}
+        self._dp_visit_counts = {}
+        self._decision_rules_path = None
+        self._decision_models = None
+        self._decision_encoders = None
+        self._decision_feature_names = None
+        self._decision_unknown = "__UNKNOWN__"
+        self._case_attrs = {}
+
+
 def _params(*, continuation=None) -> LifecycleParameters:
     return LifecycleParameters(
         processing_times={},
@@ -137,7 +184,106 @@ def _work_rows(engine):
     return [r for r in engine.logger._rows if r["concept:name"] == WORK]
 
 
+def _run_crn(policy):
+    engine = SimulationEngine(
+        sim_duration=1_000.0,
+        start_datetime=datetime(2016, 1, 1),
+        lifecycle_mode="active",
+    )
+    permissions = StaticPermissions({"r1": {WORK}, "r2": {WORK}})
+    resource = ResourceComponent(
+        capacity_per_resource=1, seed=99, permissions=permissions, policy=policy)
+    params = LifecycleParameters(
+        processing_times={WORK: ("expon", (0.0, 10.0))},
+        # Seed 123 yields four suspend/resume cycles before session 5
+        # completes, so this exercises every CRN draw kind rather than only a
+        # single no-churn duration.
+        session_end_probs={WORK: 0.17},
+        suspend_end_probs={WORK: 1.0},
+        resume_gap_params={WORK: ("expon", (0.0, 5.0))},
+        terminal_continuation={
+            WORK: {"complete": [("__CASE_END__", 1.0)]}
+        },
+    )
+    process = ProcessComponent(
+        seed=123,
+        crn=True,
+        lifecycle_mode="active",
+        lifecycle_params=params,
+        resource_component=resource,
+    )
+    process._repeat_counts["crn"] = {}
+    process._ctx["crn"] = {
+        "start_t": 0.0, "position": 0, "prev_act": None, "attrs": {}}
+    engine.register(resource)
+    engine.register(process)
+    process._fire_start(engine, "crn", WORK)
+    engine.run()
+    return _work_rows(engine)
+
+
 class LifecycleStateMachineTests(unittest.TestCase):
+    def test_active_crn_session_timing_is_policy_independent(self):
+        first = _run_crn(_FirstPolicy())
+        repeated = _run_crn(_FirstPolicy())
+        last = _run_crn(_LastPolicy())
+        self.assertEqual(first, repeated)
+        self.assertGreaterEqual(
+            sum(row["lifecycle:transition"] == "suspend" for row in first), 2)
+        # Allocation may change org:resource, but it must not perturb any
+        # case-keyed lifecycle draw (session length/end or resume gap).
+        structure = lambda rows: [
+            (row["time:timestamp"], row["lifecycle:transition"], row["work_item_id"])
+            for row in rows
+        ]
+        self.assertEqual(structure(first), structure(last))
+
+    def test_basic_and_petri_paths_share_lifecycle_structure(self):
+        common = dict(
+            duration=100.0,
+            durations=(10.0, 20.0),
+            gaps={1: 5.0},
+            session_draws={0: 0.9, 1: 0.1},
+            suspend_draws={1: 0.1},
+        )
+        basic_engine, _, _ = _run(**common)
+
+        petri_engine = SimulationEngine(
+            sim_duration=100.0,
+            start_datetime=datetime(2016, 1, 1),
+            lifecycle_mode="active",
+        )
+        resource = _CountingResource(
+            capacity_per_resource=1,
+            seed=7,
+            permissions=StaticPermissions({"r1": {WORK, NEXT}}),
+        )
+        process = _ScriptedPetri(
+            seed=7,
+            lifecycle_mode="active",
+            lifecycle_params=_params(),
+            resource_component=resource,
+            durations=common["durations"],
+            gaps=common["gaps"],
+            session_draws=common["session_draws"],
+            suspend_draws=common["suspend_draws"],
+        )
+        process._repeat_counts["c1"] = {}
+        process._ctx["c1"] = {
+            "start_t": 0.0, "position": 0, "prev_act": None, "attrs": {}}
+        process._markings["c1"] = Marking(process.im)
+        petri_engine.register(resource)
+        petri_engine.register(process)
+        process._fire_start(petri_engine, "c1", WORK)
+        petri_engine.run()
+
+        structure = lambda engine: [
+            (row["time:timestamp"], row["lifecycle:transition"])
+            for row in _work_rows(engine)
+        ]
+        self.assertEqual(structure(basic_engine), structure(petri_engine))
+        process._assert_marking_legal("c1")
+
     def test_piled_preference_skips_resume_ready_request(self):
         engine = SimulationEngine(
             sim_duration=1.0,
