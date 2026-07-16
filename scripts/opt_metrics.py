@@ -222,6 +222,18 @@ def _milestone_times(
               & (df["concept:name"].isin(activities))]
     first_hit = hits.groupby("case:concept:name")["time:timestamp"].min()
 
+    # No case reaches the milestone -- e.g. the only resource permitted for
+    # it was removed in a leave-N-out ("fire employees") run. The subtraction
+    # below would be on an empty, non-datetimelike Series and blow up on .dt,
+    # so short-circuit to an all-undefined result.
+    if first_hit.empty:
+        return {
+            "mean_s": float("nan"), "p95_s": float("nan"),
+            "n_cases_reaching_it": 0,
+            "n_cases_total": int(df["case:concept:name"].nunique()),
+            "start_basis": "case_arrival" if arrival_times is not None else "first_event",
+        }
+
     if arrival_times is not None:
         start = pd.Series({c: arrival_times[c] for c in first_hit.index if c in arrival_times})
         first_hit = first_hit.loc[start.index]
