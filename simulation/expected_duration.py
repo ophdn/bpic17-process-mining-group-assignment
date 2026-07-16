@@ -1,8 +1,10 @@
 """
 expected_duration.py — shared processing-time point-estimate API
 ===================================================================
-Answers "how long will (activity, resource) take, on average" without
-running a stochastic simulation step. Currently consumed by k-Batching's
+Answers "how long will this allocation hold (activity, resource), on average"
+without running a stochastic simulation step. In legacy mode that is the fitted
+elapsed activity duration; in active mode it is the **next active session** up
+to release on suspend/complete. Currently consumed by k-Batching's
 assignment cost function (Optimization 1.1 / Final Task 1,
 components/resource.py); Park & Song (D1) needs the same estimate for its
 next-task prediction, so this is the shared `expected_duration()` API the
@@ -11,10 +13,9 @@ one (docs/ROADMAP.md, "Daniel <-> Mario" interface note).
 
 Two estimate tiers, weakest-to-strongest:
 
-1. `distribution_mean_seconds(activity)` — the analytic mean of the fitted
-   scipy distribution (Section 1.3 Basic, `PROCESSING_TIME_PARAMS` in
-   process.py), or the fallback constant for activities without a fitted
-   distribution. No context needed; always available.
+1. `distribution_mean_seconds(activity)` — the analytic mean of the selected
+   fitted scipy distribution. Legacy uses `PROCESSING_TIME_PARAMS`; active uses
+   `LifecycleParameters.processing_times`. No context needed; always available.
 2. `ExpectedDurationModel.expected_duration(activity, resource, context)`
    — the trained GBR point model (Section 1.3 Basic option 2 / `mode=
    "ml_model"` in process.py), given whatever context the caller has.

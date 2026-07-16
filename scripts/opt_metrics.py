@@ -159,8 +159,9 @@ def average_cycle_time(
 # ---------------------------------------------------------------------
 
 def resource_busy_seconds(df: pd.DataFrame) -> pd.Series:
-    """Total busy seconds per resource (sum of start→complete durations of
-    the instances it executed). Rows without an assigned resource are
+    """Total busy seconds per resource (sum of paired running sessions).
+    Legacy logs have one start→complete session per instance; active logs also
+    pair resume→suspend/complete on work_item_id. Rows without a resource are
     excluded. NOTE: with capacity > 1 a resource can run instances in
     parallel, so busy time can exceed wall time — occupation > 1 then
     signals exactly that modeling artefact."""

@@ -1078,9 +1078,10 @@ class ProcessComponent:
         Reconstruct the 8-feature vector (in the artifact's feature order)
         for the activity that is about to start.
 
-        NOTE: the sampled duration is the full start→complete time (service +
-        any waiting). The probabilistic (Advanced I) model captures this
-        directly; splitting service vs. waiting (Advanced II) is optional.
+        In legacy mode the artifact target is the full start→complete span. In
+        active mode this helper receives the work item's frozen first-start
+        context and predicts one active session; churn and resume waiting are
+        sampled by the separate lifecycle mechanisms.
         """
         # Wall-clock derived features come from the run's start anchor.
         wall = self._anchor + timedelta(seconds=engine.now)
