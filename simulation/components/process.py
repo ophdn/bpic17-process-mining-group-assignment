@@ -523,6 +523,25 @@ class ProcessComponent:
             )
         import joblib
         self._artifact = joblib.load(self._model_path)
+        expected_target = (
+            "active_session_seconds" if self._active
+            else "elapsed_start_complete_seconds"
+        )
+        artifact_target = self._artifact.get("target")
+        artifact_schema = self._artifact.get("lifecycle_schema")
+        if self._active and (
+            artifact_target != expected_target or artifact_schema != "active_v1"
+        ):
+            raise ValueError(
+                f"active lifecycle requires an active_v1 artifact targeting "
+                f"{expected_target!r}; {self._model_path!r} declares "
+                f"target={artifact_target!r}, lifecycle_schema={artifact_schema!r}"
+            )
+        if not self._active and artifact_target not in (None, expected_target):
+            raise ValueError(
+                f"legacy lifecycle cannot load artifact target "
+                f"{artifact_target!r} from {self._model_path!r}"
+            )
         self._model = self._artifact["model"]
         self._encoders = self._artifact["encoders"]
         self._feature_names = self._artifact["feature_names"]
@@ -607,7 +626,16 @@ class ProcessComponent:
         ctx = self._ctx.get(case_id) or {
             "start_t": engine.now, "position": 0, "prev_act": None
         }
-        duration = self._duration(engine, event, ctx)
+        if self._active:
+            # A_/O_ events do not enter the lifecycle model and the active ML
+            # artifact is intentionally trained on W_ sessions only. Keep their
+            # synthetic start + legacy fallback/distribution behavior exactly as
+            # committed in Design Default #1.
+            rng = self._draw_rng(case_id, activity, "duration",
+                                 self._repeat_counts.get(case_id, {}).get(activity, 0) + 1)
+            duration = self._sample_duration(activity, rng)
+        else:
+            duration = self._duration(engine, event, ctx)
 
         # Fold this activity into the case context for the next sample.
         ctx["position"] += 1

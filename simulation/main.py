@@ -124,6 +124,12 @@ def main(
     lifecycle_mode: str = "legacy",
     active_inputs_path: str | None = None,
 ):
+    if lifecycle_mode not in ("legacy", "active"):
+        raise ValueError(f"lifecycle_mode must be legacy|active, got {lifecycle_mode!r}")
+    if model_path is None:
+        model_path = str(
+            ACTIVE_MODEL_PATH if lifecycle_mode == "active" else DEFAULT_MODEL_PATH
+        )
     engine = SimulationEngine(
         sim_duration=SIM_DURATION_SECONDS,
         start_datetime=START_DATETIME,
@@ -179,7 +185,9 @@ def main(
         permissions=perms,      # Section 1.7: who may perform what
         piled=piled_execution,  # Piled Execution (R-PE, Pattern 38) — default off
         batching_k=k_batching,  # k-Batching (Zeng & Zhao) — default off, exclusive w/ piled
-        duration_model_path=str(DEFAULT_MODEL_PATH) if k_batching else None,
+        duration_model_path=model_path if k_batching else None,
+        lifecycle_mode=lifecycle_mode,
+        lifecycle_params=lifecycle_params,
     )
 
     process_kwargs = dict(

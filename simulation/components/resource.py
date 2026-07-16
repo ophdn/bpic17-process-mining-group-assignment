@@ -341,6 +341,8 @@ class ResourceComponent:
         batching_k: Optional[int] = None,
         batching_max_wait_seconds: float = 4 * 3600,
         duration_model_path: Optional[str] = None,
+        lifecycle_mode: str = "legacy",
+        lifecycle_params=None,
     ):
         if batching_k is not None and piled:
             raise ValueError(
@@ -373,7 +375,11 @@ class ResourceComponent:
         self._batching_k = batching_k
         self._batching_max_wait = batching_max_wait_seconds
         self._duration_model: Optional[ExpectedDurationModel] = (
-            ExpectedDurationModel(duration_model_path) if batching_k is not None else None
+            ExpectedDurationModel(
+                duration_model_path,
+                lifecycle_mode=lifecycle_mode,
+                lifecycle_params=lifecycle_params,
+            ) if batching_k is not None else None
         )
 
         # Section 1.7: who may perform what. Any object satisfying the

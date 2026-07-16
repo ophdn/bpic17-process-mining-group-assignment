@@ -55,7 +55,18 @@ DEFAULT_REFERENCE_PATH = Path(__file__).resolve().parent.parent / "simulation_in
 
 def load_reference(path: Path = DEFAULT_REFERENCE_PATH) -> dict:
     with open(path, encoding="utf-8") as f:
-        return json.load(f)
+        reference = json.load(f)
+    lifecycle = reference.get("lifecycle")
+    if lifecycle:
+        # Active comparisons use active-session distributions while retaining
+        # the top-level arrival/branching/variant reference blocks.
+        reference = dict(reference)
+        reference["processing_times"] = lifecycle.get("processing_times", {})
+        reference["_lifecycle"] = lifecycle
+        reference["_lifecycle_mode"] = "active"
+    else:
+        reference["_lifecycle_mode"] = "legacy"
+    return reference
 
 
 def _traces(df_complete: pd.DataFrame) -> pd.Series:
@@ -142,16 +153,36 @@ def processing_time_errors(df: pd.DataFrame, reference_processing_times: Dict[st
     (seconds) against the reference's fitted mean_s/std_s.
     """
     per_activity = {}
-    for case_id, grp in df.sort_values("time:timestamp").groupby("case:concept:name"):
-        starts: Dict[str, list] = {}
-        for _, row in grp.iterrows():
-            act = row["concept:name"]
-            if row["lifecycle:transition"] == "start":
-                starts.setdefault(act, []).append(row["time:timestamp"])
-            elif row["lifecycle:transition"] == "complete" and starts.get(act):
-                start_ts = starts[act].pop(0)
-                duration = (row["time:timestamp"] - start_ts).total_seconds()
-                per_activity.setdefault(act, []).append(duration)
+    active_schema = "work_item_id" in df.columns and df["work_item_id"].notna().any()
+    if active_schema:
+        # Pair every active session on the first-class work_item_id: start/resume
+        # opens RUNNING; suspend/complete closes it. A suspended ate_abort has no
+        # active interval to add. This remains correct with repeated activities.
+        for wid, grp in df.dropna(subset=["work_item_id"]).sort_values(
+                "time:timestamp").groupby("work_item_id", sort=False):
+            opened = None
+            activity = None
+            for _, row in grp.iterrows():
+                transition = row["lifecycle:transition"]
+                if transition in ("start", "resume"):
+                    opened = row["time:timestamp"]
+                    activity = row["concept:name"]
+                elif transition in ("suspend", "complete") and opened is not None:
+                    duration = (row["time:timestamp"] - opened).total_seconds()
+                    if duration >= 0:
+                        per_activity.setdefault(activity, []).append(duration)
+                    opened = None
+    else:
+        for case_id, grp in df.sort_values("time:timestamp").groupby("case:concept:name"):
+            starts: Dict[str, list] = {}
+            for _, row in grp.iterrows():
+                act = row["concept:name"]
+                if row["lifecycle:transition"] == "start":
+                    starts.setdefault(act, []).append(row["time:timestamp"])
+                elif row["lifecycle:transition"] == "complete" and starts.get(act):
+                    start_ts = starts[act].pop(0)
+                    duration = (row["time:timestamp"] - start_ts).total_seconds()
+                    per_activity.setdefault(act, []).append(duration)
 
     result = {}
     rel_errors = []
@@ -175,6 +206,42 @@ def processing_time_errors(df: pd.DataFrame, reference_processing_times: Dict[st
     return {
         "per_activity": result,
         "mean_rel_err": round(sum(rel_errors) / len(rel_errors), 4) if rel_errors else None,
+        "target": "active_session_seconds" if active_schema else "elapsed_start_complete_seconds",
+    }
+
+
+def suspend_count_errors(df: pd.DataFrame, lifecycle_reference: dict) -> dict:
+    """Compare suspend counts per work item against the extracted active
+    reference. Keying is exclusively by work_item_id (§7)."""
+    expected = lifecycle_reference.get("suspends_per_instance", {})
+    if "work_item_id" not in df.columns:
+        return {"per_activity": {}, "mean_abs_error": None}
+    work = df[df["concept:name"].str.startswith("W_", na=False)].dropna(
+        subset=["work_item_id"])
+    counts = (
+        work.assign(_s=work["lifecycle:transition"].eq("suspend").astype(int))
+        .groupby(["concept:name", "work_item_id"])["_s"].sum()
+    )
+    per_activity = {}
+    errors = []
+    for activity, ref in expected.items():
+        sim = counts.loc[activity] if activity in counts.index.get_level_values(0) else None
+        if sim is None or len(sim) == 0:
+            per_activity[activity] = None
+            continue
+        sim_mean = float(sim.mean())
+        ref_mean = float(ref.get("mean", 0.0))
+        error = abs(sim_mean - ref_mean)
+        errors.append(error)
+        per_activity[activity] = {
+            "sim_mean": round(sim_mean, 4),
+            "ref_mean": ref_mean,
+            "abs_error": round(error, 4),
+            "n_work_items": int(len(sim)),
+        }
+    return {
+        "per_activity": per_activity,
+        "mean_abs_error": round(float(np.mean(errors)), 4) if errors else None,
     }
 
 
@@ -349,6 +416,10 @@ def evaluate(
         "variants": variant_overlap(df_complete, reference["process_variants"]["top_20"]),
         "case_stats": case_length_duration_errors(df_complete, reference["basic_stats"]),
     }
+    if reference.get("_lifecycle_mode") == "active":
+        metrics["lifecycle"] = {
+            "suspend_counts": suspend_count_errors(df, reference["_lifecycle"]),
+        }
     if net is not None:
         metrics["control_flow"] = {
             "fitness": control_flow_fitness(df_complete, net, im, fm),
@@ -369,7 +440,10 @@ def print_report(label: str, metrics: dict) -> None:
     if b["activities_missing_in_run"]:
         print(f"    activities never reached:  {b['activities_missing_in_run']}")
     p = metrics["processing_times"]
-    print(f"  processing time mean rel.err: {p['mean_rel_err']}")
+    print(f"  processing time mean rel.err: {p['mean_rel_err']} ({p.get('target')})")
+    if "lifecycle" in metrics:
+        print(f"  suspend-count mean abs.err:  "
+              f"{metrics['lifecycle']['suspend_counts']['mean_abs_error']}")
     a = metrics["arrival_rate"]
     print(f"  arrival rate rel.err:         {a['rel_err']}  "
           f"(sim={a['sim_mean_interarrival_s']}s vs ref={a['ref_mean_interarrival_s']}s)")
