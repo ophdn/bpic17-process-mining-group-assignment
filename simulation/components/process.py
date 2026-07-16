@@ -419,6 +419,7 @@ class ProcessComponent:
         model_path: Optional[str] = None,
         start_datetime: Optional[datetime] = None,
         resource_component=None,
+        case_attributes=None,
         crn: bool = False,
     ):
         """
@@ -438,6 +439,19 @@ class ProcessComponent:
             If provided, its resource is released on ACTIVITY_COMPLETE (via the
             component's own ``release()`` API). Without this the resource pool
             saturates permanently, leaving the ML resource feature degenerate.
+        case_attributes : CaseAttributeSampler, optional
+            Draws case-level attributes (e.g. loan goal) when a case starts, and
+            carries them on every event of that case. Section 1.7 Advanced needs
+            this so that an OrdinoR permission model can condition on the case
+            type. Defaults to None, in which case no attributes are sampled and
+            every downstream check sees a wildcard — i.e. behaviour is unchanged.
+
+            In PetriNetProcessComponent's "rules" mode this sampler is NOT
+            drawn: the Section 1.5 spawn attributes in ``self._case_attrs``
+            are the single source of truth there, and the subclass's
+            ``_payload()`` derives ``case_type`` from that same draw — so the
+            decision classifiers and the permission check can never disagree
+            on a case's loan goal. See docs/manuals/merge_1.7_plan.md, item A.
         crn : bool, optional
             Common Random Numbers (see module docstring). Default False
             preserves every existing evidence log bit-for-bit. Requires
@@ -455,6 +469,7 @@ class ProcessComponent:
         self._model_path = model_path
         self._anchor = start_datetime or _DEFAULT_ANCHOR
         self._resources = resource_component
+        self._case_attributes = case_attributes
 
         # Lazily-loaded ML artifact (only when mode != "distribution")
         self._artifact: Optional[dict] = None
@@ -548,6 +563,10 @@ class ProcessComponent:
                 "start_t": engine.now,   # case age is measured from here
                 "position": 0,           # activities started so far
                 "prev_act": None,        # previous activity (None => first)
+                # Case-level attributes, drawn once and carried by every event of
+                # this case (Sections 1.5 Advanced I / 1.7 Advanced).
+                "attrs": (self._case_attributes.sample()
+                          if self._case_attributes else {}),
             }
             self._fire_start(engine, case_id, "A_Create Application")
             return
@@ -634,7 +653,25 @@ class ProcessComponent:
             case_id=case_id,
             activity=activity,
             resource=None,
+            payload=self._payload(case_id),
         ))
+
+    def _payload(self, case_id: str) -> dict:
+        """What every event of this case carries.
+
+        `case_type` is the case attribute the permission model conditions on,
+        named the way OrdinoR names case types so the two line up without a
+        translation table. Empty when no attribute sampler is configured, in
+        which case the permission check sees a wildcard.
+        """
+        attrs = (self._ctx.get(case_id) or {}).get("attrs") or {}
+        if not attrs:
+            return {}
+        payload = dict(attrs)
+        goal = attrs.get("case:LoanGoal")
+        if goal is not None:
+            payload["case_type"] = f"CT.{goal}"
+        return payload
 
     def _should_terminate(
         self, case_id: str, activity: str, counts: Dict[str, int]
