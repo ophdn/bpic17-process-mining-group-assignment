@@ -108,6 +108,22 @@ the simulator:
         \S1.6 model records which accounts are automated so the resource
         component can tell ``automated'' from ``unfitted'' rather than treating
         every windowless account as available around the clock.
+  \item \emph{Limitation / future work --- the sparse resources belong to the
+        full-time teams.} Cross-referencing Tier B against the \S1.7 org model
+        is revealing: 22 of the 27 fall into just two of the ten groups --- the
+        \emph{same} groups as the full-time application-completion (group~3) and
+        validation (group~6) staff, doing the same activities. So they are not a
+        separate function but an \emph{addition} to those teams: plausibly
+        part-timers, staff on long leave, or people on-/offboarded mid-year. A
+        window fitted from their handful of observations is then too narrow in
+        spirit (one resource was seen working $\sim$5\,min); a more faithful
+        model would give a sparse resource its \emph{team's} operating window
+        (the group's typical hours) while keeping its own low
+        $P(\text{works})$ --- the same hours as the full-timers, just not every
+        day, and possibly half-days. We flag this as future work rather than
+        adopt it: it would couple \S1.6 to the \S1.7 org model, and the thinnest
+        resources are not in the permission pool, so they are never allocated
+        regardless.
   \item \emph{Why quantiles over min/max:} min/max reaches 100\% coverage but
         wastes half the modelled day (49.4\% utilisation) on outlier-stretched
         windows; $q_{10}/q_{90}$ covers \textbf{97.4\%} of real work events at
