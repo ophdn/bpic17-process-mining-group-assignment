@@ -160,6 +160,8 @@ From the repo root, inside the virtualenv:
 .venv/bin/python -m simulation.main --process-model basic      # flat next-activity probability graph (Section 1.4 Basic)
 .venv/bin/python -m simulation.main --mode ml_model            # contextual point-estimate ML durations
 .venv/bin/python -m simulation.main --mode ml_probabilistic    # contextual probabilistic ML durations
+.venv/bin/python -m simulation.main --availability always       # Section 1.6: resources never off-shift (baseline)
+.venv/bin/python -m simulation.main --piled-execution           # Section 1.8: Piled Execution (R-PE) batch allocation
 ```
 
 Output is always saved to `<repo_root>/output/event_log.csv`, regardless of
@@ -209,13 +211,13 @@ engine = SimulationEngine(..., start_datetime=datetime(2017, 1, 1))
 | Assignment section | Status | File |
 |---|---|---|
 | **1.1** Simulation Engine Core | ✅ Done | `core/engine.py`, `core/events.py`, `core/logger.py` |
-| **1.2** Case Arrivals | ✅ Done (Basic: fitted LogNormal) | `components/arrival.py` |
+| **1.2** Case Arrivals | ✅ Done (Basic: fitted LogNormal; Advanced: time-dependent MDN, opt-in via `USE_MDN_ARRIVALS`) | `components/arrival.py`, `components/arrival_mdn.py` |
 | **1.3** Processing Times | ✅ Done (3 modes: distribution / ml_model / ml_probabilistic) | `components/process.py`, `train_processing_time_model.py` — see [PROCESSING_TIMES.md](simulation/PROCESSING_TIMES.md) |
 | **1.4** Process Model | ✅ Done (Basic: probability graph; Advanced: BPMN → Petri net enforcement) | `components/process.py`, `components/petri_process.py`, `models/bpic17_process.bpmn` |
 | **1.5** Branching Decisions | ✅ Done (Basic: empirical branching probabilities) | `components/process.py` (`BRANCHING_PROBS`) |
-| **1.6** Resource Availabilities | ✅ Done (Basic: fixed capacity per resource) | `components/resource.py` |
+| **1.6** Resource Availabilities | ✅ Done (Basic: fixed capacity per resource; Advanced: fitted shift/holiday/vacation calendar, default via `--availability calendar`) | `components/resource.py`, `analysis/availability.py` |
 | **1.7** Resource Permissions | ✅ Done (Basic: resource→activity permission map) | `components/resource.py` |
-| **1.8** Resource Allocation | ✅ Done (Basic: random allocation among permitted resources) | `components/resource.py` |
+| **1.8** Resource Allocation | ✅ Done (Basic: random allocation among permitted resources; optional Piled Execution/R-PE batch allocation via `--piled-execution`) | `components/resource.py` — see [resource_allocation_heuristics.md](docs/manuals/resource_allocation_heuristics.md) |
 
 Every section above still has open Advanced variants beyond what's marked
 done (see the "Upgrade path" note at the top of each component file).

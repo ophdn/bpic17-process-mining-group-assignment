@@ -77,8 +77,11 @@ _CaseCompletionTracker.HANDLES = {
 
 
 def run_sim(use_advanced: bool, bpmn_path: Path = BPMN_PATH,
-            branching_mode: str = "probs") -> tuple[pd.DataFrame, dict]:
-    """Returns (completed-cases DataFrame, run stats incl. completion rate)."""
+            branching_mode: str = "probs") -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """Returns (completed-cases DataFrame, unfiltered DataFrame, run stats
+    incl. completion rate). The unfiltered frame is needed for
+    metrics.arrival_rate_error, which must not be restricted to completed
+    cases (see that function's docstring for why)."""
     engine = SimulationEngine(sim_duration=SIM_DURATION_SECONDS, start_datetime=START_DATETIME)
     arrivals = ArrivalComponent(seed=SEED)
     resources = ResourceComponent(capacity_per_resource=3, seed=SEED)
@@ -101,11 +104,11 @@ def run_sim(use_advanced: bool, bpmn_path: Path = BPMN_PATH,
     arrivals.bootstrap(engine)
     engine.run()
 
-    df = pd.DataFrame(engine.logger._rows)
+    df_all = pd.DataFrame(engine.logger._rows)
     # format="ISO8601": isoformat() drops the .%f part when microsecond == 0,
     # so the column mixes two ISO variants — strict parsing would crash.
-    df["time:timestamp"] = pd.to_datetime(df["time:timestamp"], format="ISO8601")
-    df = df[df["case:concept:name"].isin(tracker.completed_case_ids)]
+    df_all["time:timestamp"] = pd.to_datetime(df_all["time:timestamp"], format="ISO8601")
+    df = df_all[df_all["case:concept:name"].isin(tracker.completed_case_ids)]
     stats = {
         "cases_started": engine.stats.get("cases_started"),
         "cases_completed": engine.stats.get("cases_completed"),
@@ -115,7 +118,7 @@ def run_sim(use_advanced: bool, bpmn_path: Path = BPMN_PATH,
         "sim_duration_days": SIM_DURATION_SECONDS // 86400,
         "seed": SEED,
     }
-    return df, stats
+    return df, df_all, stats
 
 
 def main():
@@ -145,9 +148,9 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
     results = {}
     for label in configs:
-        df, run_stats = run_sim(label == "advanced", bpmn_path=args.bpmn,
-                                branching_mode=args.branching_mode)
-        results[label] = metrics.evaluate(df, reference, net, im, fm)
+        df, df_all, run_stats = run_sim(label == "advanced", bpmn_path=args.bpmn,
+                                        branching_mode=args.branching_mode)
+        results[label] = metrics.evaluate(df, reference, net, im, fm, df_all=df_all)
         results[label]["run_stats"] = run_stats
         results[label]["config"] = {
             "process_model": label,
