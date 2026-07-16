@@ -55,6 +55,10 @@ OUTPUT_PATH = REPO_ROOT / "output" / "event_log.csv"
 # live under simulation/models/.
 # Default trained-model artifact for the ML processing-time modes
 DEFAULT_MODEL_PATH = REPO_ROOT / "simulation" / "models" / "processing_time_model.joblib"
+# Active-lifecycle artifacts (§4.8) — versioned so retraining never overwrites the
+# legacy artifacts and a legacy run stays bit-reproducible.
+ACTIVE_MODEL_PATH = REPO_ROOT / "simulation" / "models" / "processing_time_model_active.joblib"
+ACTIVE_INPUTS_PATH = REPO_ROOT / "simulation_inputs_active.json"
 
 # Section 1.4 Advanced: BPMN model discovered from the real BPIC-17 log
 # (Inductive Miner). Loaded and converted to a Petri net whose firing rules
@@ -117,12 +121,29 @@ def main(
     decision_rules_path: str | None = None,
     piled_execution: bool = False,
     k_batching: int | None = None,
+    lifecycle_mode: str = "legacy",
+    active_inputs_path: str | None = None,
 ):
+    if lifecycle_mode not in ("legacy", "active"):
+        raise ValueError(f"lifecycle_mode must be legacy|active, got {lifecycle_mode!r}")
+    if model_path is None:
+        model_path = str(
+            ACTIVE_MODEL_PATH if lifecycle_mode == "active" else DEFAULT_MODEL_PATH
+        )
     engine = SimulationEngine(
         sim_duration=SIM_DURATION_SECONDS,
         start_datetime=START_DATETIME,
         verbose=False,   # set True to print every event (slow for large runs)
+        lifecycle_mode=lifecycle_mode,
     )
+
+    # Active lifecycle mode (§4.4): load the mined active-time + churn parameters.
+    # Legacy mode never constructs this and keeps the hardcoded constants.
+    lifecycle_params = None
+    if lifecycle_mode == "active":
+        from simulation.components.lifecycle_params import LifecycleParameters
+        lifecycle_params = LifecycleParameters.from_file(
+            active_inputs_path or str(ACTIVE_INPUTS_PATH))
 
     # Section 1.6: resource availability. "calendar" loads the model fitted in
     # notebooks/01_resource_availability.ipynb — per-resource shifts, discovered
@@ -164,7 +185,9 @@ def main(
         permissions=perms,      # Section 1.7: who may perform what
         piled=piled_execution,  # Piled Execution (R-PE, Pattern 38) — default off
         batching_k=k_batching,  # k-Batching (Zeng & Zhao) — default off, exclusive w/ piled
-        duration_model_path=str(DEFAULT_MODEL_PATH) if k_batching else None,
+        duration_model_path=model_path if k_batching else None,
+        lifecycle_mode=lifecycle_mode,
+        lifecycle_params=lifecycle_params,
     )
 
     process_kwargs = dict(
@@ -174,6 +197,8 @@ def main(
         start_datetime=START_DATETIME,   # anchor for day_of_week / hour_of_day
         resource_component=resources,    # so resources are released on complete
         case_attributes=case_attrs,      # Section 1.7: case types for the org model
+        lifecycle_mode=lifecycle_mode,   # legacy | active (§4.4)
+        lifecycle_params=lifecycle_params,
     )
     if process_model == "advanced":
         process = PetriNetProcessComponent(
@@ -240,8 +265,21 @@ if __name__ == "__main__":
         help="Processing-time model (default: distribution).",
     )
     parser.add_argument(
-        "--model-path", default=str(DEFAULT_MODEL_PATH),
-        help="Path to the trained joblib artifact (ML modes only).",
+        "--model-path", default=None,
+        help="Path to the trained joblib artifact (ML modes only). Defaults to the "
+             "legacy artifact in legacy mode and the _active artifact in active mode.",
+    )
+    parser.add_argument(
+        "--lifecycle-mode", default="legacy", choices=["legacy", "active"],
+        help="'legacy' (default) reproduces today's single start->complete block "
+             "bit-for-bit (five-column log). 'active' runs the W_ work-item "
+             "suspend/resume state machine with active-service-time durations "
+             "(six-column log, work_item_id), loading the mined parameters from "
+             "--active-inputs-path (implementationplan §3/§4.4).",
+    )
+    parser.add_argument(
+        "--active-inputs-path", default=str(ACTIVE_INPUTS_PATH),
+        help="Path to simulation_inputs_active.json (--lifecycle-mode active only).",
     )
     parser.add_argument(
         "--process-model", default="advanced",
@@ -306,9 +344,15 @@ if __name__ == "__main__":
     # output/validation/branching_probs_vs_rules/), plain "probs" on basic.
     branching_mode = args.branching_mode or (
         "visit" if args.process_model == "advanced" else "probs")
+    # Artifact selection (§4.8): default the ML model path to the versioned _active
+    # artifact in active mode, the legacy one otherwise; an explicit --model-path
+    # always wins.
+    model_path = args.model_path or (
+        str(ACTIVE_MODEL_PATH) if args.lifecycle_mode == "active"
+        else str(DEFAULT_MODEL_PATH))
     main(
         mode=args.mode,
-        model_path=args.model_path,
+        model_path=model_path,
         process_model=args.process_model,
         bpmn_path=args.bpmn_path,
         availability=args.availability,
@@ -317,4 +361,6 @@ if __name__ == "__main__":
         decision_rules_path=args.decision_rules_path,
         piled_execution=args.piled_execution,
         k_batching=args.k_batching,
+        lifecycle_mode=args.lifecycle_mode,
+        active_inputs_path=args.active_inputs_path,
     )

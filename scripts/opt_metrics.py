@@ -58,6 +58,29 @@ def paired_instances(df: pd.DataFrame) -> pd.DataFrame:
     start, complete. Start #k pairs with complete #k per (case, activity),
     matching how the engine executes activities sequentially per case."""
     df = df.sort_values("time:timestamp")
+    if "work_item_id" in df.columns and df["work_item_id"].notna().any():
+        rows = []
+        lifecycle = df.dropna(subset=["work_item_id"])
+        for wid, grp in lifecycle.groupby("work_item_id", sort=False):
+            opened = None
+            for _, row in grp.sort_values("time:timestamp").iterrows():
+                transition = row["lifecycle:transition"]
+                if transition in ("start", "resume"):
+                    opened = row
+                elif transition in ("suspend", "complete") and opened is not None:
+                    rows.append({
+                        "case_id": opened["case:concept:name"],
+                        "activity": opened["concept:name"],
+                        "resource": opened["org:resource"],
+                        "start": opened["time:timestamp"],
+                        "complete": row["time:timestamp"],
+                        "work_item_id": wid,
+                    })
+                    opened = None
+        return pd.DataFrame(rows, columns=[
+            "case_id", "activity", "resource", "start", "complete", "work_item_id"
+        ])
+
     starts = df[df["lifecycle:transition"] == "start"].copy()
     completes = df[df["lifecycle:transition"] == "complete"].copy()
 
@@ -136,8 +159,9 @@ def average_cycle_time(
 # ---------------------------------------------------------------------
 
 def resource_busy_seconds(df: pd.DataFrame) -> pd.Series:
-    """Total busy seconds per resource (sum of start→complete durations of
-    the instances it executed). Rows without an assigned resource are
+    """Total busy seconds per resource (sum of paired running sessions).
+    Legacy logs have one start→complete session per instance; active logs also
+    pair resume→suspend/complete on work_item_id. Rows without a resource are
     excluded. NOTE: with capacity > 1 a resource can run instances in
     parallel, so busy time can exceed wall time — occupation > 1 then
     signals exactly that modeling artefact."""

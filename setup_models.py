@@ -10,8 +10,12 @@ BPIC-17 event log in the repo:
     # put BPIChallenge2017.xes (or .xes.gz) in the repo root (or data/)
     python setup_models.py
 
+    # Build the versioned active lifecycle tables and duration artifact:
+    python setup_models.py --lifecycle active
+
     # then the ML-dependent modes work:
     python -m simulation.main --mode ml_probabilistic
+    python -m simulation.main --lifecycle-mode active --mode ml_probabilistic
     python -m simulation.main --branching-mode rules
 
 Artifacts produced (from the raw log):
@@ -22,6 +26,12 @@ Artifacts produced (from the raw log):
       are written in one pass.
   simulation/models/decision_rules.joblib          (Section 1.5
       --branching-mode rules).
+
+With ``--lifecycle active`` the script writes only the versioned active family:
+
+  simulation_inputs_active.json
+  simulation/models/processing_time_model_active.joblib
+  output/models/processing_time_metrics_active.json
 
 Everything else the simulation loads (the BPMN, the fitted availability
 model, the visit-conditioned branching probabilities) is committed, so the
@@ -54,7 +64,7 @@ LOG_CANDIDATES = [
 ]
 
 # (label, output artifact, training script, extra CLI args)
-ARTIFACTS = [
+LEGACY_ARTIFACTS = [
     (
         "processing-time model (point + 19 quantile models)",
         "simulation/models/processing_time_model.joblib",
@@ -66,6 +76,25 @@ ARTIFACTS = [
         "simulation/models/decision_rules.joblib",
         "train_decision_rules.py",
         [],
+    ),
+]
+
+ACTIVE_ARTIFACTS = [
+    (
+        "active lifecycle/churn parameter tables",
+        "simulation_inputs_active.json",
+        "extract_log_info.py",
+        ["--lifecycle", "--out", "simulation_inputs_active.json"],
+    ),
+    (
+        "active-session processing-time model (point + 19 quantile models)",
+        "simulation/models/processing_time_model_active.joblib",
+        "train_processing_time_model.py",
+        [
+            "--probabilistic", "--lifecycle",
+            "--output", "simulation/models/processing_time_model_active.joblib",
+            "--metrics-output", "output/models/processing_time_metrics_active.json",
+        ],
     ),
 ]
 
@@ -93,7 +122,9 @@ def find_log(explicit: str | None) -> Path:
 
 def run_trainer(script: str, log_path: Path, extra: list[str]) -> None:
     """Invoke a training script as a subprocess from the repo root."""
-    cmd = [sys.executable, script, "--log", str(log_path), *extra]
+    # Quantile training is intentionally long-running. Unbuffered mode keeps
+    # per-quantile progress visible when setup itself is run through a pipe/CI.
+    cmd = [sys.executable, "-u", script, "--log", str(log_path), *extra]
     print(f"[setup] $ {' '.join(cmd)}")
     subprocess.run(cmd, cwd=REPO_ROOT, check=True)
 
@@ -111,25 +142,32 @@ def main() -> None:
         "--force", action="store_true",
         help="Retrain even if the artifact already exists.",
     )
+    parser.add_argument(
+        "--lifecycle", default="legacy", choices=["legacy", "active"],
+        help="Artifact family to build. 'legacy' (default) preserves the original "
+             "paths; 'active' writes only versioned active lifecycle artifacts.",
+    )
     args = parser.parse_args()
+
+    artifacts = ACTIVE_ARTIFACTS if args.lifecycle == "active" else LEGACY_ARTIFACTS
 
     # If everything already exists and --force wasn't passed, we don't even
     # need the log — report and exit.
     needed = [
-        a for a in ARTIFACTS
+        a for a in artifacts
         if args.force or not (REPO_ROOT / a[1]).is_file()
     ]
     if not needed:
         print("[setup] All artifacts already present — nothing to do "
               "(pass --force to retrain):")
-        for label, out, _script, _extra in ARTIFACTS:
+        for label, out, _script, _extra in artifacts:
             print(f"          {out}")
         return
 
     log_path = find_log(args.log)
     print(f"[setup] Using log: {log_path}")
 
-    for label, out, script, extra in ARTIFACTS:
+    for label, out, script, extra in artifacts:
         out_path = REPO_ROOT / out
         if out_path.is_file() and not args.force:
             print(f"[setup] SKIP  {label} — already present at {out}")
@@ -138,11 +176,12 @@ def main() -> None:
         run_trainer(script, log_path, extra)
 
     print("\n[setup] Done. All required artifacts are in place:")
-    for label, out, _script, _extra in ARTIFACTS:
+    for label, out, _script, _extra in artifacts:
         status = "ok" if (REPO_ROOT / out).is_file() else "MISSING"
         print(f"          [{status}] {out}")
     print("\n[setup] You can now run e.g.:")
-    print("          python -m simulation.main --mode ml_probabilistic")
+    suffix = " --lifecycle-mode active" if args.lifecycle == "active" else ""
+    print(f"          python -m simulation.main --mode ml_probabilistic{suffix}")
     print("          python -m simulation.main --branching-mode rules")
 
 

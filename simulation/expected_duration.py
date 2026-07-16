@@ -1,8 +1,10 @@
 """
 expected_duration.py — shared processing-time point-estimate API
 ===================================================================
-Answers "how long will (activity, resource) take, on average" without
-running a stochastic simulation step. Currently consumed by k-Batching's
+Answers "how long will this allocation hold (activity, resource), on average"
+without running a stochastic simulation step. In legacy mode that is the fitted
+elapsed activity duration; in active mode it is the **next active session** up
+to release on suspend/complete. Currently consumed by k-Batching's
 assignment cost function (Optimization 1.1 / Final Task 1,
 components/resource.py); Park & Song (D1) needs the same estimate for its
 next-task prediction, so this is the shared `expected_duration()` API the
@@ -11,10 +13,9 @@ one (docs/ROADMAP.md, "Daniel <-> Mario" interface note).
 
 Two estimate tiers, weakest-to-strongest:
 
-1. `distribution_mean_seconds(activity)` — the analytic mean of the fitted
-   scipy distribution (Section 1.3 Basic, `PROCESSING_TIME_PARAMS` in
-   process.py), or the fallback constant for activities without a fitted
-   distribution. No context needed; always available.
+1. `distribution_mean_seconds(activity)` — the analytic mean of the selected
+   fitted scipy distribution. Legacy uses `PROCESSING_TIME_PARAMS`; active uses
+   `LifecycleParameters.processing_times`. No context needed; always available.
 2. `ExpectedDurationModel.expected_duration(activity, resource, context)`
    — the trained GBR point model (Section 1.3 Basic option 2 / `mode=
    "ml_model"` in process.py), given whatever context the caller has.
@@ -34,7 +35,7 @@ left as future work.
 from __future__ import annotations
 
 import math
-from typing import Optional
+from typing import Mapping, Optional
 
 import numpy as np
 
@@ -72,13 +73,17 @@ _ANALYTIC_MEANS = {
 }
 
 
-def distribution_mean_seconds(activity: str) -> float:
+def distribution_mean_seconds(
+    activity: str,
+    processing_times: Optional[Mapping[str, tuple]] = None,
+) -> float:
     """Expected duration with NO context: the fitted distribution's
     analytic mean, or the fallback constant. Always available (Section
     1.3 Basic data), used when the ML artifact is absent or fails to load.
     """
-    if activity in PROCESSING_TIME_PARAMS:
-        dist_name, params = PROCESSING_TIME_PARAMS[activity]
+    table = PROCESSING_TIME_PARAMS if processing_times is None else processing_times
+    if activity in table:
+        dist_name, params = table[activity]
         fn = _ANALYTIC_MEANS.get(dist_name)
         if fn is not None:
             try:
@@ -98,8 +103,17 @@ class ExpectedDurationModel:
     availability themselves.
     """
 
-    def __init__(self, model_path: Optional[str] = None):
+    def __init__(self, model_path: Optional[str] = None, *,
+                 lifecycle_mode: str = "legacy", lifecycle_params=None):
+        if lifecycle_mode not in ("legacy", "active"):
+            raise ValueError(f"lifecycle_mode must be legacy|active, got {lifecycle_mode!r}")
+        if lifecycle_mode == "active" and lifecycle_params is None:
+            raise ValueError("active expected-duration estimation requires lifecycle_params")
         self._model_path = model_path
+        self._lifecycle_mode = lifecycle_mode
+        self._processing_times = (
+            lifecycle_params.processing_times if lifecycle_mode == "active" else None
+        )
         self._artifact: Optional[dict] = None
         self._unavailable = False
 
@@ -112,10 +126,29 @@ class ExpectedDurationModel:
         try:
             import joblib
             self._artifact = joblib.load(self._model_path)
-        except (FileNotFoundError, OSError, ValueError, KeyError):
-            # Untrained environment (no artifact yet) or a corrupt/incompatible
-            # one -- fall back rather than crash the caller's allocation loop.
+        except (FileNotFoundError, OSError):
+            # An artifact may legitimately be absent in a distribution-only
+            # checkout; fall back to the mode-selected analytic mean.
             self._unavailable = True
+            return
+
+        expected = (
+            "active_session_seconds" if self._lifecycle_mode == "active"
+            else "elapsed_start_complete_seconds"
+        )
+        target = self._artifact.get("target")
+        schema = self._artifact.get("lifecycle_schema")
+        if self._lifecycle_mode == "active" and (
+            target != expected or schema != "active_v1"
+        ):
+            raise ValueError(
+                f"active expected-duration model needs target={expected!r}, "
+                f"schema='active_v1'; got target={target!r}, schema={schema!r}"
+            )
+        if self._lifecycle_mode == "legacy" and target not in (None, expected):
+            raise ValueError(
+                f"legacy expected-duration model cannot use target={target!r}"
+            )
 
     def expected_duration(
         self, activity: str, resource: Optional[str] = None,
@@ -123,7 +156,7 @@ class ExpectedDurationModel:
     ) -> float:
         self._ensure()
         if self._unavailable:
-            return distribution_mean_seconds(activity)
+            return distribution_mean_seconds(activity, self._processing_times)
 
         art = self._artifact
         model = art["model"]
@@ -158,7 +191,7 @@ class ExpectedDurationModel:
         except KeyError:
             # Artifact expects a feature this context can't supply -- fall
             # back rather than guess.
-            return distribution_mean_seconds(activity)
+            return distribution_mean_seconds(activity, self._processing_times)
 
         pred_log = model.predict(np.asarray(features, dtype=float).reshape(1, -1))[0]
         return max(1.0, float(np.expm1(pred_log)))

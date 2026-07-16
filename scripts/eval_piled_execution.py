@@ -23,6 +23,7 @@ Usage:
     PYTHONPATH=. .venv/bin/python scripts/eval_piled_execution.py
 """
 
+import argparse
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -31,6 +32,7 @@ from simulation.core.engine import SimulationEngine
 from simulation.components.arrival import ArrivalComponent
 from simulation.components.process import ProcessComponent
 from simulation.components.resource import ResourceComponent
+from simulation.components.lifecycle_params import LifecycleParameters
 from analysis.availability import YearlyAvailability
 
 SEED = 42
@@ -42,11 +44,18 @@ CAPACITY = 3
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AVAILABILITY_MODEL_PATH = REPO_ROOT / "models" / "availability_model.json"
 OUTPUT_PATH = REPO_ROOT / "output" / "piled_execution_eval.md"
+ACTIVE_INPUTS_PATH = REPO_ROOT / "simulation_inputs_active.json"
 
 
-def run(piled: bool):
+def run(piled: bool, lifecycle_mode: str = "legacy"):
     calendar = YearlyAvailability.from_json(AVAILABILITY_MODEL_PATH)
-    engine = SimulationEngine(sim_duration=DURATION, start_datetime=START, verbose=False)
+    lifecycle_params = (
+        LifecycleParameters.from_file(ACTIVE_INPUTS_PATH)
+        if lifecycle_mode == "active" else None
+    )
+    engine = SimulationEngine(
+        sim_duration=DURATION, start_datetime=START, verbose=False,
+        lifecycle_mode=lifecycle_mode)
     arrivals = ArrivalComponent(seed=SEED)
     resources = ResourceComponent(
         capacity_per_resource=CAPACITY, seed=SEED,
@@ -55,6 +64,7 @@ def run(piled: bool):
     process = ProcessComponent(
         seed=SEED, mode="distribution", start_datetime=START,
         resource_component=resources,
+        lifecycle_mode=lifecycle_mode, lifecycle_params=lifecycle_params,
     )
     engine.register(arrivals)
     engine.register(resources)
@@ -95,8 +105,8 @@ def back_to_back_pairs(rows) -> int:
     return count
 
 
-def evaluate(piled: bool) -> dict:
-    engine, resources = run(piled)
+def evaluate(piled: bool, lifecycle_mode: str = "legacy") -> dict:
+    engine, resources = run(piled, lifecycle_mode)
     rows = engine.logger._rows
     rstats = resources.stats()
     return {
@@ -112,10 +122,18 @@ def evaluate(piled: bool) -> dict:
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--lifecycle-mode", default="legacy",
+                        choices=["legacy", "active"])
+    parser.add_argument("--out", type=Path, default=None)
+    args = parser.parse_args()
+    output_path = args.out or (
+        OUTPUT_PATH.with_name("piled_execution_eval_active.md")
+        if args.lifecycle_mode == "active" else OUTPUT_PATH)
     print(f"Running baseline (piled=False), {DAYS}-day horizon, seed={SEED} ...")
-    baseline = evaluate(piled=False)
+    baseline = evaluate(piled=False, lifecycle_mode=args.lifecycle_mode)
     print(f"Running Piled Execution (piled=True), {DAYS}-day horizon, seed={SEED} ...")
-    piled = evaluate(piled=True)
+    piled = evaluate(piled=True, lifecycle_mode=args.lifecycle_mode)
 
     metrics = [
         ("cases_started", "Cases started", "{:d}"),
@@ -194,10 +212,10 @@ effects in `ResourceComponent` — out of scope here.
 """
     print(interpretation)
 
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with OUTPUT_PATH.open("w", encoding="utf-8") as f:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n" + interpretation)
-    print(f"Saved to {OUTPUT_PATH}")
+    print(f"Saved to {output_path}")
 
 
 if __name__ == "__main__":

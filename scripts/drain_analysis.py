@@ -21,6 +21,7 @@ Output:
     output/validation/horizon_censoring/drain.json
 """
 
+import argparse
 import json
 import sys
 from datetime import datetime
@@ -41,6 +42,7 @@ from simulation.core.events import EventType  # noqa: E402
 from simulation.components.arrival import ArrivalComponent  # noqa: E402
 from simulation.components.petri_process import PetriNetProcessComponent  # noqa: E402
 from simulation.components.resource import ResourceComponent  # noqa: E402
+from simulation.components.lifecycle_params import LifecycleParameters  # noqa: E402
 
 ARRIVAL_DAYS = 30      # identical arrival window to the KPI baseline runs
 DRAIN_DAYS = 180       # generous drain horizon so every case can finish
@@ -48,6 +50,8 @@ START_DATETIME = datetime(2016, 1, 1)
 SEED = 42
 BPMN = REPO_ROOT / "simulation" / "models" / "bpic17_process.bpmn"
 OUT = REPO_ROOT / "output" / "validation" / "horizon_censoring" / "drain.json"
+LEGACY_REFERENCE = REPO_ROOT / "simulation_inputs.json"
+ACTIVE_REFERENCE = REPO_ROOT / "simulation_inputs_active.json"
 
 
 class CutoffArrivals(ArrivalComponent):
@@ -77,13 +81,29 @@ CompletionTracker.HANDLES = {EventType.CASE_COMPLETE: CompletionTracker.on_case_
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--lifecycle-mode", default="legacy",
+                        choices=["legacy", "active"])
+    parser.add_argument("--reference", type=Path, default=None)
+    parser.add_argument("--out", type=Path, default=None)
+    args = parser.parse_args()
+    reference_path = args.reference or (
+        ACTIVE_REFERENCE if args.lifecycle_mode == "active" else LEGACY_REFERENCE)
+    out_path = args.out or (
+        OUT.with_name("drain_active.json")
+        if args.lifecycle_mode == "active" else OUT)
+    lifecycle_params = (
+        LifecycleParameters.from_file(ACTIVE_REFERENCE)
+        if args.lifecycle_mode == "active" else None)
     engine = SimulationEngine(sim_duration=DRAIN_DAYS * 24 * 3600,
-                              start_datetime=START_DATETIME)
+                              start_datetime=START_DATETIME,
+                              lifecycle_mode=args.lifecycle_mode)
     arrivals = CutoffArrivals(ARRIVAL_DAYS * 24 * 3600, seed=SEED)
     resources = ResourceComponent(capacity_per_resource=3, seed=SEED)
     process = PetriNetProcessComponent(
         bpmn_path=str(BPMN), branching_mode="visit", seed=SEED,
-        resource_component=resources, start_datetime=START_DATETIME)
+        resource_component=resources, start_datetime=START_DATETIME,
+        lifecycle_mode=args.lifecycle_mode, lifecycle_params=lifecycle_params)
     tracker = CompletionTracker()
     for c in (arrivals, resources, process, tracker):
         engine.register(c)
@@ -95,7 +115,7 @@ def main():
     started = df["case:concept:name"].nunique()
     df = df[df["case:concept:name"].isin(tracker.completed)]
 
-    reference = metrics.load_reference()
+    reference = metrics.load_reference(reference_path)
     m = metrics.evaluate(df, reference)   # no net: control-flow unchanged by draining
 
     result = {
@@ -103,6 +123,8 @@ def main():
                    "to the KPI baseline runs), engine drained until day %d so "
                    "no case is cut off by the horizon") % (ARRIVAL_DAYS, SEED, DRAIN_DAYS),
         "branching_mode": "visit",
+        "lifecycle_mode": args.lifecycle_mode,
+        "reference": str(reference_path.name),
         "cases_started": started,
         "cases_completed": len(tracker.completed),
         "completion_rate": round(len(tracker.completed) / max(started, 1), 4),
@@ -112,12 +134,12 @@ def main():
         "branching_mean_tvd": m["branching"]["mean_tvd"],
         "variants": m["variants"],
     }
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    with open(OUT, "w", encoding="utf-8") as f:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2, default=float)
 
     print(json.dumps(result, indent=2, default=float))
-    print(f"\n[save] -> {OUT}")
+    print(f"\n[save] -> {out_path}")
 
 
 if __name__ == "__main__":
