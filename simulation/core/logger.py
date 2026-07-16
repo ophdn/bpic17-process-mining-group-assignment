@@ -100,6 +100,14 @@ class EventLogger:
                 event.activity and event.activity.startswith("W_")):
             return
 
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        # A resume-ready re-request is an ACTIVITY_REQUEST too, but it must NOT emit
+        # a second `schedule` row: in BPIC-17 `schedule` counts ≈ work items, not
+        # work items + resumes. The one schedule row is the initial enablement; the
+        # resume row (emitted after re-allocation) marks the continuation. §4.3/§4.6
+        if transition == "schedule" and payload.get("resuming"):
+            return
+
         ts = self._sim_time_to_datetime(event.timestamp)
         row = {
             "case:concept:name": event.case_id,
@@ -109,7 +117,6 @@ class EventLogger:
             "org:resource": event.resource or "",
         }
         if self._active:
-            payload = event.payload if isinstance(event.payload, dict) else {}
             row["work_item_id"] = payload.get("work_item_id", "")
         self._rows.append(row)
 

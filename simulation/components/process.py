@@ -69,6 +69,10 @@ TERMINAL_ACTIVITIES = {
 # (guards against infinite loops in self-looping activities like W_Call after offers)
 MAX_ACTIVITY_REPEATS = 15
 
+# Active mode: max suspend/resume sessions for one work item before we force a
+# complete (loop guard; the empirical max in BPIC-17 is ≈55). §4.4
+MAX_SESSIONS = 60
+
 
 # ── Processing time distributions fitted on BPIC-17 ────────────────────────
 # Format: activity -> (distribution_name, params)
@@ -407,6 +411,10 @@ class ProcessComponent:
     HANDLES = {
         EventType.ACTIVITY_START:    None,
         EventType.ACTIVITY_COMPLETE: None,
+        EventType.ACTIVITY_SUSPEND:  None,
+        EventType.ACTIVITY_RESUME:   None,
+        EventType.ACTIVITY_ABORT:    None,
+        EventType.ACTIVITY_WITHDRAW: None,
     }
 
     # Recognised processing-time modes
@@ -421,6 +429,8 @@ class ProcessComponent:
         resource_component=None,
         case_attributes=None,
         crn: bool = False,
+        lifecycle_mode: str = "legacy",
+        lifecycle_params=None,
     ):
         """
         Parameters
@@ -461,6 +471,19 @@ class ProcessComponent:
             raise ValueError(f"mode must be one of {self._MODES}, got {mode!r}")
         if crn and seed is None:
             raise ValueError("crn=True requires a concrete seed (got None)")
+        if lifecycle_mode not in ("legacy", "active"):
+            raise ValueError(f"lifecycle_mode must be legacy|active, got {lifecycle_mode!r}")
+        if lifecycle_mode == "active" and lifecycle_params is None:
+            raise ValueError("lifecycle_mode='active' requires lifecycle_params "
+                             "(load from simulation_inputs_active.json).")
+
+        self._lifecycle_mode = lifecycle_mode
+        self._active = lifecycle_mode == "active"
+        self._lp = lifecycle_params
+        # work_item_id -> per-item session state (active mode). Keyed on work_item_id
+        # so repeated/suspended instances of one (case, activity) never collide. §4.4
+        self._witem: Dict[str, dict] = {}
+        self._witem_seq: Dict[str, int] = {}   # case_id -> monotonic work-item counter
 
         self._rng = random.Random(seed)
         self._seed = seed
@@ -571,6 +594,12 @@ class ProcessComponent:
             self._fire_start(engine, case_id, "A_Create Application")
             return
 
+        # Active mode: a W_ work item runs as a suspend/resume session loop
+        # rather than one monolithic start→complete block (§4.4).
+        if self._active and event.activity and event.activity.startswith("W_"):
+            self._open_session(engine, event, is_resume=False)
+            return
+
         # Normal start: sample duration (context-aware in ML modes), then
         # schedule ACTIVITY_COMPLETE. Context is read *before* this activity
         # is folded in, so the features describe the state at its start.
@@ -597,6 +626,14 @@ class ProcessComponent:
     def on_activity_complete(self, engine, event: SimEvent) -> None:
         case_id  = event.case_id
         activity = event.activity
+
+        # Active mode: a completed W_ session ends the whole work item — drop its
+        # session state. Routing after complete reuses the normal branching
+        # (implementationplan §4.4 point 5).
+        if self._active:
+            wid = self._witem_id(event)
+            if wid is not None:
+                self._witem.pop(wid, None)
 
         # Free the resource that ran this activity so the pool doesn't saturate
         # (uses ResourceComponent's documented release() API; high-priority
@@ -638,6 +675,220 @@ class ProcessComponent:
         self._fire_start(engine, case_id, next_act)
 
     # ------------------------------------------------------------------
+    # Active-mode session state machine (§4.4) — W_ work items only
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _witem_id(event: SimEvent) -> Optional[str]:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        return payload.get("work_item_id")
+
+    def on_activity_resume(self, engine, event: SimEvent) -> None:
+        """A suspended item was re-allocated a resource — open the next session."""
+        self._open_session(engine, event, is_resume=True)
+
+    def _open_session(self, engine, event: SimEvent, is_resume: bool) -> None:
+        """Open one active work session and decide how it ends (complete|suspend)."""
+        case_id, activity = event.case_id, event.activity
+        wid = self._witem_id(event)
+        w = self._witem.get(wid)
+        if w is None:
+            # Defensive: an item whose state was lost — treat like a fresh one.
+            w = self._witem[wid] = {"case_id": case_id, "activity": activity,
+                                    "session": 0, "first_resource": None,
+                                    "feat_ctx": None, "first_now": None}
+
+        if not is_resume and w["feat_ctx"] is None:
+            # First start: snapshot the option-A feature context (computed once,
+            # reused for every session) and fold this work item into the case
+            # context exactly once, mirroring the legacy per-occurrence fold.
+            ctx = self._ctx.get(case_id) or {
+                "start_t": engine.now, "position": 0, "prev_act": None}
+            w["feat_ctx"] = {"prev_act": ctx.get("prev_act"),
+                             "position": ctx.get("position", 0),
+                             "start_t": ctx.get("start_t", engine.now)}
+            w["first_resource"] = event.resource
+            w["first_now"] = engine.now
+            ctx["position"] = ctx.get("position", 0) + 1
+            ctx["prev_act"] = activity
+            self._ctx[case_id] = ctx
+
+        session = w["session"]
+        dur = self._active_session_len(engine, w, session)
+
+        # Session-end hazard: P(complete | this running session ends).
+        rng = self._draw_rng(case_id, activity, "session_end", session)
+        p_complete = self._lp.session_end_probs.get(activity, 0.5)
+        end_complete = rng.random() < p_complete
+        if session + 1 >= MAX_SESSIONS:
+            end_complete = True  # loop guard
+        w["session"] = session + 1
+
+        etype = EventType.ACTIVITY_COMPLETE if end_complete else EventType.ACTIVITY_SUSPEND
+        engine.schedule(SimEvent(
+            timestamp=engine.now + dur,
+            priority=5,
+            event_type=etype,
+            case_id=case_id,
+            activity=activity,
+            resource=event.resource,
+            payload=event.payload,
+        ))
+
+    def on_activity_suspend(self, engine, event: SimEvent) -> None:
+        """A running session paused: release the resource to the pool, then decide
+        resume (re-request after an external wait) vs. abort (§4.4 step 2)."""
+        case_id, activity = event.case_id, event.activity
+        wid = self._witem_id(event)
+        w = self._witem.get(wid, {"session": 0})
+
+        # Pool model: the resource goes back to the pool on suspend.
+        if self._resources is not None and event.resource:
+            self._resources.release(engine, event.resource, activity)
+
+        session = w.get("session", 0)
+        rng = self._draw_rng(case_id, activity, "susp_end", session)
+        p_resume = self._lp.suspend_end_probs.get(activity, 0.5)
+        if rng.random() < p_resume:
+            # Resume: after an external residual wait, the item becomes *ready*
+            # again (a re-request, not a resume — the resume row is emitted by the
+            # resource only once it is re-allocated, §4.6).
+            gap = self._sample_gap(engine, case_id, activity, session)
+            payload = dict(event.payload) if isinstance(event.payload, dict) else {}
+            payload["resuming"] = True
+            engine.schedule(SimEvent(
+                timestamp=engine.now + gap,
+                priority=5,
+                event_type=EventType.ACTIVITY_REQUEST,
+                case_id=case_id,
+                activity=activity,
+                resource=None,
+                payload=payload,
+            ))
+        else:
+            # Abort from SUSPENDED — the resource was already released above, so
+            # ACTIVITY_ABORT carries no resource and triggers no second release.
+            engine.schedule(SimEvent(
+                timestamp=engine.now,
+                priority=5,
+                event_type=EventType.ACTIVITY_ABORT,
+                case_id=case_id,
+                activity=activity,
+                resource=None,
+                payload=event.payload,
+            ))
+
+    def on_activity_abort(self, engine, event: SimEvent) -> None:
+        """Work item killed (ate_abort). The case continues via mined continuation;
+        no resource release (already released on suspend, §4.4 step 3)."""
+        wid = self._witem_id(event)
+        self._witem.pop(wid, None)
+        self._route_terminal(engine, event.case_id, event.activity, "ate_abort")
+
+    def on_activity_withdraw(self, engine, event: SimEvent) -> None:
+        """A SCHEDULED item was withdrawn from the queue before it ever started
+        (emitted by the resource component, §4.6). Route via mined continuation."""
+        wid = self._witem_id(event)
+        self._witem.pop(wid, None)
+        self._route_terminal(engine, event.case_id, event.activity, "withdraw")
+
+    def _active_session_len(self, engine, w: dict, session: int) -> float:
+        """Active-session duration (seconds) for the current mode."""
+        case_id, activity = w["case_id"], w["activity"]
+        rng = self._draw_rng(case_id, activity, "session_len", session)
+        if self.mode == "distribution":
+            return self._sample_lp_duration(activity, rng)
+        self._ensure_model()
+        features = self._build_features_active(w)
+        if self.mode == "ml_model":
+            return self._sample_duration_ml(features)
+        return self._sample_duration_ml_prob(features, rng)
+
+    def _sample_lp_duration(self, activity: str, rng) -> float:
+        """Draw an active-session length from the mined active-time distribution."""
+        spec = self._lp.processing_times.get(activity)
+        if spec is not None:
+            dist_name, params = spec
+            return max(1.0, self._sample_scipy_like(dist_name, params, rng))
+        mean = FALLBACK_MEAN_DURATIONS.get(activity, 600.0)
+        return max(1.0, rng.expovariate(1.0 / mean))
+
+    def _build_features_active(self, w: dict) -> List[float]:
+        """Option-A feature vector: computed from the work item's first-start
+        context (snapshot), identical for every session of the item (§5.2)."""
+        fc = w["feat_ctx"] or {"prev_act": None, "position": 0, "start_t": 0.0}
+        first_now = w.get("first_now") or 0.0
+        wall = self._anchor + timedelta(seconds=first_now)
+        prev_act = fc.get("prev_act") or self._no_prev
+        resource = w.get("first_resource") or self._unknown
+        position = fc.get("position", 0)
+        case_age = max(0.0, first_now - fc.get("start_t", first_now))
+        values = {
+            "activity_enc":           self._encode("activity", w["activity"], self._unknown),
+            "resource_enc":           self._encode("resource", resource, self._unknown),
+            "previous_activity_enc":  self._encode("previous_activity", prev_act, self._no_prev),
+            "day_of_week":            wall.weekday(),
+            "hour_of_day":            wall.hour,
+            "case_position":          position,
+            "case_age_seconds":       case_age,
+            "n_previous_activities":  position,
+        }
+        return [float(values[name]) for name in self._feature_names]
+
+    def _sample_gap(self, engine, case_id: str, activity: str, session: int) -> float:
+        """Suspend→resume-ready external residual wait (calendar-aware fit, §5.1).
+
+        The resource queue/calendar then adds fresh re-acquisition delay before
+        the resume actually fires, so this is only the external component.
+        """
+        rng = self._draw_rng(case_id, activity, "gap", session)
+        spec = self._lp.resume_gap_params.get(activity)
+        if spec is not None:
+            dist_name, params = spec
+            return max(0.0, self._sample_scipy_like(dist_name, params, rng))
+        return max(0.0, rng.expovariate(1.0 / 3600.0))
+
+    def _route_terminal(self, engine, case_id: str, activity: str, outcome: str) -> None:
+        """Route the case after a non-complete terminal (ate_abort|withdraw) using
+        the mined per-outcome continuation. Not CASE_COMPLETE unless the mined
+        continuation is itself terminal (§4.4 point 3)."""
+        counts = self._repeat_counts.get(case_id, {})
+        counts[activity] = counts.get(activity, 0) + 1
+        self._repeat_counts[case_id] = counts
+
+        def end_case():
+            self._repeat_counts.pop(case_id, None)
+            self._ctx.pop(case_id, None)
+            engine.schedule(SimEvent(timestamp=engine.now, priority=20,
+                                     event_type=EventType.CASE_COMPLETE, case_id=case_id))
+
+        # Runaway-case guard mirrors _should_terminate's total cap.
+        if sum(counts.values()) > 150:
+            end_case()
+            return
+
+        options = (self._lp.terminal_continuation.get(activity, {}) or {}).get(outcome)
+        if not options:
+            end_case()
+            return
+
+        rng = self._draw_rng(case_id, activity, "term_" + outcome, counts[activity])
+        r = rng.random()
+        cumulative = 0.0
+        total = sum(p for _, p in options) or 1.0
+        picked = options[-1][0]
+        for nxt, prob in options:
+            cumulative += prob / total
+            if r <= cumulative:
+                picked = nxt
+                break
+
+        if picked == "__CASE_END__":
+            end_case()
+        else:
+            self._fire_start(engine, case_id, picked)
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
@@ -646,6 +897,22 @@ class ProcessComponent:
         # that turns a request into an ACTIVITY_START, and only once it actually
         # holds a resource — so the work item cannot begin (or be logged) while
         # it is still queued. See ResourceComponent for the full rationale.
+        payload = self._payload(case_id)
+        if self._active:
+            # Every request gets a deterministic work_item_id so reconstruction
+            # never mis-joins atomic A_/O_ pairs; only W_ items enter the session
+            # state machine (§4.3/§4.4).
+            seq = self._witem_seq.get(case_id, 0)
+            self._witem_seq[case_id] = seq + 1
+            wid = f"{case_id}#{seq}#{activity}"
+            payload = dict(payload)
+            payload["work_item_id"] = wid
+            payload["resuming"] = False
+            if activity.startswith("W_"):
+                self._witem[wid] = {
+                    "case_id": case_id, "activity": activity, "session": 0,
+                    "first_resource": None, "feat_ctx": None, "first_now": None,
+                }
         engine.schedule(SimEvent(
             timestamp=engine.now,
             priority=5,
@@ -653,7 +920,7 @@ class ProcessComponent:
             case_id=case_id,
             activity=activity,
             resource=None,
-            payload=self._payload(case_id),
+            payload=payload,
         ))
 
     def _payload(self, case_id: str) -> dict:
@@ -855,4 +1122,8 @@ class ProcessComponent:
 ProcessComponent.HANDLES = {
     EventType.ACTIVITY_START:    ProcessComponent.on_activity_start,
     EventType.ACTIVITY_COMPLETE: ProcessComponent.on_activity_complete,
+    EventType.ACTIVITY_SUSPEND:  ProcessComponent.on_activity_suspend,
+    EventType.ACTIVITY_RESUME:   ProcessComponent.on_activity_resume,
+    EventType.ACTIVITY_ABORT:    ProcessComponent.on_activity_abort,
+    EventType.ACTIVITY_WITHDRAW: ProcessComponent.on_activity_withdraw,
 }

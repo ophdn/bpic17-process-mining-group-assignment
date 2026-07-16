@@ -525,6 +525,10 @@ class ResourceComponent:
                     for i, waiting in enumerate(self._waiting):
                         if waiting.activity != event.payload:
                             continue
+                        # Piled Execution's "same activity" preference is for fresh
+                        # work items, not resume-ready re-requests (§4.6).
+                        if isinstance(waiting.payload, dict) and waiting.payload.get("resuming"):
+                            continue
                         ct, when = self._context(engine, waiting)
                         if not self._permissions.permits(
                                 resource, waiting.activity, case_type=ct, when=when):
@@ -783,8 +787,17 @@ class ResourceComponent:
     def _begin(self, engine, request: SimEvent, resource: Optional[str]) -> None:
         """Turn a granted request into an ACTIVITY_START bound to *resource*.
 
-        This is the only place an ACTIVITY_START is created, which is what keeps
-        a queued work item from also being executed by the ProcessComponent.
+        This is the only place an ACTIVITY_START (or, for a resuming re-request,
+        an ACTIVITY_RESUME) is created, which is what keeps a queued work item
+        from also being executed by the ProcessComponent.
+
+        Active mode (§4.6): a request carrying ``payload.resuming=True`` is a
+        suspended item that just re-acquired a resource, so it fires
+        ACTIVITY_RESUME instead of ACTIVITY_START. The single logged `resume`
+        therefore always means resource-bound RUNNING work, never "ready but
+        unassigned". Because the re-request goes through normal allocation, the
+        resuming resource is drawn from the pool (reproducing the observed
+        82.5% different-resource rate).
         """
         if resource is not None:
             self._busy[resource] = self._busy.get(resource, 0) + 1
@@ -793,10 +806,11 @@ class ResourceComponent:
         self._wait_total += waited
         self._wait_count += 1
 
+        resuming = isinstance(request.payload, dict) and request.payload.get("resuming")
         engine.schedule(SimEvent(
             timestamp=engine.now,
             priority=5,
-            event_type=EventType.ACTIVITY_START,
+            event_type=EventType.ACTIVITY_RESUME if resuming else EventType.ACTIVITY_START,
             case_id=request.case_id,
             activity=request.activity,
             resource=resource,
