@@ -232,6 +232,13 @@ class PetriNetProcessComponent(ProcessComponent):
         case_id = event.case_id
         activity = event.activity
 
+        if self._active and activity and activity.startswith("W_"):
+            if self._resources is not None and event.resource:
+                self._resources.release(engine, event.resource, activity)
+            self._witem.pop(self._witem_id(event), None)
+            self._route_terminal_petri(engine, event, "complete")
+            return
+
         if self._resources is not None and event.resource:
             self._resources.release(engine, event.resource, event.activity)
 
@@ -256,6 +263,90 @@ class PetriNetProcessComponent(ProcessComponent):
             return
 
         self._fire_start(engine, case_id, next_activity)
+
+    def on_activity_abort(self, engine, event: SimEvent) -> None:
+        """Fire the visible W_ task, then route the aborted item only through
+        successors legal after tau closure.  Abort never releases a resource:
+        the preceding suspend already did that.
+        """
+        self._witem.pop(self._witem_id(event), None)
+        self._route_terminal_petri(engine, event, "ate_abort")
+
+    def on_activity_withdraw(self, engine, event: SimEvent) -> None:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        token = payload.get("_queue_token")
+        if token is not None and token.get("state") != "withdrawn":
+            return
+        self._witem.pop(self._witem_id(event), None)
+        self._route_terminal_petri(engine, event, "withdraw")
+
+    def _route_terminal_petri(self, engine, event: SimEvent, outcome: str) -> None:
+        """Locked "fire then route" algorithm for every active W_ terminal.
+
+        The BPIC-17 net has no distinct abort/withdraw transitions, so all
+        outcomes fire the corresponding visible W_ task.  The mined
+        continuation is then intersected with the net's tau-closure frontier;
+        an empty intersection falls back to the normal Petri selector (§4.5).
+        """
+        case_id, activity = event.case_id, event.activity
+        counts = self._repeat_counts.get(case_id, {})
+        counts[activity] = counts.get(activity, 0) + 1
+        self._repeat_counts[case_id] = counts
+
+        if not self._fire_activity(case_id, activity):
+            raise AssertionError(
+                f"Terminal {outcome} for non-enabled Petri transition "
+                f"{activity!r} in case {case_id!r}")
+        self._assert_marking_legal(case_id)
+
+        marking = self._markings[case_id]
+        frontier = self._visible_frontier(marking)
+        allow_end = self._final_reachable_by_tau(marking)
+        options = (
+            (self._lp.terminal_continuation.get(activity, {}) or {})
+            .get(outcome, [])
+        )
+        legal = [
+            (nxt, prob) for nxt, prob in options
+            if nxt in frontier or (nxt == "__CASE_END__" and allow_end)
+        ]
+
+        if legal:
+            rng = self._draw_rng(
+                case_id, activity, "term_" + outcome, counts[activity])
+            total = sum(prob for _, prob in legal) or 1.0
+            threshold = rng.random() * total
+            cumulative = 0.0
+            picked = legal[-1][0]
+            for nxt, prob in legal:
+                cumulative += prob
+                if threshold <= cumulative:
+                    picked = nxt
+                    break
+            if picked == "__CASE_END__":
+                self._end_case(engine, case_id)
+                return
+            self._markings[case_id] = frontier[picked]
+            self._assert_marking_legal(case_id)
+            self._fire_start(engine, case_id, picked)
+            return
+
+        engine.stats["terminal_continuation_fallback"] = (
+            engine.stats.get("terminal_continuation_fallback", 0) + 1
+        )
+        next_activity = self._advance_to_next_visible(
+            case_id, current_activity=activity)
+        if next_activity is not None:
+            self._assert_marking_legal(case_id)
+            self._fire_start(engine, case_id, next_activity)
+        elif allow_end:
+            self._end_case(engine, case_id)
+        else:
+            # A non-final dead marking is kept as an incomplete case.  Emitting
+            # CASE_COMPLETE here would violate the Petri legality contract.
+            engine.stats["terminal_illegal_dead_end"] = (
+                engine.stats.get("terminal_illegal_dead_end", 0) + 1
+            )
 
     def _should_terminate(self, case_id: str, activity: str, counts: Dict[str, int]) -> bool:
         """
@@ -310,23 +401,40 @@ class PetriNetProcessComponent(ProcessComponent):
     # Petri net mechanics
     # ------------------------------------------------------------------
 
-    def _fire_activity(self, case_id: str, activity: str) -> None:
+    def _fire_activity(self, case_id: str, activity: str) -> bool:
         """Consume/produce tokens for the enabled transition labelled *activity*."""
         marking = self._markings.get(case_id)
         if marking is None:
-            return
+            return False
         enabled = sorted(
             semantics.enabled_transitions(self.net, marking), key=lambda t: t.name
         )
         for t in enabled:
             if t.label == activity:
                 self._markings[case_id] = semantics.execute(t, self.net, marking)
-                return
+                return True
         # By construction every activity we schedule was itself chosen from
         # _advance_to_next_visible() as an enabled transition for this case,
         # and a case's marking is only ever touched by that case, so this
         # should not happen. Left as a no-op rather than a crash in case a
         # future BPMN edit produces a net where it can.
+        return False
+
+    def _assert_marking_legal(self, case_id: str) -> None:
+        """Cheap invariant for markings produced by enabled-transition firing.
+
+        Full reachability is guaranteed constructionally by pm4py semantics;
+        this catches foreign places, non-integral counts, and negative/zero
+        token entries immediately after every terminal outcome.
+        """
+        marking = self._markings.get(case_id)
+        if marking is None:
+            raise AssertionError(f"case {case_id!r} has no Petri marking")
+        places = set(self.net.places)
+        if any(place not in places or not isinstance(count, int) or count <= 0
+               for place, count in marking.items()):
+            raise AssertionError(
+                f"case {case_id!r} reached an illegal Petri marking: {marking}")
 
     def _advance_to_next_visible(
         self, case_id: str, current_activity: Optional[str]

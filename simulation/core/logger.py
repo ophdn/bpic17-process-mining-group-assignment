@@ -107,6 +107,13 @@ class EventLogger:
         # resume row (emitted after re-allocation) marks the continuation. §4.3/§4.6
         if transition == "schedule" and payload.get("resuming"):
             return
+        if transition == "withdraw":
+            token = payload.get("_queue_token")
+            # The logger runs before ResourceComponent. A still-queued token is
+            # a real timer winner; an allocated/withdrawn token is a stale timer
+            # and must not create a duplicate lifecycle row (§4.6).
+            if isinstance(token, dict) and token.get("state") != "queued":
+                return
 
         ts = self._sim_time_to_datetime(event.timestamp)
         row = {

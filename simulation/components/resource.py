@@ -324,6 +324,7 @@ class ResourceComponent:
 
     HANDLES = {
         EventType.ACTIVITY_REQUEST:   None,
+        EventType.ACTIVITY_WITHDRAW:  None,
         EventType.RESOURCE_AVAILABLE: None,
     }
 
@@ -434,6 +435,11 @@ class ResourceComponent:
         this discipline is replaced entirely — a request NEVER allocates
         immediately, it always queues and waits for a batch flush.
         """
+        self._arm_withdraw(engine, event)
+        token = self._queue_token(event)
+        if token is not None and token.get("state") != "queued":
+            return
+
         if self._batching_k is not None:
             if not self._qualified(engine, event):
                 self._unpermitted += 1
@@ -460,6 +466,64 @@ class ResourceComponent:
 
         self._waiting.append(event)
         self._arm_shift_wake(engine)
+
+    def on_activity_withdraw(self, engine, event: SimEvent) -> None:
+        """Resolve an active-mode withdrawal timer against its cancellable
+        queue token.  A timer that lost the race to allocation is a no-op; a
+        queued item is removed exactly once before ProcessComponent routes it.
+        """
+        token = self._queue_token(event)
+        if token is None or token.get("state") != "queued":
+            return
+
+        wid = token.get("work_item_id")
+        for i, waiting in enumerate(self._waiting):
+            waiting_token = self._queue_token(waiting)
+            if waiting_token is token or (
+                waiting_token is not None
+                and waiting_token.get("work_item_id") == wid
+            ):
+                self._waiting.pop(i)
+                token["state"] = "withdrawn"
+                self._arm_shift_wake(engine)
+                self._arm_batch_wake(engine)
+                return
+
+        # The request is no longer queued (normally because allocation won).
+        token["state"] = "allocated"
+
+    @staticmethod
+    def _queue_token(event: SimEvent) -> Optional[dict]:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        token = payload.get("_queue_token")
+        return token if isinstance(token, dict) else None
+
+    def _arm_withdraw(self, engine, event: SimEvent) -> None:
+        """Attach one mutable cancellation token and schedule the competing
+        withdrawal timer for an initial active W_ request.
+
+        Resume-ready requests deliberately carry no ``_withdraw_delay`` and
+        therefore cannot draw a second withdrawal hazard.
+        """
+        payload = event.payload if isinstance(event.payload, dict) else None
+        if not payload or payload.get("resuming") or self._queue_token(event) is not None:
+            return
+        delay = payload.get("_withdraw_delay")
+        wid = payload.get("work_item_id")
+        if delay is None or not wid or not (event.activity or "").startswith("W_"):
+            return
+
+        token = {"state": "queued", "work_item_id": wid}
+        payload["_queue_token"] = token
+        engine.schedule(SimEvent(
+            timestamp=engine.now + max(0.0, float(delay)),
+            priority=5,
+            event_type=EventType.ACTIVITY_WITHDRAW,
+            case_id=event.case_id,
+            activity=event.activity,
+            resource=None,
+            payload=payload,
+        ))
 
     def on_resource_available(self, engine, event: SimEvent) -> None:
         """Something freed up capacity. Two callers:
@@ -799,6 +863,12 @@ class ResourceComponent:
         resuming resource is drawn from the pool (reproducing the observed
         82.5% different-resource rate).
         """
+        token = self._queue_token(request)
+        if token is not None:
+            if token.get("state") != "queued":
+                return
+            token["state"] = "allocated"
+
         if resource is not None:
             self._busy[resource] = self._busy.get(resource, 0) + 1
 
@@ -887,5 +957,6 @@ class ResourceComponent:
 
 ResourceComponent.HANDLES = {
     EventType.ACTIVITY_REQUEST:   ResourceComponent.on_activity_request,
+    EventType.ACTIVITY_WITHDRAW:  ResourceComponent.on_activity_withdraw,
     EventType.RESOURCE_AVAILABLE: ResourceComponent.on_resource_available,
 }

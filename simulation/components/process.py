@@ -621,25 +621,35 @@ class ProcessComponent:
             case_id=case_id,
             activity=activity,
             resource=event.resource,
+            # Active logs key every lifecycle pair on work_item_id, including
+            # atomic A_/O_ activities.  Preserve the request payload so their
+            # completion row cannot lose that identifier (§4.3).
+            payload=event.payload,
         ))
 
     def on_activity_complete(self, engine, event: SimEvent) -> None:
         case_id  = event.case_id
         activity = event.activity
 
-        # Active mode: a completed W_ session ends the whole work item — drop its
-        # session state. Routing after complete reuses the normal branching
-        # (implementationplan §4.4 point 5).
-        if self._active:
-            wid = self._witem_id(event)
-            if wid is not None:
-                self._witem.pop(wid, None)
+        is_active_work_item = bool(
+            self._active and activity and activity.startswith("W_")
+        )
+        if is_active_work_item:
+            self._witem.pop(self._witem_id(event), None)
 
         # Free the resource that ran this activity so the pool doesn't saturate
         # (uses ResourceComponent's documented release() API; high-priority
         # RESOURCE_AVAILABLE fires before the next activity's allocation).
         if self._resources is not None and event.resource:
             self._resources.release(engine, event.resource, event.activity)
+
+        # In active mode all three W_ terminal outcomes use the unified mined
+        # continuation table.  In particular, do not pass through
+        # _should_terminate(): its legacy W_ terminal set would incorrectly end
+        # many completed work items instead of continuing the case (§4.4/§5.1).
+        if is_active_work_item:
+            self._route_terminal(engine, case_id, activity, "complete")
+            return
 
         # Track repeats for loop-guard
         counts = self._repeat_counts.get(case_id, {})
@@ -788,6 +798,14 @@ class ProcessComponent:
     def on_activity_withdraw(self, engine, event: SimEvent) -> None:
         """A SCHEDULED item was withdrawn from the queue before it ever started
         (emitted by the resource component, §4.6). Route via mined continuation."""
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        token = payload.get("_queue_token")
+        # ACTIVITY_WITHDRAW doubles as the scheduled competing-risk timer.
+        # ResourceComponent marks a real queued removal as "withdrawn" before
+        # this handler runs; an allocation that won the race marks it
+        # "allocated", making the stale timer a no-op (§4.6).
+        if token is not None and token.get("state") != "withdrawn":
+            return
         wid = self._witem_id(event)
         self._witem.pop(wid, None)
         self._route_terminal(engine, event.case_id, event.activity, "withdraw")
@@ -847,6 +865,21 @@ class ProcessComponent:
             dist_name, params = spec
             return max(0.0, self._sample_scipy_like(dist_name, params, rng))
         return max(0.0, rng.expovariate(1.0 / 3600.0))
+
+    def _sample_withdraw_delay(self, case_id: str, activity: str, visit: int) -> Optional[float]:
+        """Draw the SCHEDULED→withdraw competing-risk timer for an initial W_
+        request.  Absence of a mined hazard means the item cannot withdraw.
+
+        The draw belongs to ProcessComponent so it uses the same CRN contract as
+        session lengths, hazards, and gaps.  ResourceComponent owns cancellation
+        because it owns the queue (§4.4/§4.6).
+        """
+        spec = self._lp.withdraw_hazard.get(activity)
+        if spec is None:
+            return None
+        rng = self._draw_rng(case_id, activity, "withdraw", visit)
+        dist_name, params = spec
+        return max(0.0, self._sample_scipy_like(dist_name, params, rng))
 
     def _route_terminal(self, engine, case_id: str, activity: str, outcome: str) -> None:
         """Route the case after a non-complete terminal (ate_abort|withdraw) using
@@ -909,6 +942,10 @@ class ProcessComponent:
             payload["work_item_id"] = wid
             payload["resuming"] = False
             if activity.startswith("W_"):
+                withdraw_delay = self._sample_withdraw_delay(
+                    case_id, activity, seq)
+                if withdraw_delay is not None:
+                    payload["_withdraw_delay"] = withdraw_delay
                 self._witem[wid] = {
                     "case_id": case_id, "activity": activity, "session": 0,
                     "first_resource": None, "feat_ctx": None, "first_now": None,
