@@ -22,12 +22,15 @@ class EventLogger:
     Collects activity-level events during simulation and flushes
     them to a CSV file at the end.
 
-    Only ACTIVITY_START and ACTIVITY_COMPLETE events are recorded
-    in the event log (case arrivals / completions are tracked
-    separately for statistics).
+    In ``legacy`` mode only ACTIVITY_START and ACTIVITY_COMPLETE are recorded, in
+    the exact five-column schema — the log stays byte-identical to pre-lifecycle
+    runs. In ``active`` mode the full W_ work-item lifecycle is recorded
+    (schedule/start/suspend/resume/complete/ate_abort/withdraw) plus a sixth
+    ``work_item_id`` column (implementationplan §4.3). Case arrivals / completions
+    are tracked separately for statistics.
     """
 
-    # Column order in the output CSV
+    # Five-column legacy schema (byte-identical to pre-lifecycle output).
     COLUMNS = [
         "case:concept:name",
         "concept:name",
@@ -35,17 +38,47 @@ class EventLogger:
         "lifecycle:transition",
         "org:resource",
     ]
+    # Active mode adds work_item_id so suspend/resume sessions of one item can be
+    # reconstructed without mis-joining repeated (case, activity) instances.
+    ACTIVE_COLUMNS = COLUMNS + ["work_item_id"]
 
-    def __init__(self, start_datetime: Optional[datetime] = None):
+    # EventType → lifecycle:transition. START/COMPLETE apply to every activity;
+    # the schedule/suspend/resume/abort/withdraw rows are gated to W_ items in log().
+    _LEGACY_MAP = {
+        EventType.ACTIVITY_START: "start",
+        EventType.ACTIVITY_COMPLETE: "complete",
+    }
+    _ACTIVE_MAP = {
+        EventType.ACTIVITY_REQUEST: "schedule",
+        EventType.ACTIVITY_START: "start",
+        EventType.ACTIVITY_SUSPEND: "suspend",
+        EventType.ACTIVITY_RESUME: "resume",
+        EventType.ACTIVITY_COMPLETE: "complete",
+        EventType.ACTIVITY_ABORT: "ate_abort",
+        EventType.ACTIVITY_WITHDRAW: "withdraw",
+    }
+    # Transitions that are only meaningful for W_ work items — logging them for the
+    # synthetic A_/O_ requests would fabricate lifecycle rows absent from BPIC-17.
+    _W_ONLY = {"schedule", "suspend", "resume", "ate_abort", "withdraw"}
+
+    def __init__(self, start_datetime: Optional[datetime] = None,
+                 lifecycle_mode: str = "legacy"):
         """
         Parameters
         ----------
         start_datetime:
             Real-world anchor for t=0. Defaults to 2024-01-01 00:00:00.
             Simulation timestamps (floats, in seconds) are added as offsets.
+        lifecycle_mode:
+            ``"legacy"`` (default) → five-column start/complete log.
+            ``"active"`` → full W_ lifecycle + work_item_id column.
         """
         self._start: datetime = start_datetime or datetime(2024, 1, 1)
         self._rows: List[dict] = []
+        self._mode = lifecycle_mode
+        self._active = lifecycle_mode == "active"
+        self._map = self._ACTIVE_MAP if self._active else self._LEGACY_MAP
+        self.columns = self.ACTIVE_COLUMNS if self._active else self.COLUMNS
 
     # ------------------------------------------------------------------
     # Public API
@@ -53,26 +86,32 @@ class EventLogger:
 
     def log(self, event: SimEvent) -> None:
         """Record a single event if it belongs in the event log."""
-        if event.event_type == EventType.ACTIVITY_START:
-            transition = "start"
-        elif event.event_type == EventType.ACTIVITY_COMPLETE:
-            transition = "complete"
-        else:
-            return  # Not an activity event – skip
+        transition = self._map.get(event.event_type)
+        if transition is None:
+            return  # Not a logged activity transition in this mode – skip
 
         # Internal control sentinels (e.g. __PROCESS_START__) are routing
         # signals, not real activities — they must not appear in the log.
         if event.activity and event.activity.startswith("__"):
             return
 
+        # Lifecycle transitions beyond start/complete apply only to W_ items.
+        if transition in self._W_ONLY and not (
+                event.activity and event.activity.startswith("W_")):
+            return
+
         ts = self._sim_time_to_datetime(event.timestamp)
-        self._rows.append({
+        row = {
             "case:concept:name": event.case_id,
             "concept:name": event.activity,
             "time:timestamp": ts.isoformat(),
             "lifecycle:transition": transition,
             "org:resource": event.resource or "",
-        })
+        }
+        if self._active:
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            row["work_item_id"] = payload.get("work_item_id", "")
+        self._rows.append(row)
 
     def save(self, path: str | Path) -> Path:
         """
@@ -84,7 +123,7 @@ class EventLogger:
         path.parent.mkdir(parents=True, exist_ok=True)
 
         with path.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=self.COLUMNS)
+            writer = csv.DictWriter(f, fieldnames=self.columns)
             writer.writeheader()
             writer.writerows(self._rows)
 
