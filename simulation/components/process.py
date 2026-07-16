@@ -890,6 +890,9 @@ class ProcessComponent:
         rng = self._draw_rng(case_id, activity, "gap", session)
         spec = self._lp.resume_gap_params.get(activity)
         if spec is not None:
+            zero_prob = self._lp.resume_gap_zero_probs.get(activity, 0.0)
+            if zero_prob and rng.random() < zero_prob:
+                return 0.0
             dist_name, params = spec
             return max(0.0, self._sample_scipy_like(dist_name, params, rng))
         return max(0.0, rng.expovariate(1.0 / 3600.0))

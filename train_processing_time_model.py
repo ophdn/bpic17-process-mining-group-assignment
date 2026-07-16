@@ -291,12 +291,37 @@ def build_active_sessions(df: pd.DataFrame) -> pd.DataFrame:
 
     idf = pd.DataFrame(instances).sort_values(
         ["case_id", "first_start"]).reset_index(drop=True)
-    grp = idf.groupby("case_id", sort=False)
-    idf["case_position"] = grp.cumcount()
+    idf["instance_id"] = np.arange(len(idf))
+
+    # Reconstruct the runtime's occurrence context: A_/O_ complete events and
+    # each W_ work item's first start all advance case_position/prev_act once.
+    # Looking only at W_ instances (the previous implementation) duplicated a
+    # different feature vector than ProcessComponent actually carries (§5.2).
+    atomic = df[
+        ~df["activity"].str.startswith("W_")
+        & df["lifecycle"].eq("complete")
+    ][["case_id", "timestamp", "activity"]].copy()
+    atomic["instance_id"] = -1
+    atomic["kind_order"] = 0
+    work = idf[["case_id", "first_start", "activity", "instance_id"]].rename(
+        columns={"first_start": "timestamp"})
+    work["kind_order"] = 1
+    timeline = pd.concat([atomic, work], ignore_index=True).sort_values(
+        ["case_id", "timestamp", "kind_order"], kind="mergesort")
+    timeline["case_position"] = timeline.groupby(
+        "case_id", sort=False).cumcount()
+    timeline["previous_activity"] = timeline.groupby(
+        "case_id", sort=False)["activity"].shift(1).fillna(NO_PREV)
+    work_context = timeline[timeline["instance_id"] >= 0].set_index(
+        "instance_id")[["case_position", "previous_activity"]]
+    idf["case_position"] = idf["instance_id"].map(work_context["case_position"])
     idf["n_previous_activities"] = idf["case_position"]
-    idf["previous_activity"] = grp["activity"].shift(1).fillna(NO_PREV)
-    first_ts = grp["first_start"].transform("min")
-    idf["case_age_seconds"] = (idf["first_start"] - first_ts).dt.total_seconds()
+    idf["previous_activity"] = idf["instance_id"].map(
+        work_context["previous_activity"])
+    case_first = df.groupby("case_id", sort=False)["timestamp"].min()
+    idf["case_age_seconds"] = (
+        idf["first_start"] - idf["case_id"].map(case_first)
+    ).dt.total_seconds()
     idf["day_of_week"] = idf["first_start"].dt.dayofweek
     idf["hour_of_day"] = idf["first_start"].dt.hour
     idf["timestamp"] = idf["first_start"]  # temporal-split ordering key

@@ -88,7 +88,10 @@ def load_log(path: Path) -> pd.DataFrame:
     parsed = pd.to_datetime(df["timestamp"], format="mixed", utc=True, errors="coerce")
     df["timestamp"] = parsed
     df = df.dropna(subset=["timestamp"])
-    df = df.sort_values(["case_id", "timestamp"]).reset_index(drop=True)
+    # Stable sort preserves source-log order for equal timestamps. Terminal
+    # continuation mining keys on this order, not timestamp alone (§5.1).
+    df = df.sort_values(["case_id", "timestamp"], kind="mergesort").reset_index(drop=True)
+    df["event_order"] = df.groupby("case_id", sort=False).cumcount()
     return df
 
 
@@ -254,19 +257,15 @@ def extract_processing_times(df: pd.DataFrame) -> dict:
 LIFECYCLE_TERMINALS = ("complete", "ate_abort", "withdraw")
 
 
-def _off_shift_tail_seconds(suspend_ts, resume_ts, work_start_hour: float,
-                            work_end_hour: float, workdays: frozenset) -> float:
+def _off_shift_tail_seconds(suspend_ts, resume_ts, resume_resource,
+                            availability_model: dict) -> float:
     """Length of the contiguous off-shift interval *immediately preceding* a resume.
 
     Implements the LOCKED calendar-aware-residual step (implementationplan §5.1):
     subtract only the single off-shift tail that ends at the observed resume — not
-    every night/weekend inside the gap. Uses a shared deterministic weekly
-    office-hours calendar as a v1 approximation of the resume resource's own
-    calendar (per-resource fitted calendars are a documented refinement).
-
-    Timestamps are tz-normalised to UTC upstream (load_log), so hour-of-day carries
-    a ≤2 h shift vs. the log's local +01:00/+02:00; negligible against a ~10 h
-    window and documented rather than corrected here.
+    every night/weekend inside the gap. Uses the historical resume resource's
+    fitted deterministic weekly windows and discovered public holidays. Sampled
+    vacations are deliberately ignored by the locked residual contract.
     """
     from datetime import datetime, timedelta
 
@@ -274,22 +273,43 @@ def _off_shift_tail_seconds(suspend_ts, resume_ts, work_start_hour: float,
     if delta <= 0:
         return 0.0
 
+    resource = str(resume_resource) if pd.notna(resume_resource) else None
+    if not resource or resource in set(availability_model.get("system", [])):
+        return 0.0
+    windows = availability_model.get("windows", {}).get(resource)
+    if not windows:
+        return 0.0
+    holidays = set(availability_model.get("holidays", []))
+
+    def window(t):
+        if t.date().isoformat() in holidays:
+            return None
+        return windows.get(str(t.weekday()))
+
     def on_shift(t) -> bool:
-        return t.weekday() in workdays and work_start_hour <= t.hour + t.minute / 60.0 < work_end_hour
+        hours = window(t)
+        if not hours:
+            return False
+        h = t.hour + t.minute / 60.0 + t.second / 3600.0
+        return float(hours[0]) <= h < float(hours[1])
 
     # If the resume itself lands in a working window, there is no preceding
     # off-shift tail to attribute to the calendar.
     if on_shift(resume_ts):
         return 0.0
 
-    # Walk back day by day to the most recent shift-close at or before the resume.
-    for back in range(0, 11):
+    # Walk back to the most recent deterministic shift close. Holidays and days
+    # without a window extend the same contiguous off-shift tail.
+    for back in range(0, 15):
         d = (resume_ts - timedelta(days=back)).date()
-        if d.weekday() not in workdays:
+        if d.isoformat() in holidays:
             continue
-        close = datetime.combine(d, datetime.min.time()).replace(
-            hour=int(work_end_hour), minute=int((work_end_hour % 1) * 60),
+        hours = windows.get(str(d.weekday()))
+        if not hours:
+            continue
+        midnight = datetime.combine(d, datetime.min.time()).replace(
             tzinfo=resume_ts.tzinfo)
+        close = midnight + timedelta(seconds=round(float(hours[1]) * 3600))
         if close <= resume_ts:
             tail = (resume_ts - close).total_seconds()
             return float(min(max(tail, 0.0), delta))
@@ -312,8 +332,8 @@ def segment_work_items(df: pd.DataFrame) -> dict:
     raw_resume_gaps   = defaultdict(list)   # act -> [(suspend_ts, resume_ts, resume_res)]
     withdraw_waits    = defaultdict(list)   # act -> [schedule→withdraw seconds]
     suspends_per_inst = defaultdict(list)   # act -> [#suspends per instance]
-    terminal_tokens   = []                  # [(case_id, ts, activity, outcome)] for W_ terminals
-    next_tokens       = []                  # [(case_id, ts, activity)] all occurrences (for continuation)
+    terminal_tokens   = []                  # [(case_id, order, ts, activity, outcome)]
+    next_tokens       = []                  # [(case_id, order, ts, activity)] occurrences
 
     has_life = "lifecycle" in df.columns
     if not has_life:
@@ -331,9 +351,10 @@ def segment_work_items(df: pd.DataFrame) -> dict:
         cgrp = cgrp.sort_values("timestamp")
         # Every A_/O_ complete and every W_ terminal is an occurrence token used to
         # find "what activity comes next" for terminal continuation.
-        for act, ts, lct in zip(cgrp["activity"], cgrp["timestamp"], cgrp["lc_norm"]):
+        for act, ts, order, lct in zip(
+                cgrp["activity"], cgrp["timestamp"], cgrp["event_order"], cgrp["lc_norm"]):
             if not act.startswith("W_") and lct == "complete":
-                next_tokens.append((case_id, ts, act))
+                next_tokens.append((case_id, int(order), ts, act))
 
         # Segment W_ instances per activity within the case.
         w = cgrp[cgrp["activity"].str.startswith("W_")]
@@ -343,6 +364,7 @@ def segment_work_items(df: pd.DataFrame) -> dict:
                 lct = row.lc_norm
                 ts = row.timestamp
                 resource = getattr(row, "resource", None) if res_col else None
+                order = int(row.event_order)
                 if lct == "schedule":
                     if cur is None:
                         cur = {"schedule_ts": ts, "running_since": None,
@@ -399,8 +421,13 @@ def segment_work_items(df: pd.DataFrame) -> dict:
                             if wait >= 0:
                                 withdraw_waits[act].append(wait)
                     suspends_per_inst[act].append(cur["nsusp"])
-                    terminal_tokens.append((case_id, ts, act, lct))
-                    next_tokens.append((case_id, ts, act))
+                    terminal_tokens.append((case_id, order, ts, act, lct))
+                    # A W_ occurrence is represented at its terminal transition,
+                    # matching filter_to_complete's occurrence-level process
+                    # abstraction. Using its earlier schedule would skip the
+                    # intervening A_/O_ process steps (e.g. W_Complete ->
+                    # A_Complete -> ...), which is not a legal runtime route.
+                    next_tokens.append((case_id, order, ts, act))
                     cur = None
             # Instance still open at log end: keep its active accumulation for the
             # duration fit but do not fabricate a terminal outcome.
@@ -415,9 +442,7 @@ def segment_work_items(df: pd.DataFrame) -> dict:
     }
 
 
-def extract_lifecycle(df: pd.DataFrame, work_start_hour: float = 8.0,
-                      work_end_hour: float = 18.0,
-                      workdays=frozenset({0, 1, 2, 3, 4})) -> dict:
+def extract_lifecycle(df: pd.DataFrame, availability_model: dict) -> dict:
     """Fit the active-time + churn model blocks for `simulation_inputs_active.json`.
 
     Consumes segment_work_items() aggregates and produces the parametric blocks the
@@ -456,9 +481,9 @@ def extract_lifecycle(df: pd.DataFrame, work_start_hour: float = 8.0,
     resume_gap_params = {}
     for act, gaps in seg["raw_resume_gaps"].items():
         residuals = []
-        for suspend_ts, resume_ts, _res in gaps:
-            tail = _off_shift_tail_seconds(suspend_ts, resume_ts, work_start_hour,
-                                           work_end_hour, workdays)
+        for suspend_ts, resume_ts, resume_resource in gaps:
+            tail = _off_shift_tail_seconds(
+                suspend_ts, resume_ts, resume_resource, availability_model)
             delta = (resume_ts - suspend_ts).total_seconds()
             residuals.append(max(0.0, delta - tail))
         arr = _np.asarray(residuals, dtype=float)
@@ -466,6 +491,7 @@ def extract_lifecycle(df: pd.DataFrame, work_start_hour: float = 8.0,
             continue
         fit = fit_best_distribution(arr)
         fit["n_gaps"] = int(len(arr))
+        fit["zero_prob"] = round(float((arr == 0).mean()), 6)
         resume_gap_params[act] = fit
 
     # -- withdraw hazard: time-to-withdraw while SCHEDULED ------------------------
@@ -481,18 +507,18 @@ def extract_lifecycle(df: pd.DataFrame, work_start_hour: float = 8.0,
     # -- terminal continuation: next activity per (W_ activity, outcome) ----------
     # For each W_ terminal token, find the next occurrence token in the same case.
     by_case_next = defaultdict(list)
-    for case_id, ts, act in seg["next_tokens"]:
-        by_case_next[case_id].append((ts, act))
+    for case_id, order, ts, act in seg["next_tokens"]:
+        by_case_next[case_id].append((order, ts, act))
     for toks in by_case_next.values():
         toks.sort(key=lambda x: x[0])
 
     cont_counts = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))  # act->outcome->next->n
     end_counts  = defaultdict(lambda: defaultdict(int))                       # act->outcome->#case-end
-    for case_id, ts, act, outcome in seg["terminal_tokens"]:
+    for case_id, order, ts, act, outcome in seg["terminal_tokens"]:
         toks = by_case_next[case_id]
         nxt = None
-        for tts, tact in toks:
-            if tts > ts:
+        for token_order, _tts, tact in toks:
+            if token_order > order:
                 nxt = tact
                 break
         if nxt is None:
@@ -532,10 +558,11 @@ def extract_lifecycle(df: pd.DataFrame, work_start_hour: float = 8.0,
     return {
         "lifecycle_schema": "active_v1",
         "calendar_tail": {
-            "work_start_hour": work_start_hour, "work_end_hour": work_end_hour,
-            "workdays": sorted(workdays),
-            "note": "shared weekly office-hours calendar used as a v1 approximation "
-                    "of the resume resource's own calendar; hours in UTC (≤2h shift).",
+            "availability_model": "historical resume resource weekly windows + holidays",
+            "vacations_subtracted": False,
+            "note": "Only the contiguous deterministic off-shift interval immediately "
+                    "preceding resume is subtracted; this is a calibrated residual, "
+                    "not a causal customer-wait decomposition.",
         },
         "processing_times": processing_times,
         "session_end_probs": session_end_probs,
@@ -788,10 +815,10 @@ def main():
                              "(implementationplan §5.1) and add a `lifecycle` block to "
                              "the output. Legacy blocks stay byte-identical; intended "
                              "for --out simulation_inputs_active.json.")
-    parser.add_argument("--work-start-hour", type=float, default=8.0,
-                        help="Calendar-residual working-window start hour (default 8).")
-    parser.add_argument("--work-end-hour", type=float, default=18.0,
-                        help="Calendar-residual working-window end hour (default 18).")
+    parser.add_argument("--availability-model", type=Path,
+                        default=Path("models/availability_model.json"),
+                        help="Historical deterministic resource calendars used for the "
+                             "active resume-gap residual.")
     args = parser.parse_args()
 
     log_path = Path(args.log)
@@ -846,10 +873,14 @@ def main():
         "case_attributes":  case_attributes,
     }
 
-    if args.lifecycle:
+    lifecycle_enabled = args.lifecycle or Path(args.out).stem.endswith("_active")
+    if lifecycle_enabled:
+        if not args.availability_model.is_file():
+            sys.exit(f"[ERROR] Availability model not found: {args.availability_model}")
+        availability_model = json.loads(
+            args.availability_model.read_text(encoding="utf-8"))
         print("[+]   Lifecycle model (active-time + suspend/resume churn) ...")
-        output["lifecycle"] = extract_lifecycle(
-            df, work_start_hour=args.work_start_hour, work_end_hour=args.work_end_hour)
+        output["lifecycle"] = extract_lifecycle(df, availability_model)
         n_acts = len(output["lifecycle"]["processing_times"])
         print(f"      → active-session distributions for {n_acts} W_ activities")
 

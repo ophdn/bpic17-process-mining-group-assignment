@@ -48,6 +48,7 @@ class LifecycleParameters:
     session_end_probs: Dict[str, float] = field(default_factory=dict)
     suspend_end_probs: Dict[str, float] = field(default_factory=dict)
     resume_gap_params: Dict[str, DistSpec] = field(default_factory=dict)
+    resume_gap_zero_probs: Dict[str, float] = field(default_factory=dict)
     withdraw_hazard: Dict[str, DistSpec] = field(default_factory=dict)
     terminal_continuation: Dict[str, Dict[str, List[Tuple[str, float]]]] = \
         field(default_factory=dict)
@@ -74,6 +75,10 @@ class LifecycleParameters:
             session_end_probs={a: float(p) for a, p in block.get("session_end_probs", {}).items()},
             suspend_end_probs={a: float(p) for a, p in block.get("suspend_end_probs", {}).items()},
             resume_gap_params=resume_gap,
+            resume_gap_zero_probs={
+                a: float(f.get("zero_prob", 0.0))
+                for a, f in block.get("resume_gap_params", {}).items()
+            },
             withdraw_hazard=withdraw,
             terminal_continuation=terminal,
             schema=block.get("lifecycle_schema", "active_v1"),

@@ -3865,16 +3865,9 @@
   "lifecycle": {
     "lifecycle_schema": "active_v1",
     "calendar_tail": {
-      "work_start_hour": 8.0,
-      "work_end_hour": 18.0,
-      "workdays": [
-        0,
-        1,
-        2,
-        3,
-        4
-      ],
-      "note": "shared weekly office-hours calendar used as a v1 approximation of the resume resource's own calendar; hours in UTC (≤2h shift)."
+      "availability_model": "historical resume resource weekly windows + holidays",
+      "vacations_subtracted": false,
+      "note": "Only the contiguous deterministic off-shift interval immediately preceding resume is subtracted; this is a calibrated residual, not a causal customer-wait decomposition."
     },
     "processing_times": {
       "W_Complete application": {
@@ -3990,96 +3983,104 @@
       "W_Call after offers": {
         "distribution": "weibull_min",
         "params": [
-          1.3192,
+          1.2796,
           0.0,
-          347801.4948
+          342644.7478
         ],
-        "mean_s": 331446.09,
-        "std_s": 210111.77,
-        "n": 28313,
-        "n_gaps": 29130
+        "mean_s": 327969.02,
+        "std_s": 211097.15,
+        "n": 28423,
+        "n_gaps": 29130,
+        "zero_prob": 0.024271
       },
       "W_Complete application": {
         "distribution": "weibull_min",
         "params": [
-          0.432,
+          0.4281,
           0.0,
-          30986.0529
+          27708.9199
         ],
-        "mean_s": 76716.16,
-        "std_s": 167240.13,
-        "n": 19371,
-        "n_gaps": 22652
+        "mean_s": 71731.51,
+        "std_s": 162517.63,
+        "n": 20734,
+        "n_gaps": 22652,
+        "zero_prob": 0.084672
       },
       "W_Call incomplete files": {
         "distribution": "lognorm",
         "params": [
-          2.5024,
+          2.5501,
           0.0,
-          8259.1731
+          8351.2396
         ],
-        "mean_s": 93420.11,
-        "std_s": 266917.45,
-        "n": 36505,
-        "n_gaps": 39201
+        "mean_s": 94812.81,
+        "std_s": 267712.52,
+        "n": 36058,
+        "n_gaps": 39201,
+        "zero_prob": 0.080177
       },
       "W_Validate application": {
         "distribution": "weibull_min",
         "params": [
-          0.4855,
+          0.4806,
           0.0,
-          39077.5835
+          38582.1233
         ],
-        "mean_s": 79030.94,
-        "std_s": 133801.48,
-        "n": 30294,
-        "n_gaps": 33920
+        "mean_s": 79336.72,
+        "std_s": 134126.71,
+        "n": 30569,
+        "n_gaps": 33920,
+        "zero_prob": 0.098791
       },
       "W_Assess potential fraud": {
         "distribution": "weibull_min",
         "params": [
-          0.5396,
+          0.5325,
           0.0,
-          55757.1137
+          52153.5599
         ],
-        "mean_s": 95358.68,
-        "std_s": 170889.13,
-        "n": 903,
-        "n_gaps": 996
+        "mean_s": 91804.74,
+        "std_s": 170241.18,
+        "n": 880,
+        "n_gaps": 996,
+        "zero_prob": 0.116466
       },
       "W_Handle leads": {
         "distribution": "lognorm",
         "params": [
-          2.2156,
+          2.2854,
           0.0,
-          347.3352
+          331.2595
         ],
-        "mean_s": 2305.69,
-        "std_s": 8602.19,
-        "n": 910,
-        "n_gaps": 1247
+        "mean_s": 2400.8,
+        "std_s": 8931.12,
+        "n": 1007,
+        "n_gaps": 1247,
+        "zero_prob": 0.192462
       },
       "W_Shortened completion ": {
         "distribution": "expon",
         "params": [
           0.0,
-          6841984.6569
+          6854063.7234
         ],
-        "mean_s": 6841984.66,
-        "std_s": 4074432.58,
+        "mean_s": 6854063.72,
+        "std_s": 4087391.63,
         "n": 7,
-        "n_gaps": 7
+        "n_gaps": 7,
+        "zero_prob": 0.0
       },
       "W_Personal Loan collection": {
         "distribution": "expon",
         "params": [
           0.0,
-          4684959.3611
+          4686473.975
         ],
-        "mean_s": 4684959.36,
-        "std_s": 4023190.09,
+        "mean_s": 4686473.98,
+        "std_s": 4023053.12,
         "n": 7,
-        "n_gaps": 7
+        "n_gaps": 7,
+        "zero_prob": 0.0
       }
     },
     "withdraw_hazard": {
@@ -4150,48 +4151,17 @@
           "__CASE_END__": 0.3032
         }
       },
-      "W_Validate application": {
+      "W_Handle leads": {
         "complete": {
-          "A_Incomplete": 0.6803,
-          "W_Assess potential fraud": 0.0054,
-          "O_Cancelled": 0.0561,
-          "A_Validating": 0.0004,
-          "A_Denied": 0.0025,
-          "W_Validate application": 0.0005,
-          "O_Returned": 0.0001,
-          "__CASE_END__": 0.2547
+          "A_Concept": 0.9997,
+          "W_Handle leads": 0.0003
         },
         "ate_abort": {
-          "A_Incomplete": 0.5298,
-          "O_Cancelled": 0.0917,
-          "W_Assess potential fraud": 0.0036,
-          "A_Denied": 0.0018,
-          "O_Returned": 0.0003,
-          "A_Validating": 0.0,
-          "O_Accepted": 0.0002,
-          "W_Validate application": 0.0003,
-          "__CASE_END__": 0.3724
-        }
-      },
-      "W_Complete application": {
-        "complete": {
-          "A_Complete": 0.9962,
-          "W_Assess potential fraud": 0.0004,
-          "O_Create Offer": 0.0001,
-          "A_Accepted": 0.0001,
-          "__CASE_END__": 0.0033
-        },
-        "ate_abort": {
-          "A_Complete": 0.9917,
-          "O_Create Offer": 0.0003,
-          "W_Assess potential fraud": 0.0005,
-          "A_Accepted": 0.0006,
-          "A_Denied": 0.0001,
-          "__CASE_END__": 0.0069
+          "A_Concept": 1.0
         },
         "withdraw": {
-          "A_Complete": 0.9946,
-          "__CASE_END__": 0.0054
+          "A_Concept": 0.9987,
+          "W_Assess potential fraud": 0.0013
         }
       },
       "W_Assess potential fraud": {
@@ -4222,17 +4192,27 @@
           "W_Handle leads": 1.0
         }
       },
-      "W_Handle leads": {
+      "W_Validate application": {
         "complete": {
-          "A_Concept": 0.9997,
-          "W_Handle leads": 0.0003
+          "A_Incomplete": 0.6803,
+          "W_Assess potential fraud": 0.0054,
+          "O_Cancelled": 0.0561,
+          "A_Validating": 0.0004,
+          "A_Denied": 0.0025,
+          "W_Validate application": 0.0005,
+          "O_Returned": 0.0001,
+          "__CASE_END__": 0.2547
         },
         "ate_abort": {
-          "A_Concept": 1.0
-        },
-        "withdraw": {
-          "A_Concept": 0.9987,
-          "W_Assess potential fraud": 0.0013
+          "A_Incomplete": 0.5298,
+          "O_Cancelled": 0.0917,
+          "W_Assess potential fraud": 0.0036,
+          "A_Denied": 0.0018,
+          "O_Returned": 0.0003,
+          "A_Validating": 0.0,
+          "O_Accepted": 0.0002,
+          "W_Validate application": 0.0003,
+          "__CASE_END__": 0.3724
         }
       },
       "W_Call incomplete files": {
@@ -4252,6 +4232,27 @@
           "A_Denied": 0.0001,
           "A_Incomplete": 0.0001,
           "__CASE_END__": 0.1982
+        }
+      },
+      "W_Complete application": {
+        "complete": {
+          "A_Complete": 0.9962,
+          "W_Assess potential fraud": 0.0004,
+          "O_Create Offer": 0.0001,
+          "A_Accepted": 0.0001,
+          "__CASE_END__": 0.0033
+        },
+        "ate_abort": {
+          "A_Complete": 0.9917,
+          "O_Create Offer": 0.0003,
+          "W_Assess potential fraud": 0.0005,
+          "A_Accepted": 0.0006,
+          "A_Denied": 0.0001,
+          "__CASE_END__": 0.0069
+        },
+        "withdraw": {
+          "A_Complete": 0.9946,
+          "__CASE_END__": 0.0054
         }
       }
     },
