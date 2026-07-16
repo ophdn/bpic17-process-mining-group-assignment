@@ -1,0 +1,122 @@
+[
+ {
+  "contexts": "ATonly",
+  "discovery": "AHC",
+  "profiling": "FullRecall",
+  "#contexts": 24,
+  "#groups": 10,
+  "fitness": 1.0,
+  "precision": 0.145,
+  "F1": 0.254
+ },
+ {
+  "contexts": "ATonly",
+  "discovery": "AHC",
+  "profiling": "OverallScore",
+  "#contexts": 24,
+  "#groups": 7,
+  "fitness": 0.893,
+  "precision": 0.576,
+  "F1": 0.7
+ },
+ {
+  "contexts": "ATonly",
+  "discovery": "MOC",
+  "profiling": "FullRecall",
+  "#contexts": 24,
+  "#groups": 10,
+  "fitness": 1.0,
+  "precision": 0.007,
+  "F1": 0.014
+ },
+ {
+  "contexts": "ATonly",
+  "discovery": "MOC",
+  "profiling": "OverallScore",
+  "#contexts": 24,
+  "#groups": 8,
+  "fitness": 0.952,
+  "precision": 0.259,
+  "F1": 0.407
+ },
+ {
+  "contexts": "CT+AT+TT(ca)",
+  "discovery": "AHC",
+  "profiling": "FullRecall",
+  "#contexts": 1960,
+  "#groups": 10,
+  "fitness": 1.0,
+  "precision": 0.276,
+  "F1": 0.433
+ },
+ {
+  "contexts": "CT+AT+TT(ca)",
+  "discovery": "AHC",
+  "profiling": "OverallScore",
+  "#contexts": 1960,
+  "#groups": 10,
+  "fitness": 0.922,
+  "precision": 0.59,
+  "F1": 0.719
+ },
+ {
+  "contexts": "CT+AT+TT(ca)",
+  "discovery": "MOC",
+  "profiling": "FullRecall",
+  "#contexts": 1960,
+  "#groups": 10,
+  "fitness": 1.0,
+  "precision": 0.008,
+  "F1": 0.016
+ },
+ {
+  "contexts": "CT+AT+TT(ca)",
+  "discovery": "MOC",
+  "profiling": "OverallScore",
+  "#contexts": 1960,
+  "#groups": 10,
+  "fitness": 0.787,
+  "precision": 0.461,
+  "F1": 0.581
+ },
+ {
+  "contexts": "CT+AT+TT(tc)",
+  "discovery": "AHC",
+  "profiling": "FullRecall",
+  "#contexts": 1803,
+  "#groups": 10,
+  "fitness": 1.0,
+  "precision": 0.265,
+  "F1": 0.419
+ },
+ {
+  "contexts": "CT+AT+TT(tc)",
+  "discovery": "AHC",
+  "profiling": "OverallScore",
+  "#contexts": 1803,
+  "#groups": 10,
+  "fitness": 0.889,
+  "precision": 0.639,
+  "F1": 0.744
+ },
+ {
+  "contexts": "CT+AT+TT(tc)",
+  "discovery": "MOC",
+  "profiling": "FullRecall",
+  "#contexts": 1803,
+  "#groups": 10,
+  "fitness": 1.0,
+  "precision": 0.01,
+  "F1": 0.019
+ },
+ {
+  "contexts": "CT+AT+TT(tc)",
+  "discovery": "MOC",
+  "profiling": "OverallScore",
+  "#contexts": 1803,
+  "#groups": 9,
+  "fitness": 0.712,
+  "precision": 0.474,
+  "F1": 0.569
+ }
+]

@@ -66,6 +66,8 @@ from simulation.components.arrival import ArrivalComponent
 from simulation.components.process import ProcessComponent
 from simulation.components.petri_process import PetriNetProcessComponent
 from simulation.components.resource import ResourceComponent, RESOURCE_PERMISSIONS
+from simulation.components import permissions as perm_models
+from simulation.components.case_attributes import CaseAttributeSampler
 from simulation.main import CaseCompletionTracker
 from analysis.availability import YearlyAvailability
 
@@ -74,6 +76,9 @@ import scripts.opt_metrics as opt_metrics
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BPMN_PATH = REPO_ROOT / "simulation" / "models" / "bpic17_process.bpmn"
 AVAILABILITY_MODEL_PATH = REPO_ROOT / "models" / "availability_model.json"
+ORGMODEL_PATH = REPO_ROOT / "models" / "permissions_orgmodel.json"
+OBSERVED_PERMS_PATH = REPO_ROOT / "models" / "permissions_observed.json"
+CASE_ATTRIBUTES_PATH = REPO_ROOT / "models" / "case_attributes.json"
 OUT_DEFAULT = REPO_ROOT / "output" / "experiments"
 
 # BPIC-17 starts 2016-01-01 -- must match simulation/main.py's anchor so
@@ -136,14 +141,41 @@ def scenario_arrival_kwargs(scenario: str) -> dict:
     return {}
 
 
-def scenario_excluded_resources(scenario: str, seed: int) -> Optional[Set[str]]:
+def load_permission_model(kind: str, seed: int):
+    """Mirror simulation/main.py's Section-1.7 wiring: returns
+    (permission_model_or_None, case_attribute_sampler_or_None).
+
+    "orgmodel" (the team default since 1.7 landed) gates permissions on the
+    case type, so cases need a CaseAttributeSampler; "observed" is the
+    log-mined resource x activity matrix; "hardcoded" is the original
+    top-20 map (ResourceComponent's built-in default when passed None).
+    """
+    if kind == "orgmodel":
+        perms = perm_models.OrgModelPermissions.from_json(ORGMODEL_PATH)
+        perms.self_check()
+        case_attrs = CaseAttributeSampler.from_json(CASE_ATTRIBUTES_PATH, seed=seed)
+        return perms, case_attrs
+    if kind == "observed":
+        return perm_models.StaticPermissions.from_json(OBSERVED_PERMS_PATH), None
+    if kind == "hardcoded":
+        return None, None
+    raise ValueError(f"unknown permissions kind {kind!r} "
+                     "(known: orgmodel, observed, hardcoded)")
+
+
+def scenario_excluded_resources(scenario: str, seed: int, resource_pool) -> Optional[Set[str]]:
     """Deterministic 20% resource removal for the 'outage' scenario.
     Seeded per-run so different seeds see different (but reproducible)
     removed sets -- this doubles as infrastructure for the "fire two
-    employees" management question (leave-N-out simulations)."""
+    employees" management question (leave-N-out simulations).
+
+    ``resource_pool``: the ACTIVE permission model's resource list — under
+    the org model the pool is much larger than the hardcoded top-20 map, and
+    an outage must remove real pool members, not names from a stale map.
+    """
     if scenario != "outage":
         return None
-    names = sorted(RESOURCE_PERMISSIONS)
+    names = sorted(resource_pool)
     k = max(1, round(len(names) * OUTAGE_FRACTION))
     rng = _random.Random(seed)
     return set(rng.sample(names, k))
@@ -163,6 +195,7 @@ def is_known_policy(policy: str) -> bool:
 
 def build_resource_component(
     policy: str, seed: int, calendar, excluded: Optional[Set[str]],
+    permission_model=None,
 ) -> ResourceComponent:
     k = parse_kbatch_policy(policy)
     if k is not None:
@@ -171,6 +204,7 @@ def build_resource_component(
             seed=seed,
             calendar=calendar,
             start_datetime=START_DATETIME,
+            permissions=permission_model,
             excluded_resources=excluded,
             batching_k=k,
             duration_model_path=str(REPO_ROOT / "simulation" / "models" / "processing_time_model.joblib"),
@@ -186,6 +220,7 @@ def build_resource_component(
         seed=seed,
         calendar=calendar,
         start_datetime=START_DATETIME,
+        permissions=permission_model,
         piled=(policy == "piled"),
         excluded_resources=excluded,
     )
@@ -231,28 +266,40 @@ def availability_seconds_per_resource(
 
 def run_once(
     policy: str, seed: int, days: int, scenario: str, crn: bool,
-    process_model: str, branching_mode: str,
+    process_model: str, branching_mode: str, permissions: str = "orgmodel",
+    excluded_override: Optional[Set[str]] = None,
 ) -> tuple[pd.DataFrame, dict]:
     """Build and run one (policy, seed, scenario) simulation.
 
     Returns (event-log DataFrame, metadata dict) where metadata has
     arrival_times, completed_case_ids, availability_seconds, engine_stats --
     everything opt_metrics.evaluate() needs, plus run bookkeeping.
+
+    `excluded_override`: an explicit set of resources to remove for THIS
+    run, bypassing the scenario's own removal logic. This is what the
+    "fire two employees" management question needs -- a *fixed* leave-N-out
+    set, evaluated across seeds, rather than the 'outage' scenario's random
+    20% (which reshuffles per seed). Pass an empty set to force nobody out.
     """
     duration = days * 86400
 
     calendar = YearlyAvailability.from_json(AVAILABILITY_MODEL_PATH)
-    excluded = scenario_excluded_resources(scenario, seed)
+    perms, case_attrs = load_permission_model(permissions, seed)
+    resource_pool = (perms.resources() if perms is not None
+                     else sorted(RESOURCE_PERMISSIONS))
+    excluded = (excluded_override if excluded_override is not None
+                else scenario_excluded_resources(scenario, seed, resource_pool))
 
     engine = SimulationEngine(sim_duration=duration, start_datetime=START_DATETIME, verbose=False)
     arrivals = ArrivalComponent(seed=seed, **scenario_arrival_kwargs(scenario))
-    resources = build_resource_component(policy, seed, calendar, excluded)
+    resources = build_resource_component(policy, seed, calendar, excluded,
+                                         permission_model=perms)
     recorder = _ArrivalRecorder()
     tracker = CaseCompletionTracker()
 
     proc_kwargs = dict(
         seed=seed, mode="distribution", start_datetime=START_DATETIME,
-        resource_component=resources, crn=crn,
+        resource_component=resources, crn=crn, case_attributes=case_attrs,
     )
     if process_model == "advanced":
         process = PetriNetProcessComponent(
@@ -279,7 +326,7 @@ def run_once(
         for cid, t in recorder.timestamps.items()
     }
     availability_seconds = availability_seconds_per_resource(
-        calendar, START_DATETIME, days, RESOURCE_PERMISSIONS.keys(),
+        calendar, START_DATETIME, days, resource_pool,
     )
 
     meta = {
@@ -329,14 +376,16 @@ def report_wip(days: int) -> None:
     """
     duration = days * 86400
     calendar = YearlyAvailability.from_json(AVAILABILITY_MODEL_PATH)
+    perms, case_attrs = load_permission_model("orgmodel", seed=1)
     engine = SimulationEngine(sim_duration=duration, start_datetime=START_DATETIME, verbose=False)
     arrivals = ArrivalComponent(seed=1)
-    resources = build_resource_component("random", 1, calendar, None)
+    resources = build_resource_component("random", 1, calendar, None,
+                                         permission_model=perms)
     arrival_rec = _ArrivalRecorder()
     complete_rec = _CompletionRecorder()
     process = ProcessComponent(
         seed=1, mode="distribution", start_datetime=START_DATETIME,
-        resource_component=resources, crn=True,
+        resource_component=resources, crn=True, case_attributes=case_attrs,
     )
     engine.register(arrivals)
     engine.register(resources)
@@ -483,6 +532,12 @@ def parse_args():
                         "use 'advanced' for report-quality numbers.")
     p.add_argument("--branching-mode", default="visit", choices=["probs", "visit", "rules"],
                    help="--process-model advanced only.")
+    p.add_argument("--permissions", default="orgmodel",
+                   choices=["orgmodel", "observed", "hardcoded"],
+                   help="Section-1.7 permission model, mirroring simulation/main.py: "
+                        "'orgmodel' (mined OrdinoR model, the team default), "
+                        "'observed' (log-mined resource x activity matrix), "
+                        "'hardcoded' (original top-20 map).")
     p.add_argument("--no-crn", dest="crn", action="store_false",
                    help="Disable Common Random Numbers (paired comparisons "
                         "become unreliable -- see module docstring).")
@@ -517,19 +572,25 @@ def main():
         for seed in seeds:
             df, meta = run_once(
                 policy, seed, args.days, args.scenario, args.crn,
-                args.process_model, args.branching_mode,
+                args.process_model, args.branching_mode, args.permissions,
             )
             df, meta = apply_warmup(df, meta, args.warmup_days)
             if df.empty:
                 print(f"WARNING: policy={policy} seed={seed}: empty log after "
                       f"warm-up filter, skipping this run.")
                 continue
-            m = opt_metrics.evaluate(
-                df,
-                arrival_times=meta["arrival_times"],
-                availability_seconds=meta["availability_seconds"],
-                completed_case_ids=meta["completed_case_ids"],
-            )
+            # One failing run must not abort a multi-hour grid: log and skip.
+            try:
+                m = opt_metrics.evaluate(
+                    df,
+                    arrival_times=meta["arrival_times"],
+                    availability_seconds=meta["availability_seconds"],
+                    completed_case_ids=meta["completed_case_ids"],
+                )
+            except Exception as e:  # noqa: BLE001 — resilience over precision here
+                print(f"WARNING: policy={policy} seed={seed}: evaluate() failed "
+                      f"({type(e).__name__}: {e}), skipping this run.", file=sys.stderr)
+                continue
             rows.append(flatten_result(policy, seed, args.scenario, m, meta["engine_stats"]))
             ct = m["cycle_time"]
             print(f"  [{policy:>7} seed={seed:>2}] "

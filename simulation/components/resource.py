@@ -4,13 +4,21 @@ resource.py — Resource Component (Sections 1.6, 1.7, 1.8)
 Implements the **Role-Based Allocation** creation pattern (R-RBA,
 Pattern 2 of Russell et al. 2005) as the resource-allocation heuristic:
 
-  - Section 1.7 Basic (R-RBA): a work item may only be allocated to a
-    resource whose "role" qualifies it for the task.  In the absence of
-    an explicit organisational model for BPIC-17, a resource's role is
-    operationalised as the set of activities it has historically been
-    observed performing in the log (`RESOURCE_PERMISSIONS`).  This
-    yields the inverse candidate map `_ACTIVITY_TO_RESOURCES`.  R-RBA
-    defers the actual choice of *which* qualified resource to runtime;
+  - Section 1.7 (R-RBA): a work item may only be allocated to a resource
+    whose "role" qualifies it for the task.  *Which* resources qualify is
+    decided entirely by an injected permission model (see
+    `components/permissions.py`) — this component never inspects a
+    permission map directly, so the model can be swapped without editing
+    the engine, the process component, or the event types.
+
+    The default is `DEFAULT_PERMISSIONS`: the hardcoded top-20 map below,
+    i.e. a resource's role is the set of activities it was observed
+    performing.  Section 1.7 Basic replaces it with the same rule learned
+    over all 149 resources; Section 1.7 Advanced replaces it with an
+    organizational model discovered by OrdinoR, whose capabilities may
+    also depend on the case type and the time of day.
+
+    R-RBA defers the choice of *which* qualified resource to runtime;
     among the qualified-and-available candidates a uniform random pick
     is made (the project's default selection behaviour).
   - Section 1.8 (Distribution on Enablement, R-DE — Pattern 19): when
@@ -137,13 +145,13 @@ allocation).  Enabled at runtime via ``--k-batching K`` on main.py.
 """
 
 import random
-from collections import defaultdict
 from typing import Dict, List, Optional, Set
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
 from ..core.events import SimEvent, EventType
+from .permissions import PermissionModel, StaticPermissions
 from ..policies import AllocationPolicy, AllocationState, RandomPolicy
 from ..expected_duration import ExpectedDurationModel
 
@@ -279,12 +287,12 @@ RESOURCE_PERMISSIONS: Dict[str, Set[str]] = {
 }
 
 # Precompute inverse map: activity -> list of permitted resources (R-RBA)
-# Order is deterministic (insertion order of the dict above) so the random
-# pick has a stable candidate ordering per activity for reproducibility.
-_ACTIVITY_TO_RESOURCES: Dict[str, List[str]] = defaultdict(list)
-for _res, _acts in RESOURCE_PERMISSIONS.items():
-    for _act in _acts:
-        _ACTIVITY_TO_RESOURCES[_act].append(_res)
+# The default permission model: the hardcoded map above, wrapped in the
+# Section 1.7 interface. Insertion order is stable, so the seeded random pick
+# below stays reproducible. Pass `permissions=` to swap in a learned model
+# (the observed matrix, or an OrdinoR organizational model) without touching
+# this component — see simulation/components/permissions.py.
+DEFAULT_PERMISSIONS = StaticPermissions(RESOURCE_PERMISSIONS)
 
 # payload tags on synthetic resource=None RESOURCE_AVAILABLE wake-up events,
 # so on_resource_available's k-batching branch resets only the specific
@@ -325,6 +333,7 @@ class ResourceComponent:
         seed: Optional[int] = 42,
         calendar=None,
         start_datetime=None,
+        permissions: Optional[PermissionModel] = None,
         piled: bool = False,
         policy: Optional[AllocationPolicy] = None,
         excluded_resources: Optional[Set[str]] = None,
@@ -366,6 +375,10 @@ class ResourceComponent:
             ExpectedDurationModel(duration_model_path) if batching_k is not None else None
         )
 
+        # Section 1.7: who may perform what. Any object satisfying the
+        # PermissionModel protocol; defaults to the hardcoded observed map.
+        self._permissions: PermissionModel = permissions or DEFAULT_PERMISSIONS
+
         # Section 1.6: an availability calendar (analysis.availability.
         # YearlyAvailability, or None to leave resources always on duty).
         # `start_datetime` anchors simulation seconds to wall-clock time.
@@ -373,7 +386,9 @@ class ResourceComponent:
         self._start = start_datetime
 
         # resource -> current number of active tasks
-        self._busy: Dict[str, int] = {r: 0 for r in RESOURCE_PERMISSIONS}
+        self._busy: Dict[str, int] = {
+            r: 0 for r in self._permissions.resources()
+        }
 
         # Work items enabled but not yet started, awaiting a resource (R-DE).
         # FIFO. Holds ACTIVITY_REQUEST events.
@@ -402,6 +417,11 @@ class ResourceComponent:
         # shift-wake mechanism above.
         self._batch_wake_at: Optional[float] = None
 
+    @property
+    def permissions(self) -> PermissionModel:
+        """The permission model in force (Section 1.7)."""
+        return self._permissions
+
     # ------------------------------------------------------------------
     # Handlers
     # ------------------------------------------------------------------
@@ -415,7 +435,7 @@ class ResourceComponent:
         immediately, it always queues and waits for a batch flush.
         """
         if self._batching_k is not None:
-            if not _ACTIVITY_TO_RESOURCES.get(event.activity):
+            if not self._qualified(engine, event):
                 self._unpermitted += 1
                 self._begin(engine, event, None)
                 return
@@ -425,13 +445,13 @@ class ResourceComponent:
             self._arm_batch_wake(engine)
             return
 
-        resource = self._allocate(engine, event.activity)
+        resource = self._allocate(engine, event)
 
         if resource is not None:
             self._begin(engine, event, resource)
             return
 
-        if not _ACTIVITY_TO_RESOURCES.get(event.activity):
+        if not self._qualified(engine, event):
             # Nobody is permitted to do this at all. Queuing would strand the
             # case forever, so run it unassigned and count it.
             self._unpermitted += 1
@@ -491,19 +511,33 @@ class ResourceComponent:
             if (self._busy[resource] < self._capacity
                     and self._is_on_shift(engine, resource)):
                 # Piled Execution: prefer a waiting item of the same activity
-                # type this resource just finished. It is permitted by
-                # construction (it just ran one), so no permission check needed.
+                # type this resource just finished — its "pile".
+                #
+                # The permission check here is NOT redundant, though it was when
+                # this was written against a flat resource->activities map (where
+                # having just run the activity did imply permission for it). An
+                # OrdinoR permission model also conditions on the case type and
+                # the weekday, so a resource that just handled "W_Validate
+                # application" for a *car* loan is not thereby permitted the same
+                # activity for a *boat* loan. Same activity, different execution
+                # context, possibly different answer.
                 if self._piled and event.payload is not None:
                     for i, waiting in enumerate(self._waiting):
-                        if waiting.activity == event.payload:
-                            self._waiting.pop(i)
-                            self._begin(engine, waiting, resource)
-                            self._arm_shift_wake(engine)
-                            return
+                        if waiting.activity != event.payload:
+                            continue
+                        ct, when = self._context(engine, waiting)
+                        if not self._permissions.permits(
+                                resource, waiting.activity, case_type=ct, when=when):
+                            continue
+                        self._waiting.pop(i)
+                        self._begin(engine, waiting, resource)
+                        self._arm_shift_wake(engine)
+                        return
 
-                permitted = RESOURCE_PERMISSIONS.get(resource, set())
                 for i, waiting in enumerate(self._waiting):
-                    if waiting.activity in permitted:
+                    ct, when = self._context(engine, waiting)
+                    if self._permissions.permits(
+                            resource, waiting.activity, case_type=ct, when=when):
                         self._waiting.pop(i)
                         self._begin(engine, waiting, resource)
                         break
@@ -523,7 +557,7 @@ class ResourceComponent:
         ``_allocate``'s filter, minus the per-activity permission check
         (the assignment cost matrix handles permission per pair instead)."""
         return [
-            r for r in RESOURCE_PERMISSIONS
+            r for r in self._permissions.resources()
             if self._busy.get(r, 0) < self._capacity
             and self._is_on_shift(engine, r)
             and r not in self._excluded
@@ -566,8 +600,12 @@ class ResourceComponent:
         PROHIBITIVE = 1e12
         cost = np.full((n, m), PROHIBITIVE)
         for i, req in enumerate(batch):
+            # Permission is per (resource, activity, case type, time) under an
+            # OrdinoR model, so it is resolved per *pair* here rather than from a
+            # flat per-resource activity set.
+            ct, when = self._context(engine, req)
             for j, r in enumerate(free):
-                if req.activity in RESOURCE_PERMISSIONS.get(r, set()):
+                if self._permissions.permits(r, req.activity, case_type=ct, when=when):
                     cost[i, j] = self._duration_model.expected_duration(req.activity, r)
 
         row_ind, col_ind = linear_sum_assignment(cost)
@@ -587,12 +625,39 @@ class ResourceComponent:
         """Start as many queued work items as the on-duty pool can take."""
         still: List[SimEvent] = []
         for req in self._waiting:
-            r = self._allocate(engine, req.activity)
+            r = self._allocate(engine, req)
             if r is not None:
                 self._begin(engine, req, r)
             else:
                 still.append(req)
         self._waiting = still
+
+    # -- permissions (Section 1.7) ---------------------------------------
+
+    def _context(self, engine, event: SimEvent):
+        """The execution context of a work item: (case type, wall-clock time).
+
+        An OrdinoR organizational model may grant capabilities per case type and
+        time type, not just per activity. The case type rides on the event payload
+        (sampled at arrival); the time comes from the clock we already keep for
+        the Section 1.6 calendar. A model that ignores these dimensions simply
+        does not look at them.
+        """
+        payload = event.payload or {}
+        case_type = payload.get("case_type")
+        when = self._now_wall(engine) if self._start is not None else None
+        return case_type, when
+
+    def _qualified(self, engine, event: SimEvent) -> bool:
+        """Is *anyone at all* permitted this work item, busy or not?
+
+        Distinguishes "everyone is busy or off-shift" (queue and wait) from
+        "nobody may ever do this" (a hole in the permission model — queuing would
+        strand the case forever).
+        """
+        ct, when = self._context(engine, event)
+        return bool(self._permissions.candidates(
+            event.activity, case_type=ct, when=when))
 
     # -- availability (Section 1.6) --------------------------------------
 
@@ -606,15 +671,29 @@ class ResourceComponent:
 
         Without a calendar, everyone is always on duty (the pre-1.6 behaviour).
 
-        A resource the calendar does not know is also always on duty. That is not
-        a fallback but the correct answer: the calendar only models *human*
-        staff, so an account missing from it is an automated one (User_1), and a
-        batch process does not keep office hours.
+        A resource with no fitted window is resolved by *why* it has none:
+
+          - a known **system account** (in the calendar's ``system`` set) is
+            always on duty — an automated account keeps no office hours. This is
+            correct, not a fallback.
+          - any **other** windowless resource is a human the calendar could not
+            fit, and is treated as *off shift* rather than always-on. Treating an
+            unfitted human as available 24/7 is the opposite of what "too little
+            data to fit a shift" should mean, and would let sparse resources
+            silently absorb all out-of-hours work. The Section 1.6 model fits a
+            coarse window for every human with any W_ signal (Tier B), so in
+            practice only system accounts land here.
+
+        For backward compatibility with a calendar that predates the ``system``
+        set, a windowless resource is treated as always-on (the old behaviour).
         """
         if self._calendar is None:
             return True
         if resource not in self._calendar.weekly.windows:
-            return True
+            system = getattr(self._calendar, "system", None)
+            if system is None:
+                return True                 # legacy calendar: preserve old behaviour
+            return resource in system
         return self._calendar.is_available(resource, self._now_wall(engine))
 
     def _arm_shift_wake(self, engine) -> None:
@@ -724,7 +803,7 @@ class ResourceComponent:
             payload=request.payload,
         ))
 
-    def _allocate(self, engine, activity: str) -> Optional[str]:
+    def _allocate(self, engine, event: SimEvent) -> Optional[str]:
         """
         R-RBA runtime filter (role permission + live capacity + on-shift),
         then the push *selection* pattern in ``self._policy`` picks one.
@@ -732,11 +811,18 @@ class ResourceComponent:
         work item. A policy never sees a candidate this filter rejected, so
         it cannot violate R-RBA or the shift calendar even by accident.
 
+        "Qualified" is whatever the injected permission model says (Section 1.7):
+        the observed resource-activity matrix, or an OrdinoR organizational model
+        that may also condition on the case type and the time.
+
         Note a task already under way is never preempted when its resource goes
         off shift: the calendar gates *allocation*, not execution. A person who
         starts a task at 16:55 finishes it rather than dropping it at 17:00.
         """
-        candidates = _ACTIVITY_TO_RESOURCES.get(activity, [])
+        ct, when = self._context(engine, event)
+        candidates = self._permissions.candidates(
+            event.activity, case_type=ct, when=when)
+
         available = [
             r for r in candidates
             if self._busy.get(r, 0) < self._capacity
@@ -746,7 +832,7 @@ class ResourceComponent:
         if not available:
             return None
         state = AllocationState(busy=self._busy, capacity=self._capacity)
-        return self._policy.select(activity, available, state)
+        return self._policy.select(event.activity, available, state)
 
     # ------------------------------------------------------------------
     # Introspection (for empirical evaluation)

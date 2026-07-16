@@ -51,8 +51,10 @@ warnings.filterwarnings("ignore")
 
 # Windows consoles default to cp1252, which cannot encode the box-drawing
 # characters in the report output — force UTF-8 so a cosmetic print never
-# kills a long training run.
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+# kills a long training run. Guard with hasattr: under a Jupyter kernel
+# sys.stdout is an ipykernel OutStream with no reconfigure().
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # ── Reproducibility ──────────────────────────────────────────────────────────
 RANDOM_SEED = 42

@@ -1,0 +1,290 @@
+% Draft: report subsection for the resource perspective (Sections 1.6-1.8).
+% Bullet-point draft to be turned into prose and pasted into the ShareLaTeX
+% report. Every number is reproducible from notebooks 01/02 and the
+% models/*.json they emit. VIS-PLACEHOLDER bullets mark figures to export.
+
+\subsection{Resource Availability, Permissions, and Allocation}
+
+\textit{Johannes Terhorst}
+
+The resource perspective adds three components on top of the engine, each
+following the same \emph{fit offline, load at runtime} split as the rest of
+the simulator:
+\begin{itemize}
+  \item Models are mined in notebooks (\texttt{01\_resource\_availability},
+        \texttt{02\_resource\_permissions}) with pandas / scikit-learn /
+        \texttt{ordinor} and serialised to small JSON parameter files in
+        \texttt{models/}; the simulation only \emph{loads} JSON, so it stays
+        dependency-light and the analysis stays reproducible.
+  \item Each component sits behind a narrow interface
+        (\texttt{PermissionModel}, an availability calendar object,
+        \texttt{AllocationPolicy}), so a model can be swapped without touching
+        the engine, the process component, or the event types.
+\end{itemize}
+
+\textbf{Resource availability (Section 1.6).}
+\begin{itemize}
+  \item \emph{Three log corrections first, each justified from the data:}
+        (i) timestamps are UTC but working hours are local --- convert to
+        \texttt{Europe/Amsterdam}, collapsing an apparent 1.17\,h summer/winter
+        opening swing to 0.15\,h; (ii) only Workflow (\texttt{W\_}) events are
+        human work with a real start/complete lifecycle (128{,}227
+        \texttt{start} events), whereas \texttt{A\_}/\texttt{O\_} events only
+        ever carry \texttt{complete} --- a naive ``filter to \texttt{complete}''
+        would delete the entire signal; (iii) one ``resource'' is automated
+        (\texttt{User\_1}, active on 99.2\% of calendar days, above the
+        structural 71.4\%-weekday ceiling a human cannot exceed) and is
+        excluded by a recomputed rule, not by name.
+  \item \emph{Presence from the full lifecycle, bucketed by calendar date.} A
+        resource is marked present on a day from its first to its last
+        \texttt{W\_} signal \emph{that day}, using \emph{every} transition
+        (schedule / start / suspend / resume / complete), not just start and
+        complete. Each transition is counted on the date it actually occurred
+        and never interpolated across a start-to-complete gap --- so a task
+        started Friday and resumed Monday contributes a Friday point and a
+        Monday point, and the intervening weekend gets nothing. Verified on the
+        log: of 12{,}475 work items spanning $\geq$2 calendar days, across
+        87{,}755 intervening days, \emph{zero} produced presence on a day with
+        no real event. This is what keeps overnight and weekend-spanning tasks
+        from fabricating availability.
+  \item \emph{Limitation, tested --- automated lifecycle events.} The flip side
+        of using the full lifecycle is that an \emph{automated} transition would
+        still count as a presence signal: if the source system auto-suspended all
+        open work at a fixed hour, that timestamp would enter the day's window
+        even though the resource had stopped earlier, and the log could not tell
+        a person closing a task from a nightly batch. We checked BPIC-17 for this
+        and it does \emph{not} occur --- three fingerprints of an automated
+        suspend are all absent: (i) the \texttt{suspend} hour-of-day curve tracks
+        the \texttt{start} curve (peaks 9--11h, 14--16h; $\sim$0\% at 22:00),
+        rather than spiking at one hour; (ii) timestamps are irregular
+        (only 1.7\% on second~\texttt{:00}), not the round times a batch job
+        produces; (iii) at most 2 cases ever share one exact \texttt{suspend}
+        instant --- a ``suspend everything'' job would hit hundreds at once.
+        So here \texttt{suspend} is a genuine human interaction and the workday
+        is not inflated. The caveat is therefore general rather than active: on a
+        different log with automated suspension this check would need repeating,
+        and the $q_{90}$ window trim bounds the damage in any case.
+  \item \emph{Two regimes in the lifecycle --- work vs waiting.} The intervals
+        between \texttt{W\_} transitions are bimodal: active work
+        (\texttt{start}/\texttt{resume}$\to$next) averages 5.8\,min and almost
+        never spans a night (0.3\% cross midnight), whereas waiting
+        (\texttt{suspend}$\to$\texttt{resume}, i.e.\ customer response) averages
+        69.9\,h and crosses nights and weekends 55\% of the time. Across the log
+        that is 24{,}634 active-hours against 15.05\,M waiting-hours ---
+        \textbf{99.8\% of the elapsed \texttt{start}$\to$\texttt{complete} time
+        is waiting, not work}. This is exactly why presence is reconstructed from
+        dated transition \emph{points} rather than \texttt{start}$\to$%
+        \texttt{complete} spans (which would drag weekend/overnight waiting into
+        the workday); it is also a caveat for any processing-time model fitted on
+        the raw span (cf.\ \S1.3), where the true active work is only minutes.
+  \item \emph{\texttt{schedule} is a human signal, and harmless to availability.}
+        \texttt{schedule} (a work item offered to a worklist) could be a system
+        event, but it carries a resource 100\% of the time and in 85\% of cases
+        the \emph{same} resource \texttt{start}s the item within one second --- a
+        co-emitted marker, not an independent action (the other 13\% are a real
+        worklist queue, p90 12\,h). Including it adds \emph{zero} new
+        (resource, day) presence cells (+0.00\%), so the window model is robust
+        to it either way.
+  \item \emph{Basic --- weekly shift profile, in two tiers.} \emph{Tier A}
+        (well-observed resources, $\geq$20 active days): a per-(resource,
+        weekday) window fitted as $[q_{10}\text{ first event},\,
+        q_{90}\text{ last event}]$ plus $P(\text{works that day})$. There is no
+        fortnightly signal (odd/even-week split indistinguishable from a random
+        split, $0.36$\,h vs $0.39$\,h median shift), so a \emph{weekly} cycle is
+        tiled across the assignment's two-week interval rather than fitting
+        noise into an A/B week.
+  \item \emph{Tier B --- a coarser fit for sparse resources.} 27 humans have
+        fewer than 20 active days --- too few distinct days to trust a shift
+        \emph{per weekday}, but usually plenty of events (e.g.\ \texttt{User\_132}
+        logs 2{,}622 events across 12 days). Rather than drop them --- which at
+        runtime meant treating them as on shift \emph{24/7}, the opposite of
+        sparse --- we fit a single \emph{pooled} window per resource from all
+        its events and open it only on the weekdays it was actually seen. Weaker
+        assumptions, but data-driven, and strictly better than an always-on
+        fallback. After this, every human with any \texttt{W\_} signal has a
+        window (148 of 148); only the genuine system account
+        (\texttt{User\_1}, no \texttt{W\_} lifecycle) stays windowless and is
+        modelled as always-on --- a batch process keeps no office hours. The
+        \S1.6 model records which accounts are automated so the resource
+        component can tell ``automated'' from ``unfitted'' rather than treating
+        every windowless account as available around the clock.
+  \item \emph{Limitation / future work --- the sparse resources belong to the
+        full-time teams.} Cross-referencing Tier B against the \S1.7 org model
+        is revealing: 22 of the 27 fall into just two of the ten groups --- the
+        \emph{same} groups as the full-time application-completion (group~3) and
+        validation (group~6) staff, doing the same activities. So they are not a
+        separate function but an \emph{addition} to those teams: plausibly
+        part-timers, staff on long leave, or people on-/offboarded mid-year. A
+        window fitted from their handful of observations is then too narrow in
+        spirit (one resource was seen working $\sim$5\,min); a more faithful
+        model would give a sparse resource its \emph{team's} operating window
+        (the group's typical hours) while keeping its own low
+        $P(\text{works})$ --- the same hours as the full-timers, just not every
+        day, and possibly half-days. We flag this as future work rather than
+        adopt it: it would couple \S1.6 to the \S1.7 org model, and the thinnest
+        resources are not in the permission pool, so they are never allocated
+        regardless.
+  \item \emph{Why quantiles over min/max:} min/max reaches 100\% coverage but
+        wastes half the modelled day (49.4\% utilisation) on outlier-stretched
+        windows; $q_{10}/q_{90}$ covers \textbf{97.4\%} of real work events at
+        57.2\% utilisation, against only \textbf{80.5\%} for a single global
+        9--17 calendar --- the empirical case for per-resource shifts.
+  \item \emph{Advanced --- year plan (\texttt{YearlyAvailability}).} The weekly
+        profile plus (a) a discovered public-holiday calendar (weekdays of
+        collective absence against a \emph{local} rolling baseline, recovering
+        the Dutch bank holidays unprompted --- King's Day, Ascension, Whit
+        Monday, Boxing Day --- and correctly omitting Good Friday); and (b)
+        per-resource vacation, fitted only where identifiable.
+  \item \emph{The vacation subtlety:} a flat ``$\geq 5$ absent days $=$ leave''
+        rule yields an absurd 50 leave-days/resource/year, because the median
+        resource works only $\sim$27\% of weekdays, so long absence runs occur
+        $\sim$15$\times$/year by chance. Each resource gets its own threshold
+        from its working rate; leave is fitted only for near-full-time staff
+        ($\geq$60\%), where blocks then look like real annual leave (median
+        10\,d, max 21\,d, $\sim$24\,days/year) --- a plausibility ceiling that
+        \emph{emerges} from the data rather than being imposed.
+  \item Holidays are a property of the \emph{calendar} (placed directly);
+        vacation is a property of the \emph{person} (re-sampled per resource
+        from its fitted distribution), so runs are statistically similar
+        without replaying 2016's exact roster. Serialises to 81\,KB of
+        parameters.
+  \item \emph{Validation (second pass):} the simulated workforce reproduces the
+        weekly rhythm, holiday troughs, and day-to-day variability (sd $6.8$
+        vs real $7.2$). Folding in the sparse resources as Tier B narrows the
+        mean-headcount gap from 9.2\% to \textbf{7.4\%} (model 37.3 vs real 40.2
+        staff/weekday); the residual is a conservative error --- the model is
+        slightly \emph{under}-staffed, so queues and waiting times are if
+        anything overstated, not optimistic.
+  \item \emph{VIS-PLACEHOLDER:} heat-map of the fitted weekly windows
+        (open/close hour per resource $\times$ weekday) with a global 9--17
+        band overlaid, showing how individual shifts diverge from office hours.
+  \item \emph{VIS-PLACEHOLDER:} coverage vs.\ window-utilisation sweep
+        (min/max, $q_{10}/q_{90}$, $q_{25}/q_{75}$, global 9--17) --- the table
+        behind the window-fitting decision.
+  \item \emph{VIS-PLACEHOLDER:} simulated vs.\ real weekday headcount over the
+        log span, showing the reproduced holiday troughs and the deliberately
+        un-modelled onboarding/truncation ramps at the edges.
+\end{itemize}
+
+\textbf{Resource permissions (Section 1.7).}
+
+\emph{OrdinoR in brief (for readers new to it).} The basic model asks a
+one-dimensional question --- ``has resource $r$ ever performed activity $a$?''
+OrdinoR~\cite{yang2022ordinor} asks a richer one, built on three ideas:
+\begin{itemize}
+  \item \emph{Execution context.} Instead of the bare activity, each event is
+        tagged with a triple (\emph{case type}, \emph{activity type},
+        \emph{time type}) --- e.g.\ ``validate a \emph{car} loan on a
+        \emph{Monday}''. Any dimension may be the wildcard $\bot$ (``any''), so
+        the context can be as coarse as the activity alone or as fine as
+        activity-\emph{and}-loan-type-\emph{and}-weekday.
+  \item \emph{Groups and capabilities.} Resources that behave similarly are
+        clustered into \emph{groups}; a group's \emph{capabilities} are the set
+        of execution contexts its members work in; and a resource inherits the
+        capabilities of every group it belongs to. Permission then becomes
+        ``does $r$ belong to a group whose capabilities cover this context?''
+        --- a \emph{role}, not a personal history. This is what lets the model
+        grant a sensible pair a resource never personally did (its colleagues
+        do, so the group does) and drop rare one-offs (a single stray event
+        does not make it into the group's profile).
+  \item \emph{Two quality numbers.} \emph{Fitness} = the share of real events
+        the model allows (completeness); \emph{precision} = how tightly the
+        allowed behaviour matches the log, i.e.\ how little extra it permits
+        (exactness); \emph{F1} combines them. A model that permits everyone
+        scores fitness 1 but near-zero precision --- a useless ``flower model''.
+\end{itemize}
+The three knobs we sweep map directly onto these ideas: how to \emph{define}
+contexts (activity-only vs.\ adding case + time), how to \emph{cluster}
+resources into groups (AHC $\to$ disjoint groups, MOC $\to$ overlapping), and
+how to \emph{profile} a group (FullRecall = allow anything any member did $\to$
+the flower model; OverallScore = keep only contexts that are frequent and
+shared across the group).
+
+\begin{itemize}
+  \item \emph{Basic --- observed matrix.} A boolean
+        resource\,$\times$\,activity matrix: permitted iff observed (the literal
+        requirement). It is 63\% dense and pure \emph{memorisation} --- it
+        cannot grant an unseen-but-sensible pair, a third of it rests on
+        $\leq 10$ observations, and on a temporal hold-out it forbids
+        \textbf{2{,}967 events that actually happen}.
+  \item \emph{Advanced --- OrdinoR organizational model} (deployed model:
+        \texttt{CT+AT+TT} contexts, AHC + complete linkage, OverallScore; 10
+        groups over 144 resources). It both \emph{generalises} (grants sensible
+        unseen pairs) and \emph{restricts} (drops rare one-offs), per the
+        mechanism above.
+  \item \emph{Design chosen by a 12-model sweep} ($3\times2\times2$: context
+        definition $\times$ AHC/MOC discovery $\times$ FullRecall/OverallScore
+        profiling): contexts from \texttt{CT+AT+TT}, \textbf{AHC} disjoint
+        groups, \textbf{OverallScore} profiling (FullRecall is a ``flower
+        model'' --- fitness 1.0, precision $\sim$0.01), and \textbf{complete}
+        linkage (\texttt{ordinor} defaults to \texttt{single}, which chains
+        102/144 resources into one blob). Reproduces the paper's BPIC-17
+        experiment at F1 $\geq$ theirs on all AHC+OverallScore rows (best
+        \textbf{0.744 vs 0.724}), with our fast conformance measures verified
+        identical to \texttt{ordinor}'s to $10^{-9}$.
+  \item \emph{Key design decision --- deploy the causally available model, not
+        the best-scoring one.} The top-F1 model uses \emph{trace-clustered}
+        case types (a summary of how a case behaved end-to-end), which cannot
+        exist when a case needs its \emph{first} resource. We deploy the best
+        model whose case types are known at arrival --- from the loan goal ---
+        at a cost of 0.025 F1. (Conformance scores a model's \emph{description}
+        of a finished log; a simulation needs a \emph{generator}.)
+  \item \emph{Payoff in the simulation (the decisive test):} run under each
+        model, the org model reproduces the real distribution of work across
+        (resource, activity) pairs \textbf{best} (total-variation distance
+        \textbf{0.575}, vs 0.696 for the observed matrix and 0.868 for the
+        hardcoded top-20 baseline) --- and does so while being \emph{more}
+        selective (about half as many resources permitted per activity). It
+        wins by being more right, not more permissive.
+  \item How the triple is enforced at runtime: the case type rides on the event
+        payload (a loan goal sampled at arrival) and the time type comes from
+        the clock the 1.6 calendar already needs, so both dimensions are
+        available for free; a model with no opinion on a dimension degrades
+        gracefully to a plain activity lookup.
+  \item \emph{VIS-PLACEHOLDER:} fitness--precision scatter of the 12 swept
+        models, highlighting the flower-model corner (FullRecall), the chosen
+        \texttt{CT+AT+TT / AHC / OverallScore} point, and the deployed
+        causally-available variant.
+  \item \emph{VIS-PLACEHOLDER:} grouped bar of real-vs-simulated
+        work-distribution TV-distance for the three permission models
+        (hardcoded / observed / org), annotated with permitted
+        resources-per-activity.
+\end{itemize}
+
+\textbf{Resource allocation and contention (Section 1.8 / Part~II baseline).}
+\begin{itemize}
+  \item \emph{Contention rework --- two-phase protocol.} Work items are
+        \emph{requested}, then \emph{started}: the process component emits
+        \texttt{ACTIVITY\_REQUEST} (``this item is enabled''); the resource
+        component is the \emph{only} thing that emits \texttt{ACTIVITY\_START},
+        and only once a resource is bound. The engine dispatches every event to
+        all handlers unconditionally, so keeping a queued item as a request
+        (invisible to the process component) is what stops it from being
+        executed while it waits --- the fix for the case-forking bug --- and
+        makes waiting time fall out as $\text{start}-\text{request}$.
+  \item \emph{Random allocation (R-RBA, Russell et al.\ 2005 pattern~2).}
+        Candidates are filtered by the permission model (\emph{who may}), then
+        by live capacity (\texttt{capacity}$>1$ generalises the paper's
+        single-slot resource) and on-shift status; among the survivors an
+        \texttt{AllocationPolicy} picks one. The default \texttt{RandomPolicy}
+        (R-RMA, pattern~15) is the assignment-mandated uniform random pick, and
+        is the Part~II baseline every optimisation policy plugs into via the
+        same seam without editing \texttt{ResourceComponent}.
+  \item \emph{Saturation path (R-DE, pattern~19).} When every qualified resource
+        is busy, the item is deferred onto a FIFO queue and re-offered the
+        instant a qualified resource frees up (O(1) per release), rather than
+        rejected.
+  \item \emph{Adapting the heuristic to uncertain availability:} allocation
+        reads the live \texttt{busy} counter, never a forecast, because
+        stochastic service times make future availability unknown; the shift
+        calendar gates \emph{allocation}, not \emph{execution}, so a task
+        started at 16:55 finishes rather than being preempted at 17:00; and an
+        activity nobody may perform runs unassigned and is counted in
+        \texttt{stats()} rather than stranding the case forever.
+  \item All picks use a seeded RNG, so the whole allocation path is bit-for-bit
+        reproducible under a fixed seed, as the grading requires.
+  \item \emph{VIS-PLACEHOLDER:} sequence diagram of the two-phase protocol ---
+        \texttt{ACTIVITY\_REQUEST} $\rightarrow$ permission/capacity/shift
+        filter $\rightarrow$ policy pick $\rightarrow$ \texttt{ACTIVITY\_START},
+        with the R-DE deferral loop back through \texttt{RESOURCE\_AVAILABLE}.
+\end{itemize}
