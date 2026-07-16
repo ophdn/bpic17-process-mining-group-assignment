@@ -1,0 +1,21 @@
+{
+  "design": "arrivals limited to the first 30 days (seed 42, identical to the KPI baseline runs), engine drained until day 180 so no case is cut off by the horizon",
+  "branching_mode": "visit",
+  "cases_started": 2319,
+  "cases_completed": 2300,
+  "completion_rate": 0.9918,
+  "compare_to": "output/validation/branching_probs_vs_rules/advanced_visit.json (same config, hard 30-day horizon)",
+  "case_stats": {
+    "sim_case_length_mean": 46.04,
+    "ref_case_length_mean": 15.09,
+    "case_length_rel_err": 2.0511,
+    "sim_case_duration_mean_s": 1840688.9,
+    "ref_case_duration_mean_s": 1887879.72,
+    "case_duration_rel_err": 0.025
+  },
+  "branching_mean_tvd": 0.1475,
+  "variants": {
+    "ref_top20_variants_reproduced": 10,
+    "ref_top20_traffic_coverage_pct": 16.41
+  }
+}

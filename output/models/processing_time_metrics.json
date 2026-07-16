@@ -1,0 +1,55 @@
+{
+  "point_model": {
+    "mae_seconds": 110920.34104041537,
+    "mse_seconds2": 138104110984.8234,
+    "rmse_seconds": 371623.61467595596,
+    "r2_raw": -0.05260870234728365,
+    "r2_log": 0.11923468505634682,
+    "split": "temporal_80_20",
+    "n_train": 33489,
+    "n_test": 8373,
+    "quantile_eval": {
+      "mean_pinball_loss_log": 0.853163816913624,
+      "coverage_90pct_interval": 0.814522871133405,
+      "coverage_50pct_interval": 0.42410127791711455,
+      "r2_log_median_quantile": -0.06642829630276537
+    }
+  },
+  "feature_importances": {
+    "activity_enc": 0.276796064307924,
+    "resource_enc": 0.12035988352206788,
+    "previous_activity_enc": 0.05877497775979455,
+    "day_of_week": 0.033326996539529155,
+    "hour_of_day": 0.03617184987522836,
+    "case_position": 0.017283735156208856,
+    "case_age_seconds": 0.35109267264051863,
+    "n_previous_activities": 0.10619382019872856
+  },
+  "quantile_eval": {
+    "mean_pinball_loss_log": 0.853163816913624,
+    "coverage_90pct_interval": 0.814522871133405,
+    "coverage_50pct_interval": 0.42410127791711455,
+    "r2_log_median_quantile": -0.06642829630276537
+  },
+  "quantiles": [
+    0.05,
+    0.1,
+    0.15,
+    0.2,
+    0.25,
+    0.3,
+    0.35,
+    0.4,
+    0.45,
+    0.5,
+    0.55,
+    0.6,
+    0.65,
+    0.7,
+    0.75,
+    0.8,
+    0.85,
+    0.9,
+    0.95
+  ]
+}

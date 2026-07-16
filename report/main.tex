@@ -1,0 +1,467 @@
+%%
+% TUM tumarticle template — see https://gitlab.lrz.de/latex4ei/tum-templates
+%%
+
+\documentclass[
+  english,        % define the document language (english, german)
+  font=times,     % define main text font (helvet, times, palatino, libertine)
+  twocolumn,      % use onecolumn or twocolumn layout
+]{tumarticle}
+
+\usepackage{cite}
+
+% Add packages here:
+\usepackage{booktabs}
+
+% article metadata
+\title{Group Assignment -- Business Process Prediction, Simulation, and Optimization}
+\subtitle{A Data-Driven Simulation Model of the BPIC-17 Loan Application Process}
+
+% TODO: fill in full names + emails of all four members
+\author[email=sophie.opheiden@tum.de]{Sophie~Opheiden}
+\author[email=todo@tum.de]{Mario~(TODO)}
+\author[email=todo@tum.de]{Daniel~(TODO)}
+\author[email=todo@tum.de]{Johannes~(TODO)}
+
+\date\today
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+% TODO (all): 3–4 sentences once Part II results are in. Suggested skeleton:
+% We present a data-driven discrete-event simulation model of the BPIC-17
+% loan application process and use it as a testbed for resource allocation
+% policies. All simulation parameters are mined from the real event log; the
+% model is validated with a second-pass comparison against the original log
+% and reproduces the real mean case duration within 2.5\%. On top of the
+% simulator, we compare [n] allocation policies on cycle time, resource
+% occupation, and fairness, and answer [management question].
+tbd.
+\end{abstract}
+%
+
+\section{Introduction}
+Business process simulation makes it possible to answer \emph{what-if}
+questions -- how would cycle times change with fewer employees, different
+working hours, or a different work distribution -- without touching the real
+process. The reliability of such answers, however, is bounded by how
+faithfully the simulation reproduces reality. Instead of modeling by hand, we
+therefore follow the data-driven approach of Rozinat et
+al.~\cite{rozinat2009discovering}: every model component -- control-flow,
+branching behavior, arrival process, processing times, and the resource
+perspective -- is mined from a real event log, and the resulting simulator is
+validated by comparing the statistics of its simulated logs against the
+original log (the ``second pass'' method).
+
+As data source we use the BPI Challenge 2017 event
+log~\cite{vandongen2017bpic}, covering 31{,}509 loan applications
+(1.2M events, 26 activities, 149 resources) of a Dutch financial institution
+over 13 months. The process combines milestone events for the application
+(\texttt{A\_}\dots) and offer (\texttt{O\_}\dots) lifecycles with manually
+executed work items (\texttt{W\_}\dots), and contains substantial loop
+behavior (repeated validation and offer rounds), concurrency, and long
+customer-response waiting times -- properties that, as we show, break naive
+simulation approaches and require explicit design decisions.
+
+This report is structured along the two assignment parts:
+Section~\ref{sec:simulation} describes the simulation model, one subsection
+per component, with the responsible group member named at the start of each
+subsection; Section~\ref{sec:optimization} covers the resource allocation
+optimizations built on top of it. Design decisions are justified empirically
+throughout: every number cited in this report is reproducible from a metrics
+file in the repository's \texttt{output/} directory.
+
+\section{Simulation Model}
+\label{sec:simulation}
+
+\subsection{Simulation Engine Core (Sophie)}
+The engine implements discrete event simulation with a single global event
+queue, as required by the assignment: a min-heap ordered by
+$(\text{timestamp}, \text{priority})$, where the integer priority breaks
+ties between simultaneous events deterministically (e.g.\ a resource is
+released before the next task is dispatched). Event types cover the case
+lifecycle (\texttt{CASE\_ARRIVAL}, \texttt{CASE\_COMPLETE}), the activity
+lifecycle (\texttt{ACTIVITY\_START}, \texttt{ACTIVITY\_COMPLETE}), and
+resource state changes. The engine itself contains no domain logic -- it is
+a dispatcher: components (arrivals, process, resources) are plain classes
+that register handlers per event type and are called in registration order.
+This design decision let all four members develop their components
+independently against a stable interface, without ever modifying the engine
+or each other's code. A built-in logger records every activity event in
+pm4py column convention and exports CSV; case ids that reach
+\texttt{CASE\_COMPLETE} are written alongside, so that every evaluation can
+filter out horizon-truncated cases (unfiltered logs would bias cycle time
+and case duration downwards). Simulation time is a float in seconds --
+the natural base unit for datetime arithmetic -- anchored to a real start
+date at logging time. All stochastic components draw from seeded random
+number generators, and set iterations that would otherwise depend on memory
+layout are explicitly sorted, so a fixed seed reproduces a byte-identical
+event log -- the basis for all before/after comparisons in this report.
+
+\subsection{Case Arrivals (Mario)}
+\textbf{Basic.} Case arrivals follow a single LogNormal inter-arrival
+distribution fitted on the real log ($s=1.4543$, scale $363.10$s, mean
+inter-arrival $1002.23$s $\approx 86$ cases/day, $\sigma=32$/day). This is
+time-independent by construction: it can match the mean rate but cannot
+represent that arrivals are not uniform in time.
+
+\textbf{Advanced.} The real process is locally Poisson but with a rate
+that varies strongly by time of day and weekday (night $\sim\!0.6$
+arrivals/h vs.\ $\sim\!7.6$/h in the 12--18h core; Monday
+$\approx 3\times$ Sunday), which a static distribution cannot capture in
+principle. We replace it with an intensity-free temporal point process: a
+small Mixture-Density Network (a mixture of LogNormals) predicts the
+inter-arrival distribution conditioned on cyclical time-of-day/weekday/
+season features of the current simulation clock, trained offline
+(\texttt{train\_arrival\_mdn.py}) and evaluated at runtime as a pure
+NumPy forward pass (no PyTorch dependency at simulation time). It is a
+drop-in replacement for the parametric component (same
+\texttt{bootstrap}/\texttt{on\_arrival} interface), toggled by
+\texttt{USE\_MDN\_ARRIVALS} in \texttt{main.py} (default off).
+
+\textbf{Validation status.} \texttt{scripts/eval\_arrivals.py} implements
+the intended KPI comparison -- real vs.\ parametric vs.\ MDN arrivals on
+hour-of-day MAE, weekday MAE, and an inter-arrival KS statistic, deliberately
+refusing to substitute the simulated log for ground truth -- but requires
+the raw BPIC-17 log, which is gitignored and was not available on the
+machine this was implemented on. This is the one open item on this
+subsection: whoever has the raw log should run it once
+(\texttt{BPIC17\_LOG=\ldots{} python scripts/eval\_arrivals.py}) to produce
+\texttt{output/arrival\_model\_eval.md} before the report is finalized, and
+the team should jointly decide whether to flip the default based on the
+result -- it changes every teammate's simulated logs.
+
+\subsection{Processing Times (Daniel)}
+% TODO (Daniel): fitted distributions (Basic 1), contextual GBR point model
+% (Basic 2), quantile-regression distribution model (Advanced I); temporal
+% 80/20 split (random split overstated log-$R^2$ 0.36 vs.\ 0.12!), MAE/MSE,
+% pinball loss + 90\%/50\% interval coverage.
+% Evidence: output/models/processing_time_metrics.json
+tbd.
+
+\subsection{Process Model (Sophie)}
+\label{sec:processmodel}
+The \emph{basic} variant routes cases through a flat next-activity graph with
+empirical transition probabilities. It has no structural notion of legality:
+$0\%$ of its simulated traces replay on a reference model of the process
+(average token-replay fitness $0.64$), i.e., it freely generates behavior
+that cannot occur in reality. The \emph{advanced} variant therefore loads a
+BPMN 2.0 model, converts it to a Petri net using
+pm4py~\cite{berti2019pm4py}, and enforces control-flow through the firing
+rules of the net: each case holds its own marking, and the set of legal next
+activities is the set of enabled visible transitions. Silent
+($\tau$)~transitions from gateway logic are handled by computing the full
+$\tau$-closure of the current marking -- a greedy strategy that fires
+$\tau$-transitions only when no visible transition is enabled would make
+whole branches structurally unreachable, because n-way splits are encoded as
+nested binary gateways whose named branch and $\tau$-sibling are enabled
+simultaneously. Following the lecture's advice to guard against structural
+design errors, we verified the converted net with pm4py's Woflan
+implementation: it is a sound workflow net (live, bounded, no dead
+transitions) -- the loop behavior analyzed in Section~\ref{sec:branching}
+is therefore legitimate model behavior, not a modeling defect.
+
+\textbf{Design decision: model source.} We compared our manually modeled
+(Signavio) BPMN against models discovered from the log with the Inductive
+Miner. The discovered model (noise threshold $0.2$) replays the real log
+only marginally better ($73.6\%$ vs.\ $68.8\%$ fully fitting traces,
+average fitness $0.993$ vs.\ $0.976$), but performs clearly worse when
+simulating: precision drops from $0.78$ to $0.49$ and the branching
+divergence (mean total variation distance, TVD) doubles from $0.24$ to
+$0.57$, while a termination failure we describe in
+Section~\ref{sec:branching} occurs identically under both models
+($2\%$ completion). We concluded that (i)~the manual model is the better
+simulation basis, and (ii)~non-termination is a property of the branching
+mechanism, not of the model source -- a conclusion we could only draw
+because both options were evaluated with the same KPI suite.
+Figure~\ref{fig:bpmn} shows the model.
+
+\begin{figure*}[t]
+    \centering
+    % TODO: export the Signavio model as PNG/PDF into report/figures/
+    \IfFileExists{figures/bpic17_signavio_bpmn.png}
+      {\includegraphics[width=\textwidth]{figures/bpic17_signavio_bpmn.png}}
+      {\framebox[\textwidth]{\rule{0pt}{3cm}TODO: export Signavio BPMN to figures/bpic17\_signavio\_bpmn.png}}
+    \caption{Manually modeled BPMN 2.0 model of the BPIC-17 loan application
+    process (Signavio). Highlighted: the offer/validation loops whose exit
+    behavior required visit-dependent branching (cf.\
+    Fig.~\ref{fig:loopfragment}).}
+    \label{fig:bpmn}
+\end{figure*}
+
+\subsection{Branching Decisions (Sophie)}
+\label{sec:branching}
+\textbf{Basic.} Branching at each decision point (a marking with several
+enabled visible transitions) initially used memoryless next-activity
+probabilities mined from trace bigrams, renormalized over the legal
+candidates. This configuration exposed the central challenge of our
+simulator: only $2\%$ of cases terminated within the simulation horizon, at
+an average of $74.9$ events per case (real: $15.1$). Three measured root
+causes: (i)~trace bigrams mix concurrency interleavings into the branching
+estimate -- the most frequent real successor \emph{event} of
+\texttt{A\_Validating} is \texttt{O\_Returned} ($93.6\%$), an activity of a
+concurrent branch that is not even enabled at that decision point, so
+probabilities were renormalized over the wrong candidates; (ii)~memoryless
+probabilities understate loop exits -- in the real log the exit probability
+escalates with each loop round (e.g.\ \texttt{W\_Validate application}
+$\rightarrow$ \texttt{O\_Cancelled}: $3.5\% \rightarrow 14\% \rightarrow
+27\%$ across visits); (iii)~termination itself is a \emph{decision}: at many
+markings the final marking is only $\tau$-reachable while a visible
+loop-back label remains enabled (the \texttt{[O\_Cancelled]} frontier was
+evaluated $15.7\times$ per case with nothing else to choose), so checking
+marking equality alone can never stop such cases.
+
+\textbf{Fix (three parts).} First, branching probabilities are mined
+\emph{at the decision points} by replaying the real log on the very Petri
+net used for enforcement, conditioned on how often the case has already
+visited that decision point. Second, wherever a real trace ends although
+visible transitions remain enabled, an explicit \texttt{END} choice is
+recorded (at \texttt{[O\_Cancelled]}, real cases stop with $80\%$ per
+visit); the simulation offers \texttt{END} only with its mined probability
+-- ending must be evidenced, never a residual. Third, a domain rule ends a
+case once one of the outcome milestones \texttt{A\_Pending},
+\texttt{A\_Denied}, \texttt{A\_Cancelled} has fired (in the real log
+exactly one of them occurs per case: $0.55+0.33+0.12=1.00$).
+Table~\ref{tab:ablation} isolates the contribution of each part: neither
+the terminal rule alone nor visit-conditioning alone suffices; combined,
+completion rises from $2\%$ to $71\%$, the case-length error falls from
+$3.96$ to $0.15$, branching TVD from $0.24$ to $0.11$, and the simulation
+reproduces 10 of the 20 most frequent real trace variants -- previously
+zero. Figure~\ref{fig:loopfragment} visualizes the mined loop semantics.
+
+\begin{table}[h]
+    \caption{Branching ablation (advanced model, seed 42, 30-day horizon;
+    KPIs vs.\ the real log). \emph{term} = terminal-outcome rule,
+    \emph{visit} = decision-point probabilities with visit buckets +
+    mined \texttt{END}. Basic = flat graph for reference.}
+    \centering
+    \renewcommand{\arraystretch}{1.2}
+    \setlength{\tabcolsep}{3.5pt}
+    \small
+    \begin{tabular}{lrrrrr}
+        \toprule
+        \textbf{KPI} & \textbf{Basic} & \textbf{probs} & \textbf{+term} & \textbf{visit} & \textbf{rules} \\
+        \midrule
+        Fitness (fully fitting) & $0\,\%$ & $100\,\%$ & $0.6\,\%$ & $45.6\,\%$ & $48.2\,\%$ \\
+        Fitness (avg.\ trace)   & $0.64$ & $1.00$ & $0.95$ & $0.97$ & $0.97$ \\
+        Precision               & $0.72$ & $0.78$ & $0.72$ & $0.69$ & $0.47$ \\
+        Branching mean TVD      & $0.41$ & $0.24$ & $0.38$ & $\mathbf{0.11}$ & $0.15$ \\
+        Top-20 variants repr.   & $0$ & $0$ & $0$ & $\mathbf{10}$ & $\mathbf{10}$ \\
+        Case length (real 15.1) & $12.3$ & $74.9$ & $16.9$ & $12.9$ & $\mathbf{15.2}$ \\
+        Completion rate         & $94\,\%$ & $2\,\%$ & $37\,\%$ & $71\,\%$ & $\mathbf{73\,\%}$ \\
+        \bottomrule
+    \end{tabular}
+    \label{tab:ablation}
+\end{table}
+
+\begin{figure}[t]
+    \centering
+    % TODO (Sophie, Signavio): model the validation/offer loop fragment with
+    % the mined semantics — see chat/report notes for the concrete content.
+    \IfFileExists{figures/loop_fragment_signavio.png}
+      {\includegraphics[width=\columnwidth]{figures/loop_fragment_signavio.png}}
+      {\framebox[\columnwidth]{\rule{0pt}{3cm}TODO: figures/loop\_fragment\_signavio.png}}
+    \caption{Validation/offer loop fragment (Signavio) with the mined
+    visit-dependent semantics: XOR gateways annotated with
+    $P(\text{branch} \mid \text{visit } k)$, the loop-back edge whose exit
+    probability escalates ($3.5\%\!\rightarrow\!14\%\!\rightarrow\!27\%$),
+    the data-driven \texttt{END} decision at \texttt{[O\_Cancelled]}
+    ($80\%$ per visit), and the terminal outcome milestones.}
+    \label{fig:loopfragment}
+\end{figure}
+
+\textbf{Advanced I: attribute-based decisions.} Case attributes are sampled
+at spawn from distributions learned from the log
+(\texttt{LoanGoal} and \texttt{RequestedAmount} conditional on
+\texttt{ApplicationType}), and executing \texttt{O\_Create Offer} sets the
+offer attributes at runtime. Per decision point, a decision tree predicts
+the branch from these attributes (\emph{rules} column in
+Table~\ref{tab:ablation}); the training data was identified by replaying the
+log on the process model, and outcome-encoding attributes
+(\texttt{Accepted}, \texttt{Selected}) were excluded to prevent label
+leakage. Evaluated with a temporal 80/20 split -- training on older, testing on the
+most recent cases, since a random split would leak process drift -- and the
+metrics from the lecture (precision, recall, one-vs-rest ROC-AUC next to
+accuracy and a majority-class baseline; no separate validation slice, as all
+hyperparameters were fixed a priori rather than tuned), 16 decision points
+obtained models: one is
+perfectly separable (AUC $1.0$), while several collapse to the majority
+class -- e.g.\ accuracy $0.89$ at macro-precision $0.22$ -- which accuracy
+alone would have hidden. \emph{rules} matches \emph{visit} on variant
+reproduction and is even closer in case length (error $0.004$); we kept
+\emph{visit} as default for its better TVD and precision.
+
+\textbf{Validation and honest limitations.} The fitness trade-off in
+Table~\ref{tab:ablation} (fully fitting $100\%\!\rightarrow\!46\%$ at
+average fitness $0.97$) arises because real -- and now also simulated --
+traces end before the net's final marking; it documents a limitation of the
+model, not of the simulator. Because a 30-day horizon only lets fast cases
+finish, we additionally ran a drain experiment (arrivals for 30 days,
+simulation drained to day 180): completion reaches $99.2\%$ and the mean
+case duration matches the real process at $21.3$ vs.\ $21.8$ days --
+a relative error of $2.5\%$; the seemingly large duration errors of
+horizon-bounded runs are survivorship bias. The drained population also
+reveals the remaining gap: long-running cases loop more than in reality
+(mean length 46 events), because beyond the fifth visit our buckets keep
+the exit probability stationary.
+
+\subsection{Resource Availability, Permissions, and Allocation (Johannes)}
+% TODO (Johannes): interval-based availability (Basic 1.6) / mined calendars,
+% permission map from the log (1.7), random allocation (1.8) as the Part II
+% baseline; resource contention rework (activities wait for a resource).
+tbd.
+
+\section{Optimization}
+\label{sec:optimization}
+
+\subsection{Experimental Setup and Metrics (Mario)}
+\label{sec:optsetup}
+\texttt{scripts/run\_experiments.py} orchestrates every policy comparison
+in this section: a policy $\times$ seed $\times$ scenario grid, one
+simulation run per cell, evaluated with the three lecture-slide-21
+metrics -- average cycle time (from case arrival, not first activity
+start), average resource occupation (relative to the Section~1.6
+availability windows, not wall-clock span), and (weighted) resource
+fairness -- computed by \texttt{scripts/opt\_metrics.py}, plus four
+self-designed metrics justified against process-specific failure modes
+the slide-21 trio cannot see on its own: time-to-first-offer and
+time-to-decision (customer-facing, from the \texttt{A\_}/\texttt{O\_}
+milestone events), handover rate (share of consecutive case steps that
+switch resource -- familiarity/context-switch cost), and rolling
+workload balance (per-day resource-occupation std, catching ``fair on
+average, unfair in bursts'' that a single whole-horizon fairness number
+cannot). Scenarios beyond
+the default (\emph{normal}) are \emph{peak} ($+30\%$ arrival rate) and
+\emph{outage} (20\% of resources removed, seeded per run), giving the
+infrastructure the management question and RQ4 need without bespoke code.
+
+\textbf{Common Random Numbers.} A policy change alters resource-allocation
+\emph{order}, which -- because every stochastic draw in
+\texttt{ProcessComponent} previously came from one shared RNG consumed in
+event-dispatch order -- silently changed every subsequent branching and
+duration draw too: two policies under ``the same seed'' were really
+running different case trajectories, not a controlled comparison (we
+measured this directly for Piled Execution: see
+\texttt{output/piled\_execution\_eval.md}). We therefore seed each
+branching/duration decision independently from
+(base seed, case id, activity, visit count), gated behind \texttt{crn=True}
+(default off, to keep every prior evidence log bit-for-bit reproducible).
+We verified directly that this achieves its goal: under CRN, two runs that
+differ only in allocation policy produce an \emph{identical} branching
+sequence for every case, up to whichever run's allocation timing causes it
+to hit the horizon with fewer completed activities first
+(\texttt{scripts/test\_crn.py}).
+
+\textbf{Caveat.} The results in
+Section~\ref{sec:kbatching} use only 5 seeds (the runner itself flags
+this: the 95\% CI half-width exceeds the roadmap's 5\%-of-mean target on
+every policy at this seed count) -- treat the ranking as indicative, not
+conclusive, until re-run with $\geq 10$ seeds.
+
+\subsection{Simple Policies and k-Batching (Mario: k-Batching)}
+\label{sec:kbatching}
+The Section~1.8 baseline is R-RMA (uniform random pick among qualified,
+available resources, Russell et al.~\cite{russell2005workflow} pattern~15)
+behind a minimal \texttt{AllocationPolicy} seam
+(\texttt{simulation/policies.py}) that the simple heuristics (R-RRA, R-SHQ)
+and the two advanced policies plug into without touching
+\texttt{ResourceComponent} again.
+
+\textbf{k-Batching (Zeng \& Zhao).} Rather than allocating a work item the
+instant it is enabled, k-Batching lets items queue and releases them in
+batches of $k$, solved as a parallel-machines assignment problem: batch
+items $\times$ currently free-and-on-shift resources, cost = expected
+processing time from a shared \texttt{expected\_duration()} model (the
+same trained GBR point estimator Section~1.3 built, wrapped in
+\texttt{simulation/expected\_duration.py} so both this and the Park~\&
+Song policy consume one implementation), solved with
+\texttt{scipy.optimize.linear\_sum\_assignment}. A flush triggers once $k$
+items are waiting \emph{or} the oldest waiting item has waited past a 4h
+safety valve -- without it, a queue that never reaches $k$ under low load
+would starve indefinitely, the known weakness the lecture attributes to
+this heuristic.
+
+Table~\ref{tab:kbatch} sweeps $k \in \{1,2,5,10,20\}$ against the R-RMA
+baseline (5 seeds, 30-day horizon, capacity 3, calendar availability, CRN
+on). Every $k$ increases mean cycle time relative to immediate allocation
+(statistically significant at $k\!\in\!\{1,2,10,20\}$, paired $t$-test
+$p<0.05$; $k\!=\!5$ borderline, $p=0.059$) -- exactly the idle-time cost
+the lecture predicts: k-Batching's requester always waits for a flush
+trigger, even when a resource happens to be free right now, so it cannot
+beat an immediate-allocation baseline on cycle time by construction, only
+on assignment \emph{quality} once it does flush. That quality effect is
+visible in the trend: cycle time falls monotonically from $k\!=\!1$ to
+$k\!=\!10$ ($10.49\text{d} \rightarrow 9.01\text{d}$) as larger batches
+let the assignment solver place more items well per flush, before rising
+again at $k\!=\!20$ once queueing delay dominates. Occupation shows the
+same shape in reverse ($2.63 \rightarrow 4.18 \rightarrow 4.56$,
+approaching the baseline's $5.19$): larger batches keep more resources
+usefully busy per flush. This is an honest negative-leaning result rather
+than a clean win, and we report it as such: k-Batching's real argument
+here is assignment quality under heterogeneous resource-activity
+durations, not automatic throughput -- exactly the trade-off that
+motivates the strategic-idling advanced policies below (Park \& Song
+plan ahead using predicted next tasks instead of waiting for a batch to
+fill; see the corresponding subsection).
+
+% TODO (Daniel): \subsection{Advanced Policy I: Park \& Song (Daniel)} --
+%   next-task prediction (reuse the Section 1.3 duration models) + strategic
+%   idling, assignment/min-cost-max-flow.
+% TODO (Johannes): \subsection{Advanced Policy II: Kunkler \& Rinderle-Ma
+%   (Johannes)} -- dummy-resource-cost formulation for uncertain
+%   availability, builds on the Section 1.6 calendars.
+% TODO (Sophie): \subsection{Management Question (Sophie)} -- "fire two
+%   employees": criticality analysis (occupation, exclusive permissions,
+%   historical performance) + leave-two-out simulations using
+%   ResourceComponent(excluded_resources=...) / --scenario outage
+%   infrastructure from scripts/run_experiments.py.
+
+\begin{table}[h]
+    \caption{k-Batching sweep vs.\ R-RMA baseline (5 seeds, 30-day
+    horizon, seed-42-derived; CIs wide at this seed count, see
+    Section~\ref{sec:optsetup}). Cycle time in days; occupation and
+    fairness as in slide 21 (occupation $>\!1$: capacity-3 parallelism,
+    not an error, see \texttt{opt\_metrics.py}).}
+    \centering
+    \renewcommand{\arraystretch}{1.2}
+    \setlength{\tabcolsep}{4pt}
+    \small
+    \begin{tabular}{lrrr}
+        \toprule
+        \textbf{Policy} & \textbf{Cycle time (d)} & \textbf{Occupation} & \textbf{Fairness} \\
+        \midrule
+        R-RMA (baseline) & $7.93$          & $5.19$ & $1.15$ \\
+        k=1              & $10.49$         & $2.63$ & $1.12$ \\
+        k=2              & $9.82$          & $3.26$ & $1.08$ \\
+        k=5              & $9.53$          & $3.86$ & $1.00$ \\
+        k=10             & $\mathbf{9.01}$ & $4.18$ & $0.97$ \\
+        k=20             & $9.30$          & $4.56$ & $1.02$ \\
+        \bottomrule
+    \end{tabular}
+    \label{tab:kbatch}
+\end{table}
+
+\section{Use of AI Tools}
+% TODO (all): adapt to what each member actually did. Draft:
+We used AI coding assistants (Claude Code, Anthropic) as pair-programming
+support during this project: for implementing and refactoring simulation
+components and evaluation scripts, for debugging, for the diagnostic
+analyses that located the termination and concurrency problems described in
+Section~\ref{sec:branching}, and for drafting parts of this report. All
+design decisions were made by the team, and every AI-assisted change was
+reviewed by the responsible member and validated against the KPI suite
+before being adopted.
+
+\section{Conclusion}
+% TODO (all, ~0.3 col): once Part II is done. One paragraph: validated
+% simulator (headline: 2.5% duration error, 10/20 variants), what the policy
+% comparison showed, answer to the management question, limitations/outlook.
+tbd.
+
+%
+\bibliographystyle{plain}
+\bibliography{references}
+
+\end{document}
