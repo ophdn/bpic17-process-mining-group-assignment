@@ -671,15 +671,29 @@ class ResourceComponent:
 
         Without a calendar, everyone is always on duty (the pre-1.6 behaviour).
 
-        A resource the calendar does not know is also always on duty. That is not
-        a fallback but the correct answer: the calendar only models *human*
-        staff, so an account missing from it is an automated one (User_1), and a
-        batch process does not keep office hours.
+        A resource with no fitted window is resolved by *why* it has none:
+
+          - a known **system account** (in the calendar's ``system`` set) is
+            always on duty — an automated account keeps no office hours. This is
+            correct, not a fallback.
+          - any **other** windowless resource is a human the calendar could not
+            fit, and is treated as *off shift* rather than always-on. Treating an
+            unfitted human as available 24/7 is the opposite of what "too little
+            data to fit a shift" should mean, and would let sparse resources
+            silently absorb all out-of-hours work. The Section 1.6 model fits a
+            coarse window for every human with any W_ signal (Tier B), so in
+            practice only system accounts land here.
+
+        For backward compatibility with a calendar that predates the ``system``
+        set, a windowless resource is treated as always-on (the old behaviour).
         """
         if self._calendar is None:
             return True
         if resource not in self._calendar.weekly.windows:
-            return True
+            system = getattr(self._calendar, "system", None)
+            if system is None:
+                return True                 # legacy calendar: preserve old behaviour
+            return resource in system
         return self._calendar.is_available(resource, self._now_wall(engine))
 
     def _arm_shift_wake(self, engine) -> None:
