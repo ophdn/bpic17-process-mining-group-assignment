@@ -292,6 +292,26 @@ rationale (R-RBA, R-DE, and the upgrade path).
 
 ## How to run
 
+### First-time setup (clone → add the log → run)
+
+1. Install dependencies: `pip install -r requirements.txt`.
+2. The **default** run needs **no raw log** — the fitted distributions, BPMN,
+   availability model and branching probabilities are all committed:
+   ```bash
+   .venv/bin/python -m simulation.main
+   ```
+3. The **ML-dependent** modes (`--mode ml_model`, `--mode ml_probabilistic`,
+   `--k-batching`, `--branching-mode rules`) need trained artifacts that are
+   gitignored (large binaries derived from the raw log). Place the BPIC-17
+   log at the repo root as `BPIChallenge2017.xes` (or `.xes.gz`, or under
+   `data/`), then regenerate **every** gitignored artifact with one command:
+   ```bash
+   .venv/bin/python setup_models.py            # add --force to retrain
+   ```
+   This writes `simulation/models/processing_time_model.joblib` (point + 19
+   quantile models) and `simulation/models/decision_rules.joblib`. Artifacts
+   that already exist are skipped unless `--force` is passed.
+
 From the repo root, inside the virtualenv:
 
 ```bash
@@ -322,8 +342,9 @@ permission model's case/time gating is genuinely binding).
 
 Output is always saved to `<repo_root>/output/event_log.csv`, regardless of
 the working directory you run from.
-The `ml_*` modes need a trained artifact — see **[Processing-Time Models
-(Section 1.3)](simulation/PROCESSING_TIMES.md)** for setup, training, mode
+The `ml_*` modes need a trained artifact — run `setup_models.py` (see
+first-time setup above), or see **[Processing-Time Models
+(Section 1.3)](simulation/PROCESSING_TIMES.md)** for training, mode
 details and reference statistics. To check whether Basic or Advanced (or any
 change you make) better approximates the real BPIC-17 process, run
 `scripts/compare_process_models.py` — see

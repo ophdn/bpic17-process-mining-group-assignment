@@ -41,7 +41,7 @@ Usage (smoke test):
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Mapping, Optional
+from typing import Dict, Iterable, Mapping, Optional
 
 import numpy as np
 import pandas as pd
@@ -149,12 +149,20 @@ def resource_busy_seconds(df: pd.DataFrame) -> pd.Series:
 def average_resource_occupation(
     df: pd.DataFrame,
     availability_seconds: Optional[Mapping[str, float]] = None,
+    resource_subset: Optional[Iterable[str]] = None,
 ) -> dict:
     """Mean share the resources are working during their availabilities.
 
     `availability_seconds`: resource -> seconds available in the evaluated
     horizon (from the Section 1.6 availability/calendar model). Fallback:
     full log span for every resource (understates absolute occupation).
+
+    `resource_subset`: if given, occupation is reported only for these
+    resources (the rest are dropped before the mean and the per-resource
+    map). Use it to restrict occupation/fairness to real human staff --
+    an always-on automated account (Johannes's Section-1.6 Decision 4,
+    e.g. User_1) has a huge availability denominator and a tiny occupation
+    ratio, which distorts a staffing metric it is not really part of.
     """
     busy = resource_busy_seconds(df)
     if availability_seconds is not None:
@@ -168,8 +176,12 @@ def average_resource_occupation(
 
     # Resources that were available but never worked count with occupation 0.
     occupation = (busy.reindex(avail.index).fillna(0.0) / avail).to_dict()
+    if resource_subset is not None:
+        keep = set(resource_subset)
+        occupation = {r: v for r, v in occupation.items() if r in keep}
     return {
-        "avg_resource_occupation": float(np.mean(list(occupation.values()))),
+        "avg_resource_occupation": float(np.mean(list(occupation.values())))
+            if occupation else float("nan"),
         "per_resource": {r: round(v, 4) for r, v in sorted(occupation.items())},
         "availability_basis": basis,
     }
@@ -234,6 +246,18 @@ def _milestone_times(
     hits = df[(df["lifecycle:transition"] == "complete")
               & (df["concept:name"].isin(activities))]
     first_hit = hits.groupby("case:concept:name")["time:timestamp"].min()
+
+    # No case reaches the milestone -- e.g. the only resource permitted for
+    # it was removed in a leave-N-out ("fire employees") run. The subtraction
+    # below would be on an empty, non-datetimelike Series and blow up on .dt,
+    # so short-circuit to an all-undefined result.
+    if first_hit.empty:
+        return {
+            "mean_s": float("nan"), "p95_s": float("nan"),
+            "n_cases_reaching_it": 0,
+            "n_cases_total": int(df["case:concept:name"].nunique()),
+            "start_basis": "case_arrival" if arrival_times is not None else "first_event",
+        }
 
     if arrival_times is not None:
         start = pd.Series({c: arrival_times[c] for c in first_hit.index if c in arrival_times})
@@ -300,7 +324,10 @@ def handover_rate(df: pd.DataFrame) -> dict:
     }
 
 
-def rolling_workload_balance(df: pd.DataFrame, window: str = "1D") -> dict:
+def rolling_workload_balance(
+    df: pd.DataFrame, window: str = "1D",
+    resource_subset: Optional[Iterable[str]] = None,
+) -> dict:
     """Std of per-resource occupation WITHIN each rolling window, averaged
     across windows -- catches "fair on average, unfair in bursts", which
     resource_fairness (a single whole-horizon number) cannot: a resource
@@ -318,6 +345,8 @@ def rolling_workload_balance(df: pd.DataFrame, window: str = "1D") -> dict:
     """
     inst = paired_instances(df)
     inst = inst[inst["resource"].notna() & (inst["resource"] != "")]
+    if resource_subset is not None:
+        inst = inst[inst["resource"].isin(set(resource_subset))]
     if inst.empty:
         return {"mean_window_std": float("nan"), "n_windows": 0}
 
@@ -348,6 +377,7 @@ def evaluate(
     availability_seconds: Optional[Mapping[str, float]] = None,
     fairness_weights: Optional[Mapping[str, float]] = None,
     completed_case_ids=None,
+    resource_subset: Optional[Iterable[str]] = None,
 ) -> dict:
     """All three slide-21 metrics on one simulated event log.
 
@@ -358,13 +388,20 @@ def evaluate(
     so always pass this for simulated logs. Busy time for the occupation
     metric intentionally keeps all cases: truncated cases did occupy
     resources during the horizon.
+
+    `resource_subset`: restrict the RESOURCE-centric metrics (occupation,
+    fairness, rolling workload balance) to these resources -- pass the real
+    human staff to exclude an always-on automated account (Johannes's
+    Section-1.6 Decision 4) from staffing metrics it distorts. The
+    process-level metrics (cycle time, completions, milestones, handover)
+    are unaffected: the automation genuinely does that work in the process.
     """
     n_total = df["case:concept:name"].nunique()
     df_completed = df
     if completed_case_ids is not None:
         df_completed = df[df["case:concept:name"].isin(set(completed_case_ids))]
 
-    occ = average_resource_occupation(df, availability_seconds)
+    occ = average_resource_occupation(df, availability_seconds, resource_subset)
     return {
         "cycle_time": average_cycle_time(df_completed, arrival_times),
         "occupation": occ,
@@ -373,7 +410,8 @@ def evaluate(
             "time_to_first_offer": time_to_first_offer(df, arrival_times),
             "time_to_decision": time_to_decision(df, arrival_times),
             "handover_rate": handover_rate(df),
-            "rolling_workload_balance": rolling_workload_balance(df),
+            "rolling_workload_balance": rolling_workload_balance(
+                df, resource_subset=resource_subset),
         },
         "case_filter": {
             "n_cases_in_log": int(n_total),

@@ -267,12 +267,19 @@ def availability_seconds_per_resource(
 def run_once(
     policy: str, seed: int, days: int, scenario: str, crn: bool,
     process_model: str, branching_mode: str, permissions: str = "orgmodel",
+    excluded_override: Optional[Set[str]] = None,
 ) -> tuple[pd.DataFrame, dict]:
     """Build and run one (policy, seed, scenario) simulation.
 
     Returns (event-log DataFrame, metadata dict) where metadata has
     arrival_times, completed_case_ids, availability_seconds, engine_stats --
     everything opt_metrics.evaluate() needs, plus run bookkeeping.
+
+    `excluded_override`: an explicit set of resources to remove for THIS
+    run, bypassing the scenario's own removal logic. This is what the
+    "fire two employees" management question needs -- a *fixed* leave-N-out
+    set, evaluated across seeds, rather than the 'outage' scenario's random
+    20% (which reshuffles per seed). Pass an empty set to force nobody out.
     """
     duration = days * 86400
 
@@ -280,7 +287,8 @@ def run_once(
     perms, case_attrs = load_permission_model(permissions, seed)
     resource_pool = (perms.resources() if perms is not None
                      else sorted(RESOURCE_PERMISSIONS))
-    excluded = scenario_excluded_resources(scenario, seed, resource_pool)
+    excluded = (excluded_override if excluded_override is not None
+                else scenario_excluded_resources(scenario, seed, resource_pool))
 
     engine = SimulationEngine(sim_duration=duration, start_datetime=START_DATETIME, verbose=False)
     arrivals = ArrivalComponent(seed=seed, **scenario_arrival_kwargs(scenario))
