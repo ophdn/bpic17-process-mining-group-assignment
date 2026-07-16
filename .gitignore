@@ -250,6 +250,7 @@ notebooks/**/resource_intervals.json
 notebooks/**/resource_availability_model.json
 
 output/completed_cases.txt
+output/completed_cases_active_*.txt
 
 # graphify knowledge-graph output (generated locally, not shared)
 graphify-out/
