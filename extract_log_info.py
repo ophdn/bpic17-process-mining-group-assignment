@@ -258,6 +258,17 @@ def extract_arrival_rate(df: pd.DataFrame) -> dict:
         "min":  int(daily.min()),
         "max":  int(daily.max()),
     }
+
+    # Hour-of-day / day-of-week arrival shape (Section 1.2 Advanced: what
+    # the MDN model needs to beat, since a static LogNormal can only match
+    # the mean rate, not this structure). Normalized histograms so
+    # scripts/metrics.py::arrival_profile_error can compare vs. the
+    # simulated log's own histograms directly (both sum to 1).
+    hod_counts = first_events.dt.hour.value_counts().reindex(range(24), fill_value=0)
+    fit["hod_profile"] = [round(float(c), 6) for c in (hod_counts / hod_counts.sum())]
+    dow_counts = first_events.dt.dayofweek.value_counts().reindex(range(7), fill_value=0)
+    fit["dow_profile"] = [round(float(c), 6) for c in (dow_counts / dow_counts.sum())]
+
     return fit
 
 

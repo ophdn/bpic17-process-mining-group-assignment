@@ -129,6 +129,7 @@ class PetriNetProcessComponent(ProcessComponent):
         resource_component=None,
         branching_mode: str = "probs",
         decision_rules_path: Optional[str] = None,
+        crn: bool = False,
     ):
         """
         Parameters (beyond ProcessComponent's) — see module docstring:
@@ -136,6 +137,11 @@ class PetriNetProcessComponent(ProcessComponent):
         branching_mode : {"probs", "rules"}. "rules" (Section 1.5 Advanced I)
             requires decision_rules_path (joblib artifact from
             train_decision_rules.py, lazy-loaded on first use).
+        crn : Common Random Numbers (see process.py's module docstring for
+            the full explanation). Covers this class's branching draws
+            (_weighted_choice / _rules_weighted_choice); case/offer-attribute
+            sampling stays on the shared RNG regardless (documented scope
+            limit in process.py).
         """
         if branching_mode not in ("probs", "visit", "rules"):
             raise ValueError(
@@ -147,6 +153,7 @@ class PetriNetProcessComponent(ProcessComponent):
             model_path=model_path,
             start_datetime=start_datetime,
             resource_component=resource_component,
+            crn=crn,
         )
         bpmn_model = pm4py.read_bpmn(bpmn_path)
         self.net, self.im, self.fm = pm4py.convert_to_petri_net(bpmn_model)
@@ -227,7 +234,7 @@ class PetriNetProcessComponent(ProcessComponent):
         activity = event.activity
 
         if self._resources is not None and event.resource:
-            self._resources.release(engine, event.resource)
+            self._resources.release(engine, event.resource, event.activity)
 
         counts = self._repeat_counts.get(case_id, {})
         counts[activity] = counts.get(activity, 0) + 1
@@ -432,15 +439,25 @@ class PetriNetProcessComponent(ProcessComponent):
         if options_n == 1:
             return labels[0] if labels else END_LABEL
 
+        # One CRN draw RNG per decision-point evaluation (covers the END
+        # check and the weighted pick below): fresh each call, so it's
+        # independent of what else happened first in the event queue when
+        # crn=True. visit mirrors _visit_conditioned_probs's convention
+        # (repeat_counts is already incremented for current_activity by the
+        # time on_activity_complete calls this).
+        visit = (self._repeat_counts.get(case_id, {}).get(current_activity, 1)
+                 if current_activity else 1)
+        rng = self._draw_rng(case_id, current_activity or "__START__", "branch", visit)
+
         dp_dist = self._dp_conditioned_probs(case_id, labels)
 
         if allow_end and dp_dist:
             p_end = dp_dist.get(END_LABEL, 0.0)
-            if p_end and self._rng.random() < p_end:
+            if p_end and rng.random() < p_end:
                 return END_LABEL
 
         if self.branching_mode == "rules" and len(labels) > 1:
-            rules_choice = self._rules_weighted_choice(case_id, labels)
+            rules_choice = self._rules_weighted_choice(case_id, labels, rng)
             if rules_choice is not None:
                 return rules_choice
 
@@ -454,7 +471,7 @@ class PetriNetProcessComponent(ProcessComponent):
         weights = [preferred.get(label, RESIDUAL_WEIGHT) for label in labels]
 
         total = sum(weights)
-        r = self._rng.random() * total
+        r = rng.random() * total
         cumulative = 0.0
         for label, w in zip(labels, weights):
             cumulative += w
@@ -527,13 +544,17 @@ class PetriNetProcessComponent(ProcessComponent):
         self._decision_feature_names = artifact["feature_names"]
         self._decision_unknown = artifact["sentinels"]["unknown"]
 
-    def _rules_weighted_choice(self, case_id: str, labels: List[str]) -> Optional[str]:
+    def _rules_weighted_choice(self, case_id: str, labels: List[str], rng=None) -> Optional[str]:
         """
         Predict the branch via the decision-point classifier for this exact
         set of legal labels. Returns None (caller falls back to "probs") if
         this decision point has no trained model or the case has no sampled
         attributes yet.
+
+        ``rng`` defaults to ``self._rng``; ``_weighted_choice`` passes the
+        CRN-derived draw RNG explicitly when crn=True.
         """
+        rng = rng if rng is not None else self._rng
         self._ensure_decision_rules()
         model_info = self._decision_models.get(tuple(sorted(labels)))
         attrs = self._case_attrs.get(case_id)
@@ -544,7 +565,7 @@ class PetriNetProcessComponent(ProcessComponent):
         proba = model_info["tree"].predict_proba([features])[0]
         classes = model_info["classes"]
 
-        r = self._rng.random()
+        r = rng.random()
         cumulative = 0.0
         for cls, p in zip(classes, proba):
             cumulative += p

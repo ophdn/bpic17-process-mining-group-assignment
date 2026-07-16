@@ -106,6 +106,8 @@ def main(
     availability: str = "calendar",
     branching_mode: str = "probs",
     decision_rules_path: str | None = None,
+    piled_execution: bool = False,
+    k_batching: int | None = None,
 ):
     engine = SimulationEngine(
         sim_duration=SIM_DURATION_SECONDS,
@@ -133,6 +135,9 @@ def main(
         seed=RANDOM_SEED,
         calendar=calendar,
         start_datetime=START_DATETIME,
+        piled=piled_execution,  # Piled Execution (R-PE, Pattern 38) — default off
+        batching_k=k_batching,  # k-Batching (Zeng & Zhao) — default off, exclusive w/ piled
+        duration_model_path=str(DEFAULT_MODEL_PATH) if k_batching else None,
     )
 
     process_kwargs = dict(
@@ -181,6 +186,8 @@ def main(
     print(f"  process_model: {process_model}")
     print(f"  branching_mode: {branching_mode}")
     print(f"  processing_time_mode: {mode}")
+    print(f"  piled_execution: {piled_execution}")
+    print(f"  k_batching: {k_batching}")
     for k, v in engine.stats.items():
         print(f"  {k}: {v}")
     print(f"  events_logged: {engine.logger.num_events}")
@@ -238,7 +245,26 @@ if __name__ == "__main__":
         "--decision-rules-path", default=str(DEFAULT_DECISION_RULES_PATH),
         help="Path to the trained joblib artifact (--branching-mode rules only).",
     )
+    parser.add_argument(
+        "--piled-execution", action="store_true", default=False,
+        help="Enable Piled Execution (R-PE, Pattern 38): the deferred "
+             "drain prefers a waiting task of the SAME activity type the "
+             "resource just finished. One task per release (sequential). "
+             "Default off. Mutually exclusive with --k-batching.",
+    )
+    parser.add_argument(
+        "--k-batching", type=int, default=None, metavar="K",
+        help="Enable k-Batching (Zeng & Zhao): work items never allocate "
+             "immediately -- they queue and are released in batches of K, "
+             "solved as a parallel-machines assignment problem minimising "
+             "total expected processing time (simulation/expected_duration.py). "
+             "A safety valve flushes early if the oldest waiting item has "
+             "waited past 4h. Default off (None). Mutually exclusive with "
+             "--piled-execution.",
+    )
     args = parser.parse_args()
+    if args.piled_execution and args.k_batching is not None:
+        parser.error("--piled-execution and --k-batching are mutually exclusive.")
     # Default branching: "visit" on the Petri net (A1 winner, see
     # output/validation/branching_probs_vs_rules/), plain "probs" on basic.
     branching_mode = args.branching_mode or (
@@ -251,4 +277,6 @@ if __name__ == "__main__":
         availability=args.availability,
         branching_mode=branching_mode,
         decision_rules_path=args.decision_rules_path,
+        piled_execution=args.piled_execution,
+        k_batching=args.k_batching,
     )

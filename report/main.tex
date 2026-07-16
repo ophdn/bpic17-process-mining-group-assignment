@@ -76,16 +76,62 @@ file in the repository's \texttt{output/} directory.
 \section{Simulation Model}
 \label{sec:simulation}
 
-\subsection{Simulation Engine Core (all members)}
-% TODO (all, ~0.3 col): single global event queue (min-heap) DES engine,
-% component/handler registration pattern, CSV/XES logging, fixed seeds for
-% reproducibility. Keep short.
-tbd.
+\subsection{Simulation Engine Core (Sophie)}
+The engine implements discrete event simulation with a single global event
+queue, as required by the assignment: a min-heap ordered by
+$(\text{timestamp}, \text{priority})$, where the integer priority breaks
+ties between simultaneous events deterministically (e.g.\ a resource is
+released before the next task is dispatched). Event types cover the case
+lifecycle (\texttt{CASE\_ARRIVAL}, \texttt{CASE\_COMPLETE}), the activity
+lifecycle (\texttt{ACTIVITY\_START}, \texttt{ACTIVITY\_COMPLETE}), and
+resource state changes. The engine itself contains no domain logic -- it is
+a dispatcher: components (arrivals, process, resources) are plain classes
+that register handlers per event type and are called in registration order.
+This design decision let all four members develop their components
+independently against a stable interface, without ever modifying the engine
+or each other's code. A built-in logger records every activity event in
+pm4py column convention and exports CSV; case ids that reach
+\texttt{CASE\_COMPLETE} are written alongside, so that every evaluation can
+filter out horizon-truncated cases (unfiltered logs would bias cycle time
+and case duration downwards). Simulation time is a float in seconds --
+the natural base unit for datetime arithmetic -- anchored to a real start
+date at logging time. All stochastic components draw from seeded random
+number generators, and set iterations that would otherwise depend on memory
+layout are explicitly sorted, so a fixed seed reproduces a byte-identical
+event log -- the basis for all before/after comparisons in this report.
 
 \subsection{Case Arrivals (Mario)}
-% TODO (Mario): LogNormal fit (Basic), MDN-based dynamic arrivals (Advanced),
-% evaluation: inter-arrival error, daily arrival profile.
-tbd.
+\textbf{Basic.} Case arrivals follow a single LogNormal inter-arrival
+distribution fitted on the real log ($s=1.4543$, scale $363.10$s, mean
+inter-arrival $1002.23$s $\approx 86$ cases/day, $\sigma=32$/day). This is
+time-independent by construction: it can match the mean rate but cannot
+represent that arrivals are not uniform in time.
+
+\textbf{Advanced.} The real process is locally Poisson but with a rate
+that varies strongly by time of day and weekday (night $\sim\!0.6$
+arrivals/h vs.\ $\sim\!7.6$/h in the 12--18h core; Monday
+$\approx 3\times$ Sunday), which a static distribution cannot capture in
+principle. We replace it with an intensity-free temporal point process: a
+small Mixture-Density Network (a mixture of LogNormals) predicts the
+inter-arrival distribution conditioned on cyclical time-of-day/weekday/
+season features of the current simulation clock, trained offline
+(\texttt{train\_arrival\_mdn.py}) and evaluated at runtime as a pure
+NumPy forward pass (no PyTorch dependency at simulation time). It is a
+drop-in replacement for the parametric component (same
+\texttt{bootstrap}/\texttt{on\_arrival} interface), toggled by
+\texttt{USE\_MDN\_ARRIVALS} in \texttt{main.py} (default off).
+
+\textbf{Validation status.} \texttt{scripts/eval\_arrivals.py} implements
+the intended KPI comparison -- real vs.\ parametric vs.\ MDN arrivals on
+hour-of-day MAE, weekday MAE, and an inter-arrival KS statistic, deliberately
+refusing to substitute the simulated log for ground truth -- but requires
+the raw BPIC-17 log, which is gitignored and was not available on the
+machine this was implemented on. This is the one open item on this
+subsection: whoever has the raw log should run it once
+(\texttt{BPIC17\_LOG=\ldots{} python scripts/eval\_arrivals.py}) to produce
+\texttt{output/arrival\_model\_eval.md} before the report is finalized, and
+the team should jointly decide whether to flip the default based on the
+result -- it changes every teammate's simulated logs.
 
 \subsection{Processing Times (Daniel)}
 % TODO (Daniel): fitted distributions (Basic 1), contextual GBR point model
@@ -111,7 +157,11 @@ $\tau$-closure of the current marking -- a greedy strategy that fires
 $\tau$-transitions only when no visible transition is enabled would make
 whole branches structurally unreachable, because n-way splits are encoded as
 nested binary gateways whose named branch and $\tau$-sibling are enabled
-simultaneously.
+simultaneously. Following the lecture's advice to guard against structural
+design errors, we verified the converted net with pm4py's Woflan
+implementation: it is a sound workflow net (live, bounded, no dead
+transitions) -- the loop behavior analyzed in Section~\ref{sec:branching}
+is therefore legitimate model behavior, not a modeling defect.
 
 \textbf{Design decision: model source.} We compared our manually modeled
 (Signavio) BPMN against models discovered from the log with the Inductive
@@ -231,9 +281,12 @@ the branch from these attributes (\emph{rules} column in
 Table~\ref{tab:ablation}); the training data was identified by replaying the
 log on the process model, and outcome-encoding attributes
 (\texttt{Accepted}, \texttt{Selected}) were excluded to prevent label
-leakage. Evaluated with a temporal 80/20 split and the metrics from the
-lecture (precision, recall, one-vs-rest ROC-AUC next to accuracy and a
-majority-class baseline), 16 decision points obtained models: one is
+leakage. Evaluated with a temporal 80/20 split -- training on older, testing on the
+most recent cases, since a random split would leak process drift -- and the
+metrics from the lecture (precision, recall, one-vs-rest ROC-AUC next to
+accuracy and a majority-class baseline; no separate validation slice, as all
+hyperparameters were fixed a priori rather than tuned), 16 decision points
+obtained models: one is
 perfectly separable (AUC $1.0$), while several collapse to the majority
 class -- e.g.\ accuracy $0.89$ at macro-precision $0.22$ -- which accuracy
 alone would have hidden. \emph{rules} matches \emph{visit} on variant
@@ -262,17 +315,133 @@ tbd.
 
 \section{Optimization}
 \label{sec:optimization}
-% TODO (all, per lecture 06 final tasks): one subsection per package, name
-% first. Suggested structure:
-% \subsection{Experimental Setup and Metrics (…)} — avg cycle time, avg
-%   resource occupation (relative to availability windows), (weighted)
-%   resource fairness; >=10 seeds, warm-up, CIs.
-% \subsection{Simple Policies and k-Batching (…)}
-% \subsection{Advanced Policy I: … (…)}
-% \subsection{Advanced Policy II: … (…)}
-% \subsection{Management Question (…)} — "fire two employees":
-%   criticality analysis + leave-two-out simulations.
-tbd.
+
+\subsection{Experimental Setup and Metrics (Mario)}
+\label{sec:optsetup}
+\texttt{scripts/run\_experiments.py} orchestrates every policy comparison
+in this section: a policy $\times$ seed $\times$ scenario grid, one
+simulation run per cell, evaluated with the three lecture-slide-21
+metrics -- average cycle time (from case arrival, not first activity
+start), average resource occupation (relative to the Section~1.6
+availability windows, not wall-clock span), and (weighted) resource
+fairness -- computed by \texttt{scripts/opt\_metrics.py}, plus four
+self-designed metrics justified against process-specific failure modes
+the slide-21 trio cannot see on its own: time-to-first-offer and
+time-to-decision (customer-facing, from the \texttt{A\_}/\texttt{O\_}
+milestone events), handover rate (share of consecutive case steps that
+switch resource -- familiarity/context-switch cost), and rolling
+workload balance (per-day resource-occupation std, catching ``fair on
+average, unfair in bursts'' that a single whole-horizon fairness number
+cannot). Scenarios beyond
+the default (\emph{normal}) are \emph{peak} ($+30\%$ arrival rate) and
+\emph{outage} (20\% of resources removed, seeded per run), giving the
+infrastructure the management question and RQ4 need without bespoke code.
+
+\textbf{Common Random Numbers.} A policy change alters resource-allocation
+\emph{order}, which -- because every stochastic draw in
+\texttt{ProcessComponent} previously came from one shared RNG consumed in
+event-dispatch order -- silently changed every subsequent branching and
+duration draw too: two policies under ``the same seed'' were really
+running different case trajectories, not a controlled comparison (we
+measured this directly for Piled Execution: see
+\texttt{output/piled\_execution\_eval.md}). We therefore seed each
+branching/duration decision independently from
+(base seed, case id, activity, visit count), gated behind \texttt{crn=True}
+(default off, to keep every prior evidence log bit-for-bit reproducible).
+We verified directly that this achieves its goal: under CRN, two runs that
+differ only in allocation policy produce an \emph{identical} branching
+sequence for every case, up to whichever run's allocation timing causes it
+to hit the horizon with fewer completed activities first
+(\texttt{scripts/test\_crn.py}).
+
+\textbf{Caveat.} The results in
+Section~\ref{sec:kbatching} use only 5 seeds (the runner itself flags
+this: the 95\% CI half-width exceeds the roadmap's 5\%-of-mean target on
+every policy at this seed count) -- treat the ranking as indicative, not
+conclusive, until re-run with $\geq 10$ seeds.
+
+\subsection{Simple Policies and k-Batching (Mario: k-Batching)}
+\label{sec:kbatching}
+The Section~1.8 baseline is R-RMA (uniform random pick among qualified,
+available resources, Russell et al.~\cite{russell2005workflow} pattern~15)
+behind a minimal \texttt{AllocationPolicy} seam
+(\texttt{simulation/policies.py}) that the simple heuristics (R-RRA, R-SHQ)
+and the two advanced policies plug into without touching
+\texttt{ResourceComponent} again.
+
+\textbf{k-Batching (Zeng \& Zhao).} Rather than allocating a work item the
+instant it is enabled, k-Batching lets items queue and releases them in
+batches of $k$, solved as a parallel-machines assignment problem: batch
+items $\times$ currently free-and-on-shift resources, cost = expected
+processing time from a shared \texttt{expected\_duration()} model (the
+same trained GBR point estimator Section~1.3 built, wrapped in
+\texttt{simulation/expected\_duration.py} so both this and the Park~\&
+Song policy consume one implementation), solved with
+\texttt{scipy.optimize.linear\_sum\_assignment}. A flush triggers once $k$
+items are waiting \emph{or} the oldest waiting item has waited past a 4h
+safety valve -- without it, a queue that never reaches $k$ under low load
+would starve indefinitely, the known weakness the lecture attributes to
+this heuristic.
+
+Table~\ref{tab:kbatch} sweeps $k \in \{1,2,5,10,20\}$ against the R-RMA
+baseline (5 seeds, 30-day horizon, capacity 3, calendar availability, CRN
+on). Every $k$ increases mean cycle time relative to immediate allocation
+(statistically significant at $k\!\in\!\{1,2,10,20\}$, paired $t$-test
+$p<0.05$; $k\!=\!5$ borderline, $p=0.059$) -- exactly the idle-time cost
+the lecture predicts: k-Batching's requester always waits for a flush
+trigger, even when a resource happens to be free right now, so it cannot
+beat an immediate-allocation baseline on cycle time by construction, only
+on assignment \emph{quality} once it does flush. That quality effect is
+visible in the trend: cycle time falls monotonically from $k\!=\!1$ to
+$k\!=\!10$ ($10.49\text{d} \rightarrow 9.01\text{d}$) as larger batches
+let the assignment solver place more items well per flush, before rising
+again at $k\!=\!20$ once queueing delay dominates. Occupation shows the
+same shape in reverse ($2.63 \rightarrow 4.18 \rightarrow 4.56$,
+approaching the baseline's $5.19$): larger batches keep more resources
+usefully busy per flush. This is an honest negative-leaning result rather
+than a clean win, and we report it as such: k-Batching's real argument
+here is assignment quality under heterogeneous resource-activity
+durations, not automatic throughput -- exactly the trade-off that
+motivates the strategic-idling advanced policies below (Park \& Song
+plan ahead using predicted next tasks instead of waiting for a batch to
+fill; see the corresponding subsection).
+
+% TODO (Daniel): \subsection{Advanced Policy I: Park \& Song (Daniel)} --
+%   next-task prediction (reuse the Section 1.3 duration models) + strategic
+%   idling, assignment/min-cost-max-flow.
+% TODO (Johannes): \subsection{Advanced Policy II: Kunkler \& Rinderle-Ma
+%   (Johannes)} -- dummy-resource-cost formulation for uncertain
+%   availability, builds on the Section 1.6 calendars.
+% TODO (Sophie): \subsection{Management Question (Sophie)} -- "fire two
+%   employees": criticality analysis (occupation, exclusive permissions,
+%   historical performance) + leave-two-out simulations using
+%   ResourceComponent(excluded_resources=...) / --scenario outage
+%   infrastructure from scripts/run_experiments.py.
+
+\begin{table}[h]
+    \caption{k-Batching sweep vs.\ R-RMA baseline (5 seeds, 30-day
+    horizon, seed-42-derived; CIs wide at this seed count, see
+    Section~\ref{sec:optsetup}). Cycle time in days; occupation and
+    fairness as in slide 21 (occupation $>\!1$: capacity-3 parallelism,
+    not an error, see \texttt{opt\_metrics.py}).}
+    \centering
+    \renewcommand{\arraystretch}{1.2}
+    \setlength{\tabcolsep}{4pt}
+    \small
+    \begin{tabular}{lrrr}
+        \toprule
+        \textbf{Policy} & \textbf{Cycle time (d)} & \textbf{Occupation} & \textbf{Fairness} \\
+        \midrule
+        R-RMA (baseline) & $7.93$          & $5.19$ & $1.15$ \\
+        k=1              & $10.49$         & $2.63$ & $1.12$ \\
+        k=2              & $9.82$          & $3.26$ & $1.08$ \\
+        k=5              & $9.53$          & $3.86$ & $1.00$ \\
+        k=10             & $\mathbf{9.01}$ & $4.18$ & $0.97$ \\
+        k=20             & $9.30$          & $4.56$ & $1.02$ \\
+        \bottomrule
+    \end{tabular}
+    \label{tab:kbatch}
+\end{table}
 
 \section{Use of AI Tools}
 % TODO (all): adapt to what each member actually did. Draft:

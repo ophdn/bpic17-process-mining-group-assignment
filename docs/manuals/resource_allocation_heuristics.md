@@ -1,9 +1,23 @@
-# Resource Allocation — R-RBA (Section 1.8)
+# Resource Allocation — R-RBA (Section 1.8) + Piled Execution (bonus) + k-Batching (Optimization, Final Task 1)
 
 How the simulation decides **which worker does which task**.
 
 The code lives in `simulation/components/resource.py` (`ResourceComponent`).
 Same seed (`42`) = same result every run.
+
+**Which one is the graded batch-allocation deliverable?** k-Batching
+(see the dedicated section below), not Piled Execution. Both cluster
+similar work, but they answer different questions and only one of them
+is Zeng & Zhao's k-Batching heuristic named in the assignment:
+
+| | Piled Execution (R-PE) | k-Batching (Zeng & Zhao) |
+|---|---|---|
+| Status | Bonus / ablation for the report | **Final Task 1 batch-allocation deliverable** |
+| Trigger | A resource just freed up | k items are waiting, or a max-wait timer |
+| Decision | Same-activity-first, else FIFO | Solve an assignment problem (`scipy.optimize.linear_sum_assignment`) minimising total expected duration |
+| Cost model | None — no ranking among candidates | `simulation/expected_duration.py` (shared with Park & Song) |
+| CLI flag | `--piled-execution` | `--k-batching K` |
+| Mutually exclusive? | Yes — pass only one of the two flags |
 
 ---
 
@@ -149,13 +163,66 @@ All 17 workers are qualified for this task. With `capacity = 3`:
 
 ---
 
+## Piled Execution (R-PE, Pattern 38) — optional batch allocation
+
+**Plain version:** when a worker finishes a task of type T, before
+becoming generally available they first look at the waiting list for
+another task of the **same type T**. If one is there, they grab it
+immediately (one task per release). Only if no same-type task is
+waiting do they fall back to the normal "oldest waiting task I'm
+qualified for" rule.
+
+This is **Piled Execution**, Russell et al. *Auto-start Pattern 38
+(R-PE)*: "initiate the next instance of a workflow task once the
+previous one has completed … allocating similar work items to the same
+resource which aims to undertake them one after the other" — reduced
+set-up time / familiarity from sticking with one task type.
+
+It's a **batch allocation approach** because same-type tasks cluster
+onto one worker rather than being scattered uniformly across the pool.
+But it's deliberately **sequential** — only one same-type task is
+handed off per release, faithful to the paper's "the next one".
+
+### What changed in the code
+
+- The wait-queue drain (R-DE) gains a same-type-first scan *before* the
+  FIFO scan — only when `--piled-execution` is on.
+- Synchronous allocation (`_allocate`) is **unchanged** — new tasks
+  are still picked uniformly at random among qualified+free workers.
+  Piled Execution only biases the **deferred** path.
+- `release()` now carries the just-finished activity so the freeing
+  worker knows what "same pile" to look for.
+- Processing times are **not** affected. Only *which* worker does
+  *which* waiting task changes.
+
+### Design decisions for uncertain availabilities
+
+Piled Execution is layered on the same live-load / R-DE machinery as
+R-RBA, so the uncertain-availability adaptations from earlier still
+hold. The pile is formed from the **current** waiting list (not a
+future queue forecast), and one same-type handoff per release keeps it
+O(1) and deterministic under the seed. If the same-type waiter isn't
+qualified (it can't be — the worker just finished that activity, so it
+must be permitted), we don't try; but this never happens because
+`RESOURCE_PERMISSIONS` guarantees the freeing worker is permitted for
+the activity it just ran.
+
+Default off → current R-RBA-only behaviour is preserved bit-for-bit.
+
+---
+
 ## Usage
 
-There's no special flag — R-RBA is always on:
+R-RBA is always on; Piled Execution is opt-in:
 
 ```bash
+# default — R-RBA only
 .venv/bin/python -m simulation.main
-.venv/bin/python -m simulation.main --process-model basic   # alter process model only
+.venv/bin/python -m simulation.main --process-model basic
+
+# turn on Piled Execution (same-type batching on the wait queue)
+.venv/bin/python -m simulation.main --piled-execution
+.venv/bin/python -m simulation.main --process-model basic --piled-execution
 ```
 
 Or programmatically:
@@ -163,8 +230,37 @@ Or programmatically:
 ```python
 from simulation.components.resource import ResourceComponent
 
+# R-RBA only (default)
 resources = ResourceComponent(capacity_per_resource=3, seed=42)
+
+# R-RBA + Piled Execution
+resources = ResourceComponent(capacity_per_resource=3, seed=42, piled=True)
 ```
+
+To see the effect, compare consecutive complete rows for the same worker
++ same activity before/after turning the flag on:
+
+```bash
+# count "piled" pairs: same worker did the same activity back-to-back
+tail -n +2 output/event_log.csv | awk -F, '
+  $4=="complete" && $5==prev_r && $2==prev_a {c++}
+  {prev_r=$5; prev_a=$2}
+  END {print c" back-to-back same-worker+same-activity pairs"}'
+```
+
+The pile-preference branch itself is instrumented-verified to fire (see
+`scripts/eval_piled_execution.py`): once the wait queue has any backlog it
+matches on a majority of releases, and the hit rate grows with load. But
+this raw pair count over a **full 30-day run** does not reliably come out
+higher for the piled run — see `output/piled_execution_eval.md` for why:
+this is a single shared-seed DES, so changing *which* waiting item a
+freeing resource grabs shifts every downstream event timestamp, which
+cascades into different branching-RNG draw order in `ProcessComponent`
+for the rest of the run. The two 30-day runs are different deterministic
+trajectories, not a controlled A/B on identical arrivals, so the
+aggregate pair count is not a clean readout of whether piling "worked" —
+run `eval_piled_execution.py` for the fuller picture (mean wait time,
+cycle time, throughput) instead of trusting this one metric in isolation.
 
 ---
 
@@ -205,9 +301,13 @@ R-RBA answers **"who is allowed"**. It deliberately does **not** answer
 **"which of the allowed ones"** beyond a uniform random pick — that's
 where the push *selection* patterns come in. Future work:
 
-- **Section 1.6 Advanced** — calendar / shift-based availability: gate
-  allocation on whether the resource is on-shift at `engine.now`, not
-  just on `_busy < capacity`.
+- **Section 1.6 Advanced** — calendar / shift-based availability is now
+  implemented: allocation gates on whether the resource is on-shift at
+  `engine.now` (`_is_on_shift`), not just on `_busy < capacity`. Default
+  on via `--availability calendar`; `--availability always` reverts to
+  the pre-1.6 baseline. Piled Execution respects it — an off-shift
+  resource never picks up piled work, since the pile-preference branch
+  is nested inside the same `_is_on_shift` guard as the regular FIFO drain.
 - **Section 1.7 Advanced** — role-discovery (e.g. OrdinoR) to replace
   the hardcoded `RESOURCE_PERMISSIONS` with a mined organisational
   model.
@@ -221,8 +321,18 @@ where the push *selection* patterns come in. Future work:
 - **Detour patterns** (R-D delegation, R-E escalation, R-SD
   deallocation, R-PR/R-UR reallocation) — for handling exceptions such
   as resource unavailability mid-execution.
-- **Auto-start patterns** (R-PE piled execution, R-CE chained
-  execution) — pipeline same-task or same-case work items to the same
-  worker for efficiency.
+- **Auto-start patterns** — *R-PE* (Piled Execution, pat. 38) is now
+  implemented behind `--piled-execution` (see the dedicated section
+  above; bonus/ablation, not the graded batch-allocation deliverable —
+  see the table at the top). *R-CE* (Chained Execution, pat. 39) —
+  pipeline sequential work items within the same case to the same
+  resource — remains future work.
+- **k-Batching (Zeng & Zhao)** — done, `--k-batching K`. Not a Russell
+  et al. pattern (a separate parallel-machines-scheduling heuristic from
+  lecture 06); implemented and evaluated (`scripts/test_kbatching.py`,
+  `output/experiments/aggregate_normal.csv`, report
+  Section "Simple Policies and k-Batching"). **This is the assignment's
+  graded batch-allocation deliverable** — R-PE above is bonus material
+  next to it, not a substitute.
 - **Early/Late Distribution** (R-ED / R-LD) — timing variants that
   allocate before/after enablement rather than at enablement.

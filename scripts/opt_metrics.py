@@ -192,6 +192,136 @@ def resource_fairness(
 
 
 # ---------------------------------------------------------------------
+# Custom domain metrics (Final Task 4: self-designed, justified below)
+# ---------------------------------------------------------------------
+# The slide-21 trio (cycle time, occupation, fairness) is process-agnostic --
+# it would look the same for any BPO process. These four are BPIC-17-loan-
+# specific or expose failure modes the trio can't see on its own:
+#
+#   - time_to_first_offer / time_to_decision: customer-facing KPIs of a
+#     loan process (how long until the applicant hears something), straight
+#     from the A_/O_ milestone events already in the log.
+#   - handover_rate: familiarity / context-switch cost -- the metric where
+#     Piled Execution's actual mechanism (same-activity batching) should
+#     show up, unlike the raw back-to-back-pairs count in
+#     output/piled_execution_eval.md, which got confounded by cross-policy
+#     RNG-order divergence over a full run.
+#   - rolling_workload_balance: resource_fairness (slide 21) is a single
+#     number over the WHOLE horizon, so it can't tell "fair on average" from
+#     "fair on average because bursty overload cancels out with bursty
+#     idleness" -- this looks at fairness in daily windows instead.
+
+def _milestone_times(
+    df: pd.DataFrame, activities, arrival_times: Optional[Mapping[str, pd.Timestamp]] = None,
+) -> dict:
+    """Shared helper: time from case arrival to the first COMPLETE event of
+    any activity in *activities*, per case that reaches one. Falls back to
+    first logged event as the start basis if arrival_times isn't given
+    (same convention as average_cycle_time)."""
+    hits = df[(df["lifecycle:transition"] == "complete")
+              & (df["concept:name"].isin(activities))]
+    first_hit = hits.groupby("case:concept:name")["time:timestamp"].min()
+
+    if arrival_times is not None:
+        start = pd.Series({c: arrival_times[c] for c in first_hit.index if c in arrival_times})
+        first_hit = first_hit.loc[start.index]
+        basis = "case_arrival"
+    else:
+        start = df.groupby("case:concept:name")["time:timestamp"].min()
+        start = start.loc[first_hit.index]
+        basis = "first_event (pass arrival_times for the slide-21-consistent definition)"
+
+    elapsed_s = (first_hit - start).dt.total_seconds()
+    return {
+        "mean_s": float(elapsed_s.mean()) if len(elapsed_s) else float("nan"),
+        "p95_s": float(elapsed_s.quantile(0.95)) if len(elapsed_s) else float("nan"),
+        "n_cases_reaching_it": int(len(elapsed_s)),
+        "n_cases_total": int(df["case:concept:name"].nunique()),
+        "start_basis": basis,
+    }
+
+
+def time_to_first_offer(
+    df: pd.DataFrame, arrival_times: Optional[Mapping[str, pd.Timestamp]] = None,
+) -> dict:
+    """Arrival -> first O_Create Offer completion. Customer-facing: "how
+    long before the applicant gets an offer at all" -- undefined (excluded
+    from the mean) for cases that never reach an offer."""
+    return _milestone_times(df, {"O_Create Offer"}, arrival_times)
+
+
+def time_to_decision(
+    df: pd.DataFrame, arrival_times: Optional[Mapping[str, pd.Timestamp]] = None,
+) -> dict:
+    """Arrival -> first terminal outcome (A_Pending / A_Denied /
+    A_Cancelled). Customer-facing: "how long before the applicant knows
+    where they stand", regardless of which outcome."""
+    return _milestone_times(df, {"A_Pending", "A_Denied", "A_Cancelled"}, arrival_times)
+
+
+def handover_rate(df: pd.DataFrame) -> dict:
+    """Share of consecutive same-case activity steps that switch resource
+    (lower = more work stays with the same person -- familiarity /
+    continuity; higher = more context-switching / handover overhead).
+
+    Computed on paired_instances ordered by start time within each case;
+    steps with no assigned resource (unpermitted activities) are dropped
+    from the comparison since "switch" is undefined against no one.
+    """
+    inst = paired_instances(df).sort_values(["case_id", "start"])
+    inst = inst[inst["resource"].notna() & (inst["resource"] != "")]
+
+    same_case = inst["case_id"] == inst["case_id"].shift(1)
+    same_resource = inst["resource"] == inst["resource"].shift(1)
+    consecutive = same_case
+    handovers = consecutive & ~same_resource
+
+    n_consecutive = int(consecutive.sum())
+    return {
+        "handover_rate": (float(handovers.sum()) / n_consecutive) if n_consecutive else float("nan"),
+        "n_consecutive_steps": n_consecutive,
+    }
+
+
+def rolling_workload_balance(df: pd.DataFrame, window: str = "1D") -> dict:
+    """Std of per-resource occupation WITHIN each rolling window, averaged
+    across windows -- catches "fair on average, unfair in bursts", which
+    resource_fairness (a single whole-horizon number) cannot: a resource
+    idle for two weeks then overloaded for one still averages out fine over
+    the whole run, but shows up here as a high per-window std on the
+    overloaded weeks.
+
+    Simplification: each activity instance is attributed whole to the
+    calendar window containing its START time (no splitting instances that
+    straddle a window boundary) -- window-level occupation is start-of-
+    activity busy-share, not availability-normalised like the slide-21
+    metric (no calendar windowing at this granularity); document this if
+    citing the absolute occupation numbers, the std comparison across
+    windows is still meaningful.
+    """
+    inst = paired_instances(df)
+    inst = inst[inst["resource"].notna() & (inst["resource"] != "")]
+    if inst.empty:
+        return {"mean_window_std": float("nan"), "n_windows": 0}
+
+    inst = inst.copy()
+    inst["duration_s"] = (inst["complete"] - inst["start"]).dt.total_seconds()
+    inst["window"] = inst["start"].dt.floor(window)
+
+    per_window = inst.groupby(["window", "resource"])["duration_s"].sum().unstack(fill_value=0.0)
+    window_seconds = pd.Timedelta(window).total_seconds()
+    occupation = per_window / window_seconds
+
+    window_std = occupation.std(axis=1)
+    return {
+        "mean_window_std": float(window_std.mean()),
+        "max_window_std": float(window_std.max()),
+        "n_windows": int(len(window_std)),
+        "window": window,
+    }
+
+
+# ---------------------------------------------------------------------
 # Combined report
 # ---------------------------------------------------------------------
 
@@ -222,6 +352,12 @@ def evaluate(
         "cycle_time": average_cycle_time(df_completed, arrival_times),
         "occupation": occ,
         "fairness": resource_fairness(occ["per_resource"], fairness_weights),
+        "custom_metrics": {
+            "time_to_first_offer": time_to_first_offer(df, arrival_times),
+            "time_to_decision": time_to_decision(df, arrival_times),
+            "handover_rate": handover_rate(df),
+            "rolling_workload_balance": rolling_workload_balance(df),
+        },
         "case_filter": {
             "n_cases_in_log": int(n_total),
             "n_cases_completed": int(df_completed["case:concept:name"].nunique()),
@@ -247,6 +383,19 @@ def print_report(label: str, m: dict) -> None:
           f"(0 = perfectly fair)")
     if "weighted_resource_fairness" in fa:
         print(f"  weighted fairness:       {fa['weighted_resource_fairness']:>14.4f}")
+
+    cm = m.get("custom_metrics")
+    if cm:
+        tfo, td = cm["time_to_first_offer"], cm["time_to_decision"]
+        ho, wb = cm["handover_rate"], cm["rolling_workload_balance"]
+        print(f"  time to first offer:     {tfo['mean_s']/86400:>14.2f} d "
+              f"({tfo['n_cases_reaching_it']}/{tfo['n_cases_total']} cases reach it)")
+        print(f"  time to decision:        {td['mean_s']/86400:>14.2f} d "
+              f"({td['n_cases_reaching_it']}/{td['n_cases_total']} cases reach it)")
+        print(f"  handover rate:           {ho['handover_rate']:>14.4f} "
+              f"(share of steps that switch resource)")
+        print(f"  rolling workload std:    {wb['mean_window_std']:>14.4f} "
+              f"(mean per-{wb.get('window', '?')} std, max={wb.get('max_window_std', float('nan')):.4f})")
 
 
 if __name__ == "__main__":
