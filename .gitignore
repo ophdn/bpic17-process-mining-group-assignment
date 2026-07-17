@@ -89,6 +89,9 @@ target/
 
 # Jupyter Notebook
 .ipynb_checkpoints
+# Derived evaluation checkpoints are local accelerators. Summary tables remain
+# versioned under output/evaluation/.
+output/evaluation/run_cache/
 
 # IPython
 profile_default/
