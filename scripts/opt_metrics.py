@@ -187,6 +187,15 @@ def average_resource_occupation(
     an always-on automated account (Johannes's Section-1.6 Decision 4,
     e.g. User_1) has a huge availability denominator and a tiny occupation
     ratio, which distorts a staffing metric it is not really part of.
+
+    Resources with **zero** available seconds in the horizon are dropped, and
+    counted in `undefined_zero_availability`. Occupation is a share of time
+    available; for someone who was never available it is 0/0, not 0. Counting
+    them as 0 would silently drag the mean down in proportion to how much leave
+    or rostering-off the horizon happens to contain, which is a property of the
+    calendar rather than of how hard anyone worked. This is not hypothetical
+    once `--roster-seed` is on: a part-time resource can easily draw zero
+    rostered days in a two-week window.
     """
     busy = resource_busy_seconds(df)
     if availability_seconds is not None:
@@ -198,16 +207,21 @@ def average_resource_occupation(
         avail = pd.Series(span, index=busy.index, dtype=float)
         basis = "log_span (pass availability_seconds for the slide-21 definition)"
 
-    # Resources that were available but never worked count with occupation 0.
-    occupation = (busy.reindex(avail.index).fillna(0.0) / avail).to_dict()
     if resource_subset is not None:
         keep = set(resource_subset)
-        occupation = {r: v for r, v in occupation.items() if r in keep}
+        avail = avail[avail.index.isin(keep)]
+
+    zero_avail = sorted(avail.index[avail <= 0.0])
+    avail = avail[avail > 0.0]
+
+    # Resources that were available but never worked count with occupation 0.
+    occupation = (busy.reindex(avail.index).fillna(0.0) / avail).to_dict()
     return {
         "avg_resource_occupation": float(np.mean(list(occupation.values())))
             if occupation else float("nan"),
         "per_resource": {r: round(v, 4) for r, v in sorted(occupation.items())},
         "availability_basis": basis,
+        "undefined_zero_availability": zero_avail,
     }
 
 
@@ -458,6 +472,10 @@ def print_report(label: str, m: dict) -> None:
           f"({ct['p95_cycle_time_s']/86400:.2f} d)")
     print(f"  avg resource occupation: {oc['avg_resource_occupation']:>14.4f}   "
           f"[basis: {oc['availability_basis']}]")
+    n_zero = len(oc.get("undefined_zero_availability", ()))
+    if n_zero:
+        print(f"    ({n_zero} resource(s) never available in the horizon — "
+              f"occupation undefined, excluded from the mean and from fairness)")
     print(f"  resource fairness:       {fa['resource_fairness']:>14.4f} "
           f"(0 = perfectly fair)")
     if "weighted_resource_fairness" in fa:
