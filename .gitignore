@@ -9,6 +9,9 @@
 simulation/models/*
 !simulation/models/bpic17_process.bpmn
 *.joblib
+# Final-config ML durations (--lifecycle-mode active) shared with the team so
+# clones don't silently fall back to distribution means; see PROCESSING_TIMES.md.
+!simulation/models/processing_time_model_active.joblib
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
