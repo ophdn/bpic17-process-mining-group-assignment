@@ -124,6 +124,7 @@ def main(
     lifecycle_mode: str = "legacy",
     active_inputs_path: str | None = None,
     roster_seed: int | None = None,
+    capacity: int = 3,
 ):
     if lifecycle_mode not in ("legacy", "active"):
         raise ValueError(f"lifecycle_mode must be legacy|active, got {lifecycle_mode!r}")
@@ -186,7 +187,7 @@ def main(
         arrivals = ArrivalComponent(seed=RANDOM_SEED)
     process   = ProcessComponent(seed=RANDOM_SEED)
     resources = ResourceComponent(
-        capacity_per_resource=3,
+        capacity_per_resource=capacity,
         seed=RANDOM_SEED,
         calendar=calendar,
         start_datetime=START_DATETIME,
@@ -354,7 +355,18 @@ if __name__ == "__main__":
              "which keeps the pre-rostering behaviour and reproduces older "
              "evidence logs. --availability calendar only.",
     )
+    parser.add_argument(
+        "--capacity", type=int, default=3, metavar="N",
+        help="Work items one resource may hold at once (default 3). The "
+             "duration model has no concurrent-load feature, so N parallel "
+             "items each finish as fast as one -- N multiplies throughput for "
+             "free. In active mode the honest value is 1: 98.4%% of real busy "
+             "time is a single hands-on session and suspend/resume already "
+             "models the interleaving.",
+    )
     args = parser.parse_args()
+    if args.capacity < 1:
+        parser.error("--capacity must be >= 1.")
     if args.piled_execution and args.k_batching is not None:
         parser.error("--piled-execution and --k-batching are mutually exclusive.")
     if args.roster_seed is not None and args.availability != "calendar":
@@ -383,4 +395,5 @@ if __name__ == "__main__":
         lifecycle_mode=args.lifecycle_mode,
         active_inputs_path=args.active_inputs_path,
         roster_seed=args.roster_seed,
+        capacity=args.capacity,
     )

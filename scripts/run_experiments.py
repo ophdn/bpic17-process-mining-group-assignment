@@ -91,6 +91,16 @@ START_DATETIME = datetime(2016, 1, 1)
 
 KNOWN_POLICIES = {"random", "piled"}
 KNOWN_SCENARIOS = {"normal", "peak", "outage"}
+
+# How many work items one resource may hold at once. 3 is the historical value
+# and stays the default so existing evidence reproduces, but see --capacity:
+# it matches neither lifecycle mode's duration semantics. In active mode a
+# session is hands-on work (median 0.8-2.7 min) and 98.4% of real busy time is
+# a single session, so the honest value there is 1 -- the interleaving is
+# already modelled by suspend/resume. In legacy mode the duration is the whole
+# elapsed span (mostly suspended waiting) and real spans overlap at a median
+# peak of 54 per resource, so 3 is far too tight rather than too loose.
+DEFAULT_CAPACITY = 3
 _KBATCH_RE = re.compile(r"^kbatch(\d+)$")
 OUTAGE_FRACTION = 0.20
 
@@ -200,11 +210,12 @@ def is_known_policy(policy: str) -> bool:
 def build_resource_component(
     policy: str, seed: int, calendar, excluded: Optional[Set[str]],
     permission_model=None, lifecycle_mode: str = "legacy", lifecycle_params=None,
+    capacity: int = DEFAULT_CAPACITY,
 ) -> ResourceComponent:
     k = parse_kbatch_policy(policy)
     if k is not None:
         return ResourceComponent(
-            capacity_per_resource=3,
+            capacity_per_resource=capacity,
             seed=seed,
             calendar=calendar,
             start_datetime=START_DATETIME,
@@ -223,7 +234,7 @@ def build_resource_component(
             "here as Part II lands R-RRA / R-SHQ."
         )
     return ResourceComponent(
-        capacity_per_resource=3,
+        capacity_per_resource=capacity,
         seed=seed,
         calendar=calendar,
         start_datetime=START_DATETIME,
@@ -286,6 +297,7 @@ def run_once(
     excluded_override: Optional[Set[str]] = None,
     lifecycle_mode: str = "legacy",
     roster_seed: Optional[int] = None,
+    capacity: int = DEFAULT_CAPACITY,
 ) -> tuple[pd.DataFrame, dict]:
     """Build and run one (policy, seed, scenario) simulation.
 
@@ -330,7 +342,8 @@ def run_once(
     resources = build_resource_component(policy, seed, calendar, excluded,
                                          permission_model=perms,
                                          lifecycle_mode=lifecycle_mode,
-                                         lifecycle_params=lifecycle_params)
+                                         lifecycle_params=lifecycle_params,
+                                         capacity=capacity)
     recorder = _ArrivalRecorder()
     tracker = CaseCompletionTracker()
 
@@ -600,6 +613,14 @@ def parse_args():
                         "the Monday workforce from ~123 to the validated ~37 and "
                         "makes contention real. Default off, which reproduces "
                         "pre-rostering evidence logs.")
+    p.add_argument("--capacity", type=int, default=DEFAULT_CAPACITY, metavar="N",
+                   help=f"Work items one resource may hold at once (default "
+                        f"{DEFAULT_CAPACITY}). The duration model has no "
+                        f"concurrent-load feature, so N parallel items finish "
+                        f"as fast as one -- N multiplies throughput for free. "
+                        f"In active mode the honest value is 1 (98.4%% of real "
+                        f"busy time is a single hands-on session; suspend/resume "
+                        f"already models interleaving).")
     p.add_argument("--out", default=str(OUT_DEFAULT))
     p.add_argument("--report-wip", action="store_true",
                    help="Print a WIP-over-time diagnostic and exit (ignores --policies/--seeds).")
@@ -633,6 +654,7 @@ def main():
                 args.process_model, args.branching_mode, args.permissions,
                 lifecycle_mode=args.lifecycle_mode,
                 roster_seed=args.roster_seed,
+                capacity=args.capacity,
             )
             df, meta = apply_warmup(df, meta, args.warmup_days)
             if df.empty:
