@@ -108,7 +108,8 @@ EVALUATION_PROVENANCE_PATHS = (
 START_DATETIME = datetime(2016, 1, 1)
 
 KNOWN_POLICIES = {"random", "piled", "roundrobin", "shortestqueue",
-                  "pullspt", "pulllaf"}
+                  "pullspt", "pulllaf", "parksong"}
+_KRM_RE = re.compile(r"^krm(\d+(?:\.\d+)?)$")  # krm1, krm0.5, krm2 -> delta
 KNOWN_SCENARIOS = {"normal", "peak", "outage"}
 _KBATCH_RE = re.compile(r"^kbatch(\d+)$")
 OUTAGE_FRACTION = 0.20
@@ -306,8 +307,18 @@ def parse_kbatch_policy(policy: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
+def parse_krm_policy(policy: str) -> Optional[float]:
+    """'krm1' -> 1.0, 'krm0.5' -> 0.5, else None — Kunkler & Rinderle-Ma
+    dummy-resource cost with delta as a multiplier on each item's mean
+    expected duration (D2; sweep the delta the same way as kbatchN)."""
+    m = _KRM_RE.match(policy)
+    return float(m.group(1)) if m else None
+
+
 def is_known_policy(policy: str) -> bool:
-    return policy in KNOWN_POLICIES or parse_kbatch_policy(policy) is not None
+    return (policy in KNOWN_POLICIES
+            or parse_kbatch_policy(policy) is not None
+            or parse_krm_policy(policy) is not None)
 
 
 def build_resource_component(
@@ -332,11 +343,11 @@ def build_resource_component(
             lifecycle_mode=lifecycle_mode,
             lifecycle_params=lifecycle_params,
         )
-    if policy not in KNOWN_POLICIES:
+    if not is_known_policy(policy):
         raise ValueError(
             f"unknown policy {policy!r} (known: {sorted(KNOWN_POLICIES)}, "
-            f"or 'kbatchN' for k-Batching with k=N). Add new conditions "
-            "here as Part II lands R-RRA / R-SHQ."
+            f"'kbatchN' for k-Batching with k=N, or 'krmD' for "
+            "Kunkler & Rinderle-Ma with delta=D, e.g. krm1, krm0.5)."
         )
     selection_policy = None
     if policy == "roundrobin":
@@ -345,6 +356,9 @@ def build_resource_component(
         selection_policy = ShortestQueuePolicy()
 
     pull = {"pullspt": "spt", "pulllaf": "laf"}.get(policy)
+    krm_delta = parse_krm_policy(policy)
+    parksong = (policy == "parksong")
+    needs_duration_model = pull == "spt" or parksong or krm_delta is not None
 
     return ResourceComponent(
         capacity_per_resource=capacity,
@@ -355,9 +369,11 @@ def build_resource_component(
         piled=(policy == "piled"),
         policy=selection_policy,
         pull=pull,
+        parksong=parksong,
+        krm_delta=krm_delta,
         duration_model_path=(
             str(ACTIVE_MODEL_PATH if lifecycle_mode == "active" else LEGACY_MODEL_PATH)
-            if pull == "spt" else None),
+            if needs_duration_model else None),
         excluded_resources=excluded,
         lifecycle_mode=lifecycle_mode,
         lifecycle_params=lifecycle_params,

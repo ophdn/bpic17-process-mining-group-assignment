@@ -153,7 +153,7 @@ from scipy.optimize import linear_sum_assignment
 from ..core.events import SimEvent, EventType
 from .permissions import PermissionModel, StaticPermissions
 from ..policies import AllocationPolicy, AllocationState, RandomPolicy
-from ..expected_duration import ExpectedDurationModel
+from ..expected_duration import ExpectedDurationModel, distribution_mean_seconds
 
 
 # ── Resource permission map (from BPIC-17 resource_activity_map) ─────────────
@@ -350,6 +350,11 @@ def capacity_for_mode(lifecycle_mode: str) -> int:
 _SHIFT_WAKE = "__shift_wake__"
 _BATCH_WAKE = "__batch_wake__"
 
+# D1 (Park & Song): a predicted successor only joins the allocation epoch as
+# a phantom once its case's current activity is expected to finish within
+# this window — strategic idling is for imminent work, not multi-day locks.
+PARKSONG_LOOKAHEAD_SECONDS = 3600.0
+
 
 class ResourceComponent:
     """
@@ -393,22 +398,26 @@ class ResourceComponent:
         lifecycle_mode: str = "legacy",
         lifecycle_params=None,
         pull: Optional[str] = None,
+        parksong: bool = False,
+        krm_delta: Optional[float] = None,
     ):
-        if batching_k is not None and piled:
+        modes = {
+            "piled": piled, "batching_k": batching_k is not None,
+            "pull": pull is not None, "parksong": parksong,
+            "krm_delta": krm_delta is not None,
+        }
+        active_modes = [name for name, on in modes.items() if on]
+        if len(active_modes) > 1:
             raise ValueError(
-                "batching_k and piled=True are mutually exclusive — they "
-                "define different (incompatible) deferred-allocation "
-                "disciplines. Pick one."
+                f"{active_modes} are mutually exclusive — each redefines "
+                "the deferred-allocation discipline. Pick one."
             )
         if batching_k is not None and batching_k < 1:
             raise ValueError(f"batching_k must be >= 1, got {batching_k!r}")
         if pull is not None and pull not in ("spt", "laf"):
             raise ValueError(f"pull must be 'spt' or 'laf', got {pull!r}")
-        if pull is not None and (piled or batching_k is not None):
-            raise ValueError(
-                "pull is mutually exclusive with piled/batching_k — each "
-                "redefines the deferred-allocation discipline. Pick one."
-            )
+        if krm_delta is not None and krm_delta <= 0:
+            raise ValueError(f"krm_delta must be > 0, got {krm_delta!r}")
 
         self._capacity = capacity_per_resource
         self._rng = random.Random(seed)
@@ -451,7 +460,8 @@ class ResourceComponent:
         self._policy: AllocationPolicy = policy or RandomPolicy(rng=self._rng)
 
         # k-Batching (Zeng & Zhao) — see module docstring. The expected-
-        # duration model is shared with SPT-pull (both cost on it).
+        # duration model is shared with SPT-pull and the two advanced
+        # policies (all cost on it).
         self._batching_k = batching_k
         self._batching_max_wait = batching_max_wait_seconds
         self._duration_model: Optional[ExpectedDurationModel] = (
@@ -459,12 +469,40 @@ class ResourceComponent:
                 duration_model_path,
                 lifecycle_mode=lifecycle_mode,
                 lifecycle_params=lifecycle_params,
-            ) if (batching_k is not None or pull == "spt") else None
+            ) if (batching_k is not None or pull == "spt"
+                  or parksong or krm_delta is not None) else None
         )
 
         # LAF-pull bookkeeping: case_id -> sim time of its first request
         # ever seen here ("how long has this case been in the system").
         self._case_first_seen: Dict[str, float] = {}
+
+        # D1 — Park & Song 2019, prediction-based allocation with strategic
+        # idling: at every allocation epoch (request or release), solve one
+        # assignment over the REAL waiting items plus PHANTOM items — the
+        # predicted next activity of every case currently in service
+        # (see simulation/policies_advanced.py for the predictor and the
+        # documented LSTM->branching-model substitution). A resource the
+        # solver matches to a phantom is deliberately left idle this epoch:
+        # it is the best fit for work about to arrive (strategic idling).
+        # Phantom weight is 1.0 x expected duration — the simplest honest
+        # choice; a probability-discounted weight is future work.
+        self._parksong = parksong
+        self._predictor = None
+        if parksong:
+            from ..policies_advanced import NextActivityPredictor
+            self._predictor = NextActivityPredictor()
+        # case_id -> (current activity, its payload) while in service.
+        self._active_cases: Dict[str, tuple] = {}
+
+        # D2 — Kunkler & Rinderle-Ma 2024, assignment variant with dummy-
+        # resource costs: each waiting item also gets a private dummy column
+        # costing krm_delta x its own mean expected duration. An item the
+        # solver sends to its dummy stays queued — deferring is chosen over
+        # a bad fit whenever every free resource would cost more than delta
+        # times the item's baseline, which is the paper's "wait under
+        # uncertain availability" outcome expressed as a cost.
+        self._krm_delta = krm_delta
 
         # Section 1.7: who may perform what. Any object satisfying the
         # PermissionModel protocol; defaults to the hardcoded observed map.
@@ -542,6 +580,16 @@ class ResourceComponent:
             self._maybe_flush_batch(engine)
             self._arm_shift_wake(engine)
             self._arm_batch_wake(engine)
+            return
+
+        if self._parksong or self._krm_delta is not None:
+            if not self._qualified(engine, event):
+                self._unpermitted += 1
+                self._begin(engine, event, None)
+                return
+            self._waiting.append(event)
+            self._epoch_flush(engine)
+            self._arm_shift_wake(engine)
             return
 
         resource = self._allocate(engine, event)
@@ -659,6 +707,15 @@ class ResourceComponent:
             self._maybe_flush_batch(engine)
             self._arm_shift_wake(engine)
             self._arm_batch_wake(engine)
+            return
+
+        if self._parksong or self._krm_delta is not None:
+            if event.resource is not None:
+                self._busy[event.resource] = max(0, self._busy.get(event.resource, 0) - 1)
+            elif event.payload == _SHIFT_WAKE:
+                self._wake_at = None
+            self._epoch_flush(engine)
+            self._arm_shift_wake(engine)
             return
 
         resource = event.resource
@@ -803,6 +860,126 @@ class ResourceComponent:
             if cost[i, j] >= PROHIBITIVE:
                 continue  # no compatible free resource for this item this round
             req = batch[i]
+            assigned_ids.add(id(req))
+            self._begin(engine, req, free[j])
+
+        if assigned_ids:
+            self._waiting = [w for w in self._waiting if id(w) not in assigned_ids]
+
+    # ------------------------------------------------------------------
+    # Advanced policies (Part II): D1 Park & Song, D2 Kunkler & Rinderle-Ma
+    # ------------------------------------------------------------------
+
+    def on_case_complete(self, engine, event: SimEvent) -> None:
+        """Drop D1's in-service bookkeeping for a finished case, so no
+        phantom successor is planned for it. No-op outside parksong mode."""
+        if self._parksong and event.case_id is not None:
+            self._active_cases.pop(event.case_id, None)
+
+    def _epoch_flush(self, engine) -> None:
+        """One allocation epoch for the advanced policies (see constructor
+        docstrings): a single assignment over the whole waiting queue.
+
+        D1 (parksong): rows are real waiting items PLUS phantom items (the
+        predicted next activity of each in-service case). A phantom
+        assigned a resource reserves it — the resource idles this epoch
+        (strategic idling); only real-item assignments call _begin.
+
+        D2 (krm): rows are the real waiting items; columns gain one
+        private dummy per item costing ``krm_delta x`` the item's mean
+        expected duration. An item assigned its dummy stays queued.
+
+        Deterministic (argmin assignment, no RNG). One pass per trigger:
+        every request and every release re-runs the epoch, so there is no
+        max-wait valve to arm — the queue is reconsidered continuously.
+        """
+        if not self._waiting:
+            return
+        free = self._free_resources(engine)
+        if not free:
+            return
+
+        real: List[SimEvent] = list(self._waiting)
+        phantoms: List[SimEvent] = []
+        phantom_penalty: List[float] = []
+        if self._parksong:
+            for case_id, (activity, payload, begun_at) in self._active_cases.items():
+                pred = self._predictor.predict(activity)
+                if pred is None:
+                    continue
+                nxt, p_next = pred
+                # Strategic idling is only strategic for IMMINENT work: the
+                # successor arrives when the current activity finishes, so a
+                # phantom joins the epoch only once the expected remaining
+                # service time is inside the lookahead. Without this gate, a
+                # resource sits reserved for DAYS while a long validation
+                # runs — measured: cases completed collapsed 158 -> 15 on a
+                # 5-day run before the gate existed.
+                eta = begun_at + self._duration_model.expected_duration(activity, None)
+                if eta - engine.now > PARKSONG_LOOKAHEAD_SECONDS:
+                    continue
+                # Unscheduled pseudo-event: exists only to carry the
+                # (activity, case payload) execution context into the cost
+                # matrix — it is never scheduled, logged, or begun.
+                phantoms.append(SimEvent(
+                    timestamp=engine.now, priority=5,
+                    event_type=EventType.ACTIVITY_REQUEST,
+                    case_id=case_id, activity=nxt, payload=payload,
+                ))
+                # Uncertainty penalty: reserving for a p=0.5 prediction
+                # should cost twice what reserving for a sure thing does.
+                phantom_penalty.append(1.0 / max(p_next, 1e-6))
+
+        items = real + phantoms
+        n, m = len(items), len(free)
+        n_real = len(real)
+        n_dummies = n_real if self._krm_delta is not None else 0
+
+        PROHIBITIVE = 1e12
+        cost = np.full((n, m + n_dummies), PROHIBITIVE)
+        for i, req in enumerate(items):
+            ct, when = self._context(engine, req)
+            penalty = phantom_penalty[i - n_real] if i >= n_real else 1.0
+            for j, r in enumerate(free):
+                if self._permissions.permits(r, req.activity, case_type=ct, when=when):
+                    cost[i, j] = penalty * self._duration_model.expected_duration(req.activity, r)
+
+        # Phantom spread gate (D1): reserving a resource for predicted work
+        # only pays if that resource is a strictly BETTER fit than the
+        # alternatives — with resource-independent expected durations (no
+        # trained artifact) every reservation can only hurt, never help,
+        # and measured occupation collapsed to 0.08 vs 0.47 baseline. A
+        # phantom whose permitted costs show no spread is dropped from the
+        # epoch (its row is set prohibitive so the solver ignores it).
+        for i in range(n_real, n):
+            row = cost[i, :m]
+            finite = row[row < PROHIBITIVE]
+            if len(finite) == 0 or finite.max() - finite.min() <= 1e-9:
+                cost[i, :m] = PROHIBITIVE
+
+        if n_dummies:
+            now = engine.now
+            for i, req in enumerate(real):
+                # Deferral price = delta x the item's baseline duration,
+                # PLUS the time it has already waited (aging). Without the
+                # aging term, delta < 1 under resource-independent costs
+                # defers everything forever — measured: a 5-day run logged
+                # zero events. With it, deferral stays attractive only
+                # until the accumulated wait eats the margin.
+                cost[i, m + i] = (self._krm_delta * distribution_mean_seconds(req.activity)
+                                  + (now - req.timestamp))
+
+        row_ind, col_ind = linear_sum_assignment(cost)
+
+        assigned_ids = set()
+        for i, j in zip(row_ind, col_ind):
+            if cost[i, j] >= PROHIBITIVE:
+                continue
+            if i >= n_real:
+                continue  # phantom matched a resource: reservation, idle it
+            if j >= m:
+                continue  # item matched its dummy: defer, stays queued
+            req = items[i]
             assigned_ids.add(id(req))
             self._begin(engine, req, free[j])
 
@@ -1006,6 +1183,16 @@ class ResourceComponent:
                 return
             token["state"] = "allocated"
 
+        if self._parksong and request.case_id is not None:
+            # D1 bookkeeping: this case is now in service on this activity —
+            # its predicted successor becomes a phantom item at the next
+            # allocation epoch, but only once the successor's arrival is
+            # imminent (begin time + expected duration inside the lookahead;
+            # see _epoch_flush). Overwritten on the case's next _begin,
+            # dropped on CASE_COMPLETE.
+            self._active_cases[request.case_id] = (
+                request.activity, request.payload, engine.now)
+
         if resource is not None:
             self._busy[resource] = self._busy.get(resource, 0) + 1
 
@@ -1096,4 +1283,6 @@ ResourceComponent.HANDLES = {
     EventType.ACTIVITY_REQUEST:   ResourceComponent.on_activity_request,
     EventType.ACTIVITY_WITHDRAW:  ResourceComponent.on_activity_withdraw,
     EventType.RESOURCE_AVAILABLE: ResourceComponent.on_resource_available,
+    # D1 bookkeeping only (no-op outside parksong mode).
+    EventType.CASE_COMPLETE:      ResourceComponent.on_case_complete,
 }
