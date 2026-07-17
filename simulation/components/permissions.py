@@ -181,29 +181,49 @@ class OrgModelPermissions:
             for ct, at, tt in caps:
                 self._index.setdefault(at, []).append((members, ct, tt))
 
+        # Memo cache for candidates()/permits(): the answer is pure in
+        # (activity, case_type, time_type_of(when)) — a small key space
+        # (~activities x case types x 8 weekday time-types) — while the scan
+        # it replaces walks every matching group's member list. Profiling a
+        # 7-day advanced-model run showed candidates() at 44% of TOTAL
+        # simulation runtime (433k calls, 87M _matches invocations); with
+        # k-Batching it is worse still, because the batch cost matrix calls
+        # permits() per (item x resource) pair, each of which re-ran the
+        # full scan. Values are (ordered list, frozenset) so candidates()
+        # can return a fresh list (callers must never see shared mutable
+        # state) and permits() gets an O(1) membership test.
+        self._cand_cache: Dict[tuple, Tuple[List[str], frozenset]] = {}
+
     # -- protocol --
 
-    def candidates(self, activity, *, case_type=None, when=None) -> List[str]:
+    def _candidates_cached(self, activity, case_type, tt) -> Tuple[List[str], frozenset]:
+        key = (activity, case_type, tt)
+        hit = self._cand_cache.get(key)
+        if hit is not None:
+            return hit
+
         entries = self._index.get(activity)
-        if not entries:
-            return []
-
-        tt = time_type_of(when) if when is not None else None
         out: List[str] = []
-        seen: Set[str] = set()
+        if entries:
+            seen: Set[str] = set()
+            for members, cap_ct, cap_tt in entries:
+                if not _matches(cap_ct, case_type) or not _matches(cap_tt, tt):
+                    continue
+                for r in members:
+                    if r not in seen:
+                        seen.add(r)
+                        out.append(r)
+        hit = (out, frozenset(out))
+        self._cand_cache[key] = hit
+        return hit
 
-        for members, cap_ct, cap_tt in entries:
-            if not _matches(cap_ct, case_type) or not _matches(cap_tt, tt):
-                continue
-            for r in members:
-                if r not in seen:
-                    seen.add(r)
-                    out.append(r)
-        return out
+    def candidates(self, activity, *, case_type=None, when=None) -> List[str]:
+        tt = time_type_of(when) if when is not None else None
+        return list(self._candidates_cached(activity, case_type, tt)[0])
 
     def permits(self, resource, activity, *, case_type=None, when=None) -> bool:
-        return resource in self.candidates(
-            activity, case_type=case_type, when=when)
+        tt = time_type_of(when) if when is not None else None
+        return resource in self._candidates_cached(activity, case_type, tt)[1]
 
     def resources(self) -> List[str]:
         return list(self._resources)
