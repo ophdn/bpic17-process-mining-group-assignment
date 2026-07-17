@@ -1,17 +1,72 @@
 """
-process.py — Process Component (Sections 1.3 Basic + 1.5 Basic)
-================================================================
+process.py — Process Component (Sections 1.4 Basic + 1.3 Basic + 1.5 Basic)
+============================================================================
 Implements:
-  - Branching decisions via empirical probabilities from BPIC-17 (Section 1.5 Basic)
-  - Processing times sampled from distributions fitted on BPIC-17 (Section 1.3 Basic)
+  - Section 1.4 Basic: a process model is enforced — see "Basic process-model
+    enforcement" below.
+  - Section 1.5 Basic: branch probabilities at decision points (BRANCHING_PROBS,
+    empirical bigram frequencies from BPIC-17).
+  - Section 1.3 Basic: processing times sampled from distributions fitted on
+    BPIC-17.
 
-The process model is a probability-weighted next-activity graph derived
-directly from the branching_probs in simulation_inputs.json.
-This satisfies the Basic requirement for Section 1.4 (a selected process
-model is enforced) and Section 1.5 (branch probabilities used at decision points).
+Basic process-model enforcement (Section 1.4)
+----------------------------------------------
+A pure bigram probability table is not a process model in the sense the
+assignment/lecture uses the term (BPMN / Petri net / "hard-coded
+control-flow" — Deck 04, "Control-Flow perspective"): it has no notion of
+which transitions are structurally legal, only which ones were historically
+frequent. Measured consequence of relying on BRANCHING_PROBS alone: 0% of
+simulated traces replay on the reference model (see
+output/validation/process_model_comparison/ — the pre-enforcement baseline).
+
+_next_activity() now additionally intersects BRANCHING_PROBS candidates with
+simulation/models/basic_adjacency.json — a direct-succession relation
+approximated (Monte-Carlo playout + DFG discovery, see
+scripts/mine_basic_process_model.py) from a BPMN mined with the Inductive
+Miner (not manually curated/uploaded — that distinction is reserved for
+Advanced's "a .bpmn file can be loaded"). This is deliberately NOT Petri net
+algebra (no per-case marking/token tracking, no tau-closure) — a static
+adjacency lookup, clearly weaker than Advanced's enforcement mechanism
+(petri_process.py), which is exactly the Basic/Advanced split the assignment
+draws.
+
+The intersection only ever narrows the candidate set, never removes the
+single historically most likely candidate (BRANCHING_PROBS entries are
+sorted descending by probability, so this is always options[0]). Two
+verified failure modes if that candidate isn't protected:
+
+1. The mined model can disagree with EVERY historically observed option:
+   adjacency mined from the Inductive-Miner model structurally misplaces
+   `A_Submitted` as an XOR-alternative to `A_Concept`/`W_Assess potential
+   fraud` rather than as the predecessor of `W_Handle leads`, even though
+   the real log shows `A_Submitted -> W_Handle leads` with probability 1.0
+   (verified by direct marking inspection, not a playout sampling gap). A
+   strict block there would kill ~65% of cases (every case that reaches
+   A_Submitted) at a single step.
+2. More commonly, weaker alternatives survive but the *dominant* one
+   doesn't: measured for 6 of 8 major "W_" activities' self-loops (e.g.
+   `W_Complete application`, real self-loop probability 43.5%) — the
+   discovered net represents their repetition via an intermediate
+   activity, not a direct 1-hop loop-back (confirmed structurally via a
+   BFS over the net's place/transition graph, not a playout coverage gap —
+   a 20000-trace log-frequency-weighted playout still never samples it).
+   Naively renormalizing over only the surviving minor candidates measurably
+   collapsed Basic's completion rate (93.9% -> 12.5%) and case length
+   (12.3 -> 5.6 real events) in evaluation
+   (output/validation/process_model_comparison/) — silently *worse* than no
+   enforcement at all.
+
+Both are artifacts of the miner's block-structured generalization
+(consistent with D2's finding that this same discovered model fits the log
+better in isolation but simulates worse), not real process constraints.
+Enforcement therefore narrows minor candidates, but never overrides the
+data's own dominant answer or invents a termination it doesn't support —
+same principle as the Advanced model's END-decision rule
+(docs/report_notes_1.4_1.5.md, D4).
 
 Upgrade path:
-  - Section 1.4 Advanced: replace _next_activity() with a Petri net / BPMN loader
+  - Section 1.4 Advanced: petri_process.py replaces this with full Petri net
+    algebra (marking, tau-closure) instead of a static adjacency lookup.
   - Section 1.3 Advanced I: replace _sample_duration() with a probabilistic ML model
   - Section 1.5 Advanced II: replace _next_activity() with a trained next-activity predictor
 
@@ -42,6 +97,7 @@ source of cross-policy divergence in "rules" mode specifically.
 """
 
 import hashlib
+import json
 import math
 import random
 from datetime import datetime, timedelta
@@ -53,6 +109,11 @@ from ..core.events import SimEvent, EventType
 # Default anchor for t=0 (overridden by main.py's start_datetime). Used to
 # derive day_of_week / hour_of_day features from the simulation clock.
 _DEFAULT_ANCHOR = datetime(2016, 1, 1)
+
+# Section 1.4 Basic: the mined direct-succession relation used to enforce a
+# process model on top of BRANCHING_PROBS — see scripts/mine_basic_process_model.py
+# and the module docstring's "Basic process-model enforcement" section.
+BASIC_ADJACENCY_PATH = Path(__file__).resolve().parent.parent / "models" / "basic_adjacency.json"
 
 
 # ── Terminal activities: after these the case ends ──────────────────────────
@@ -485,6 +546,25 @@ class ProcessComponent:
         # case_id -> {start_t, position, prev_act}  (context for ML features)
         self._ctx: Dict[str, dict] = {}
 
+        # Section 1.4 Basic: activity -> set(legal direct successors), mined
+        # by scripts/mine_basic_process_model.py. Missing file -> Basic runs
+        # unenforced (a clear, loud state, not a silent one) — see
+        # _next_activity(). Small artifact, so loaded eagerly rather than
+        # lazily; harmless for PetriNetProcessComponent instances, which
+        # never call _next_activity().
+        self._basic_adjacency: Dict[str, set] = {}
+        try:
+            with open(BASIC_ADJACENCY_PATH, encoding="utf-8") as f:
+                raw = json.load(f)["adjacency"]
+            self._basic_adjacency = {k: set(v) for k, v in raw.items()}
+        except FileNotFoundError:
+            print(
+                f"[ProcessComponent] WARNING: {BASIC_ADJACENCY_PATH} not found — "
+                "Basic process model runs WITHOUT structural enforcement "
+                "(run scripts/mine_basic_process_model.py). "
+                "See process.py module docstring, Section 1.4 Basic."
+            )
+
     # ------------------------------------------------------------------
     # Lazy model loading
     # ------------------------------------------------------------------
@@ -690,8 +770,10 @@ class ProcessComponent:
 
     def _next_activity(self, case_id: str, current: str, visit: int = 1) -> Optional[str]:
         """
-        Sample the next activity using empirical branching probabilities.
-        Returns None if current activity has no outgoing edges.
+        Sample the next activity using empirical branching probabilities,
+        structurally constrained by the mined process model (Section 1.4
+        Basic — see module docstring). Returns None if current activity has
+        no outgoing edges at all.
 
         ``visit`` is the 1-based count of how many times *current* has
         occurred in this case so far (the caller already tracks this in
@@ -701,8 +783,33 @@ class ProcessComponent:
         if not options:
             return None
 
+        # Enforcement: narrow to candidates the mined model also considers a
+        # legal direct successor of `current` — but never at the expense of
+        # the single historically most likely candidate (options[0]; entries
+        # are sorted descending by probability). Two verified failure modes
+        # if that candidate isn't protected: (1) the mined model can
+        # disagree with EVERY historically observed option (A_Submitted ->
+        # W_Handle leads, probability 1.0 in the real log, absent from the
+        # mined model's structure) — filtering to nothing would terminate
+        # ~65% of cases on a mining artifact; (2) more commonly, weaker
+        # alternatives survive but the *dominant* one doesn't — measured for
+        # 6 of 8 major "W_" activities' self-loops (e.g. W_Complete
+        # application, 43.5% real self-loop probability): the discovered
+        # net represents their repetition via an intermediate activity, not
+        # a direct 1-hop loop-back (confirmed structurally, not a mining
+        # coverage gap — see scripts/mine_basic_process_model.py). Silently
+        # renormalizing over only the surviving minor candidates in that
+        # case collapsed completion 93.9% -> 12.5% and case length 12.3 ->
+        # 5.6 in evaluation (output/validation/process_model_comparison/).
+        # See module docstring for the full rationale.
+        allowed = self._basic_adjacency.get(current)
+        if allowed:
+            dominant = options[0][0]
+            options = [(a, p) for a, p in options if a in allowed or a == dominant]
+
         rng = self._draw_rng(case_id, current, "branch", visit)
-        r = rng.random()
+        total = sum(p for _, p in options)
+        r = rng.random() * total
         cumulative = 0.0
         for next_act, prob in options:
             cumulative += prob

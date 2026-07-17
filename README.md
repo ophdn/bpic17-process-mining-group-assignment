@@ -10,6 +10,7 @@ This document explains the **Simulation Engine** to all team members: the DES co
 
 ## Project structure
 
+
 ```
 output/                          ← simulation results (event_log.csv) — always here, never inside simulation/
 simulation/
