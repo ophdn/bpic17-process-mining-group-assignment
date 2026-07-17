@@ -828,6 +828,14 @@ class ResourceComponent:
         Windows are per weekday, so the candidate times are the window starts of
         each upcoming day. We scan forward day by day and take the earliest that
         is strictly in the future.
+
+        This scan reimplements the calendar's own checks (holiday, vacation and
+        — since rostering — `_works_today`) rather than calling `is_available`,
+        because it asks a different question: not "is r on duty now?" but "when
+        does r's window next open?". The roster check must be mirrored here or
+        the simulation wakes up expecting staff who are not rostered that day
+        and stalls with work still queued. The hash draw is what makes the two
+        sites agree for free.
         """
         from datetime import datetime, time, timedelta
 
@@ -845,6 +853,8 @@ class ResourceComponent:
             for res, windows in self._calendar.weekly.windows.items():
                 w = windows.get(dow)
                 if w is None or d in self._calendar.vacations.get(res, ()):
+                    continue
+                if not self._calendar._works_today(res, d):
                     continue
                 t = (midnight + timedelta(hours=w[0]) - self._start).total_seconds()
                 if t > engine.now and (best is None or t < best):

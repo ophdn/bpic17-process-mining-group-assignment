@@ -123,6 +123,7 @@ def main(
     k_batching: int | None = None,
     lifecycle_mode: str = "legacy",
     active_inputs_path: str | None = None,
+    roster_seed: int | None = None,
 ):
     if lifecycle_mode not in ("legacy", "active"):
         raise ValueError(f"lifecycle_mode must be legacy|active, got {lifecycle_mode!r}")
@@ -150,10 +151,17 @@ def main(
     # public holidays, and sampled vacation. "always" leaves every resource on
     # duty around the clock, which is the pre-1.6 behaviour and the baseline the
     # calendar is measured against.
+    #
+    # roster_seed additionally rolls the fitted p_work (does this resource work
+    # this weekday at all?), which takes the Monday-morning workforce from ~123
+    # to ~37 and is what makes contention real. None = off, the pre-rostering
+    # behaviour. It is a run parameter, so it is set here and not read from the
+    # serialised calendar.
     calendar = None
     if availability == "calendar":
         from analysis.availability import YearlyAvailability
-        calendar = YearlyAvailability.from_json(AVAILABILITY_MODEL_PATH)
+        calendar = YearlyAvailability.from_json(
+            AVAILABILITY_MODEL_PATH, roster_seed=roster_seed)
 
     # Section 1.7: who may perform what.
     #   "orgmodel" — the OrdinoR organizational model (Advanced): resources
@@ -337,9 +345,20 @@ if __name__ == "__main__":
              "waited past 4h. Default off (None). Mutually exclusive with "
              "--piled-execution.",
     )
+    parser.add_argument(
+        "--roster-seed", type=int, default=None, metavar="N",
+        help="Roll the fitted p_work (does this resource work this weekday at "
+             "all?) per (resource, day), seeded by N. Takes the Monday-morning "
+             "workforce from ~123 to ~37, which is the validated Section 1.6 "
+             "figure, and is what makes contention real. Default off (None), "
+             "which keeps the pre-rostering behaviour and reproduces older "
+             "evidence logs. --availability calendar only.",
+    )
     args = parser.parse_args()
     if args.piled_execution and args.k_batching is not None:
         parser.error("--piled-execution and --k-batching are mutually exclusive.")
+    if args.roster_seed is not None and args.availability != "calendar":
+        parser.error("--roster-seed requires --availability calendar.")
     # Default branching: "visit" on the Petri net (A1 winner, see
     # output/validation/branching_probs_vs_rules/), plain "probs" on basic.
     branching_mode = args.branching_mode or (
@@ -363,4 +382,5 @@ if __name__ == "__main__":
         k_batching=args.k_batching,
         lifecycle_mode=args.lifecycle_mode,
         active_inputs_path=args.active_inputs_path,
+        roster_seed=args.roster_seed,
     )

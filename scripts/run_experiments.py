@@ -242,6 +242,13 @@ def availability_seconds_per_resource(
     Mirrors ResourceComponent._is_on_shift's convention exactly: a resource
     absent from the calendar's weekly windows (e.g. automated accounts like
     User_1) is always on duty, not a fallback -- see resource.py.
+
+    This is the denominator of the slide-21 occupation definition, so it has to
+    mirror the roster too: counting window-hours on days a resource is not
+    rostered on would divide busy time by a workforce that never showed up, and
+    occupation would read low while looking perfectly plausible. `_works_today`
+    is keyed by (seed, resource, date), so this independent scan agrees with the
+    runtime's allocation decisions without sharing any state with them.
     """
     if calendar is None:
         secs = horizon_days * 86400.0
@@ -260,6 +267,8 @@ def availability_seconds_per_resource(
                 continue
             if d in calendar.vacations.get(r, ()):
                 continue
+            if not calendar._works_today(r, d):
+                continue
             w = windows.get(dow)
             if w is None:
                 continue
@@ -276,6 +285,7 @@ def run_once(
     process_model: str, branching_mode: str, permissions: str = "orgmodel",
     excluded_override: Optional[Set[str]] = None,
     lifecycle_mode: str = "legacy",
+    roster_seed: Optional[int] = None,
 ) -> tuple[pd.DataFrame, dict]:
     """Build and run one (policy, seed, scenario) simulation.
 
@@ -288,10 +298,21 @@ def run_once(
     "fire two employees" management question needs -- a *fixed* leave-N-out
     set, evaluated across seeds, rather than the 'outage' scenario's random
     20% (which reshuffles per seed). Pass an empty set to force nobody out.
+
+    `roster_seed`: base seed for the p_work roster draw (None = rostering off).
+    The *effective* seed is `roster_seed + seed`, which is what CRN requires:
+    the roster is a condition of the run, not a property of the policy, so two
+    policies at the same replication seed must face the identical workforce or
+    the paired comparison measures roster luck instead of the policy. Adding
+    the replication seed keeps rosters varying across replications, so the grid
+    still samples workforce variability rather than fixing one lucky draw.
     """
     duration = days * 86400
 
-    calendar = YearlyAvailability.from_json(AVAILABILITY_MODEL_PATH)
+    calendar = YearlyAvailability.from_json(
+        AVAILABILITY_MODEL_PATH,
+        roster_seed=None if roster_seed is None else roster_seed + seed,
+    )
     perms, case_attrs = load_permission_model(permissions, seed)
     resource_pool = (perms.resources() if perms is not None
                      else sorted(RESOURCE_PERMISSIONS))
@@ -572,6 +593,13 @@ def parse_args():
                    help="Disable Common Random Numbers (paired comparisons "
                         "become unreliable -- see module docstring).")
     p.set_defaults(crn=True)
+    p.add_argument("--roster-seed", type=int, default=None, metavar="N",
+                   help="Roll the fitted p_work per (resource, day), base seed N "
+                        "(effective seed is N+run seed, so policies within a "
+                        "replication share a roster -- required for CRN). Takes "
+                        "the Monday workforce from ~123 to the validated ~37 and "
+                        "makes contention real. Default off, which reproduces "
+                        "pre-rostering evidence logs.")
     p.add_argument("--out", default=str(OUT_DEFAULT))
     p.add_argument("--report-wip", action="store_true",
                    help="Print a WIP-over-time diagnostic and exit (ignores --policies/--seeds).")
@@ -604,6 +632,7 @@ def main():
                 policy, seed, args.days, args.scenario, args.crn,
                 args.process_model, args.branching_mode, args.permissions,
                 lifecycle_mode=args.lifecycle_mode,
+                roster_seed=args.roster_seed,
             )
             df, meta = apply_warmup(df, meta, args.warmup_days)
             if df.empty:
