@@ -305,3 +305,66 @@ pool, then it and `p_work` were double-counting the same slack, and capacity
 should drop toward 1 — which is the change that would actually make Part II's
 contention results mean something. Re-running the grid before settling this
 risks burning the re-run on the wrong model.
+
+### 8.5 RESOLVED: capacity is now derived from the lifecycle mode
+
+**Decision (Johannes, 2026-07-17): `capacity=1` in active mode**, on the grounds
+that it is the only value the real log supports. Implemented as
+`resource.capacity_for_mode()`: **active -> 1, legacy -> 3**. `--capacity N`
+overrides on both CLIs.
+
+It must be *mode-derived*, not one global number, because the same value means
+opposite things:
+
+| | what a duration is | real concurrency | capacity |
+|---|---|---|---|
+| active | one hands-on session, median 0.8–2.7 min; `suspend` releases | 98.4% of busy time is a **single** session | **1** |
+| legacy | whole elapsed `start→complete` span, mostly suspended waiting | median peak **54** overlapping spans (max 150) | 3 (historical, kept) |
+
+Legacy's 3 is *not* defended as correct — the honest legacy value is nearer 54.
+It is kept only so existing evidence reproduces. `capacity=1` in legacy mode
+would pin a person to one application for hours and collapse throughput ~50x,
+which is why `capacity_for_mode` fails safe to the legacy value for any
+unrecognised mode.
+
+Note the duration model has **no concurrent-load feature** (the eight ML
+features are activity, resource, previous activity, weekday, hour, case
+position, case age, prior-activity count), so N concurrent items each finish as
+fast as one. Capacity multiplies throughput for free, with no context-switching
+penalty. That is what made it a modelling assumption rather than a tuning knob.
+
+### 8.6 What capacity=1 changes (active, 14d, seed 1, random policy)
+
+| cap | roster | occupation | >1.0 | max | cycle (d) | p95 (d) | completed |
+|----:|---|---:|---:|---:|---:|---:|---:|
+| 3 | off | 0.412 | 33 | 1.97 | 0.79 | 5.75 | 711 |
+| 3 | on | 0.718 | 35 | 2.73 | 0.68 | 2.05 | 634 |
+| 1 | off | 0.196 | 0 | 0.70 | 0.58 | 1.87 | 629 |
+| 1 | on | 0.317 | **0** | 0.94 | 1.23 | 4.16 | 545 |
+
+1. **Occupation is a share again.** At capacity 1 nothing exceeds 1.0. At
+   capacity 3, 33–35 resources did, max 2.73 — so every occupation number
+   reported so far was on a scale whose ceiling was 3, not 1, and the slide-21
+   definition did not hold.
+2. **The roster only bites at capacity 1.** Turning it on moves cycle time
+   0.58 -> 1.23 d and p95 1.87 -> 4.16 d. At capacity 3 the same change looked
+   like nothing (0.79 -> 0.68). `capacity=3` was masking the entire p_work fix.
+3. **Caveat — survivorship.** Cycle time is over completed cases only, so a run
+   that completes fewer cases is biased *low*. That discredits the capacity-3
+   rows (fewer completed AND faster = survivorship, not improvement) and
+   *strengthens* capacity-1 (fewer completed and still slower).
+4. Mean occupation is still only 0.317 with max 0.94: the workforce is not
+   globally saturated, but the load is **uneven** — consistent with the §1.6
+   Tier A/Tier B split. For "fire two employees" the interesting question is
+   therefore *which* two, not whether two.
+
+Single seed, single policy, 14 days: directional, not a result.
+
+### 8.7 Still open
+
+- Re-run the Part II grid under active + `capacity=1` + roster on, and hand
+  Mario the new k-Batching numbers (section 7 step 6). Not started.
+- Legacy's `capacity=3` remains indefensible-but-unchanged. Either justify it,
+  raise it toward the observed ~54, or retire legacy mode from Part II.
+- `--roster-seed` still defaults **off**. Turning it on is step 6's job.
+- Section 7 step 7 (report draft) not started.

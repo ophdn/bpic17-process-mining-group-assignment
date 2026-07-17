@@ -30,7 +30,10 @@ from simulation.components.arrival import ArrivalComponent
 from simulation.components.arrival_mdn import MDNArrivalComponent
 from simulation.components.process import ProcessComponent
 from simulation.components.petri_process import PetriNetProcessComponent
-from simulation.components.resource import ResourceComponent
+from simulation.components.resource import (
+    DEFAULT_CAPACITY_ACTIVE, DEFAULT_CAPACITY_LEGACY,
+    ResourceComponent, capacity_for_mode,
+)
 from simulation.components import permissions as perm_models
 from simulation.components.case_attributes import CaseAttributeSampler
 
@@ -124,10 +127,12 @@ def main(
     lifecycle_mode: str = "legacy",
     active_inputs_path: str | None = None,
     roster_seed: int | None = None,
-    capacity: int = 3,
+    capacity: int | None = None,
 ):
     if lifecycle_mode not in ("legacy", "active"):
         raise ValueError(f"lifecycle_mode must be legacy|active, got {lifecycle_mode!r}")
+    if capacity is None:
+        capacity = capacity_for_mode(lifecycle_mode)
     if model_path is None:
         model_path = str(
             ACTIVE_MODEL_PATH if lifecycle_mode == "active" else DEFAULT_MODEL_PATH
@@ -356,16 +361,18 @@ if __name__ == "__main__":
              "evidence logs. --availability calendar only.",
     )
     parser.add_argument(
-        "--capacity", type=int, default=3, metavar="N",
-        help="Work items one resource may hold at once (default 3). The "
-             "duration model has no concurrent-load feature, so N parallel "
-             "items each finish as fast as one -- N multiplies throughput for "
-             "free. In active mode the honest value is 1: 98.4%% of real busy "
-             "time is a single hands-on session and suspend/resume already "
-             "models the interleaving.",
+        "--capacity", type=int, default=None, metavar="N",
+        help=f"Work items one resource may hold at once. Default is derived "
+             f"from --lifecycle-mode: {DEFAULT_CAPACITY_ACTIVE} for active "
+             f"(98.4%% of real busy time is a single hands-on session, and "
+             f"suspend/resume already models the interleaving), "
+             f"{DEFAULT_CAPACITY_LEGACY} for legacy (whose durations are "
+             f"elapsed spans that really do overlap, median peak 54). The "
+             f"duration model has no concurrent-load feature, so N parallel "
+             f"items each finish as fast as one.",
     )
     args = parser.parse_args()
-    if args.capacity < 1:
+    if args.capacity is not None and args.capacity < 1:
         parser.error("--capacity must be >= 1.")
     if args.piled_execution and args.k_batching is not None:
         parser.error("--piled-execution and --k-batching are mutually exclusive.")

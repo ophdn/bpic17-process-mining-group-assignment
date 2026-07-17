@@ -294,6 +294,46 @@ RESOURCE_PERMISSIONS: Dict[str, Set[str]] = {
 # this component — see simulation/components/permissions.py.
 DEFAULT_PERMISSIONS = StaticPermissions(RESOURCE_PERMISSIONS)
 
+
+# ── How many work items may one resource hold at once? ────────────────────────
+#
+# This is a modelling assumption, not a tuning knob, and it only makes sense
+# next to the duration semantics of the lifecycle mode it runs in. The duration
+# model has no concurrent-load feature (its eight ML features are activity,
+# resource, previous activity, weekday, hour, case position, case age and
+# prior-activity count), so N concurrent items each finish exactly as fast as
+# one. Capacity therefore multiplies a resource's throughput for free, with no
+# context-switching penalty — which is why the number has to be defensible.
+#
+# active
+#   A resource is held only for one hands-on session (median 0.8–2.7 min across
+#   the six principal W-activities) and `suspend` releases it back to the pool.
+#   Measured on the real log: of 254,370 active sessions across 148 resources,
+#   98.4% of busy time is spent in exactly ONE session. Interleaving is already
+#   modelled explicitly by suspend/resume, so any capacity > 1 double-counts it.
+#   Team decision 2026-07-17 (Johannes): 1, as the only value the log supports.
+#
+# legacy
+#   A resource is held for the entire elapsed start→complete span, which is
+#   mostly suspended waiting rather than work. Real elapsed spans overlap at a
+#   median peak of 54 per resource (max 150; 134/145 resources exceed 3), so 1
+#   would be catastrophically tight — it would pin a person to one application
+#   for hours. 3 is the historical value, kept so existing evidence reproduces.
+#   It is not defended as correct, only as unchanged; the honest legacy value is
+#   much closer to 54. See docs/PLAN_pwork_roster.md §8.4.
+DEFAULT_CAPACITY_ACTIVE = 1
+DEFAULT_CAPACITY_LEGACY = 3
+
+
+def capacity_for_mode(lifecycle_mode: str) -> int:
+    """Default work items per resource for *lifecycle_mode*.
+
+    The same number means opposite things in the two modes, so this must be
+    derived from the mode rather than fixed globally.
+    """
+    return (DEFAULT_CAPACITY_ACTIVE if lifecycle_mode == "active"
+            else DEFAULT_CAPACITY_LEGACY)
+
 # payload tags on synthetic resource=None RESOURCE_AVAILABLE wake-up events,
 # so on_resource_available's k-batching branch resets only the specific
 # wake mechanism that actually fired (see the comment there for why

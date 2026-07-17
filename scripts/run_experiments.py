@@ -65,7 +65,10 @@ from simulation.core.events import EventType, SimEvent
 from simulation.components.arrival import ArrivalComponent
 from simulation.components.process import ProcessComponent
 from simulation.components.petri_process import PetriNetProcessComponent
-from simulation.components.resource import ResourceComponent, RESOURCE_PERMISSIONS
+from simulation.components.resource import (
+    DEFAULT_CAPACITY_ACTIVE, DEFAULT_CAPACITY_LEGACY,
+    RESOURCE_PERMISSIONS, ResourceComponent, capacity_for_mode,
+)
 from simulation.components import permissions as perm_models
 from simulation.components.case_attributes import CaseAttributeSampler
 from simulation.components.lifecycle_params import LifecycleParameters
@@ -91,16 +94,6 @@ START_DATETIME = datetime(2016, 1, 1)
 
 KNOWN_POLICIES = {"random", "piled"}
 KNOWN_SCENARIOS = {"normal", "peak", "outage"}
-
-# How many work items one resource may hold at once. 3 is the historical value
-# and stays the default so existing evidence reproduces, but see --capacity:
-# it matches neither lifecycle mode's duration semantics. In active mode a
-# session is hands-on work (median 0.8-2.7 min) and 98.4% of real busy time is
-# a single session, so the honest value there is 1 -- the interleaving is
-# already modelled by suspend/resume. In legacy mode the duration is the whole
-# elapsed span (mostly suspended waiting) and real spans overlap at a median
-# peak of 54 per resource, so 3 is far too tight rather than too loose.
-DEFAULT_CAPACITY = 3
 _KBATCH_RE = re.compile(r"^kbatch(\d+)$")
 OUTAGE_FRACTION = 0.20
 
@@ -210,8 +203,10 @@ def is_known_policy(policy: str) -> bool:
 def build_resource_component(
     policy: str, seed: int, calendar, excluded: Optional[Set[str]],
     permission_model=None, lifecycle_mode: str = "legacy", lifecycle_params=None,
-    capacity: int = DEFAULT_CAPACITY,
+    capacity: Optional[int] = None,
 ) -> ResourceComponent:
+    if capacity is None:
+        capacity = capacity_for_mode(lifecycle_mode)
     k = parse_kbatch_policy(policy)
     if k is not None:
         return ResourceComponent(
@@ -297,7 +292,7 @@ def run_once(
     excluded_override: Optional[Set[str]] = None,
     lifecycle_mode: str = "legacy",
     roster_seed: Optional[int] = None,
-    capacity: int = DEFAULT_CAPACITY,
+    capacity: Optional[int] = None,
 ) -> tuple[pd.DataFrame, dict]:
     """Build and run one (policy, seed, scenario) simulation.
 
@@ -613,14 +608,17 @@ def parse_args():
                         "the Monday workforce from ~123 to the validated ~37 and "
                         "makes contention real. Default off, which reproduces "
                         "pre-rostering evidence logs.")
-    p.add_argument("--capacity", type=int, default=DEFAULT_CAPACITY, metavar="N",
-                   help=f"Work items one resource may hold at once (default "
-                        f"{DEFAULT_CAPACITY}). The duration model has no "
-                        f"concurrent-load feature, so N parallel items finish "
-                        f"as fast as one -- N multiplies throughput for free. "
-                        f"In active mode the honest value is 1 (98.4%% of real "
-                        f"busy time is a single hands-on session; suspend/resume "
-                        f"already models interleaving).")
+    p.add_argument("--capacity", type=int, default=None, metavar="N",
+                   help=f"Work items one resource may hold at once. Default is "
+                        f"derived from --lifecycle-mode: "
+                        f"{DEFAULT_CAPACITY_ACTIVE} for active (98.4%% of real "
+                        f"busy time is a single hands-on session, and "
+                        f"suspend/resume already models the interleaving), "
+                        f"{DEFAULT_CAPACITY_LEGACY} for legacy (whose durations "
+                        f"are elapsed spans that really do overlap, median peak "
+                        f"54). The duration model has no concurrent-load "
+                        f"feature, so N parallel items each finish as fast as "
+                        f"one: N multiplies throughput for free.")
     p.add_argument("--out", default=str(OUT_DEFAULT))
     p.add_argument("--report-wip", action="store_true",
                    help="Print a WIP-over-time diagnostic and exit (ignores --policies/--seeds).")
