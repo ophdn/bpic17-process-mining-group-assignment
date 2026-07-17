@@ -1,8 +1,13 @@
 # Plan: wire `p_work` into the runtime availability model
 
-**Status:** open, decision pending with the team.
+**Status:** Option A implemented behind `--roster-seed`, default **off**.
+Sections 3.1, 3.2, the `opt_metrics` denominator and verification 1-5 are done.
+**Not** yet done: flipping the default on and re-running the Part II grid
+(section 7 steps 6-7), because a new finding may change what that re-run is
+worth — see section 8.
 **Owner:** Johannes.
 **Written:** 2026-07-16, for a cold start in a later session.
+**Updated:** 2026-07-17 (team chose Option A; implemented; section 8 added).
 **Blocks:** the validation paragraph of the resource subsection in
 `docs/report_resources_draft.tex` (see the TODO block in that file), and
 potentially every Part II number.
@@ -229,3 +234,74 @@ workforce that does not exist.
    k-Batching numbers.
 7. Update `docs/report_resources_draft.tex`: remove the TODO block, keep the
    validation paragraph, and note in Section 1.8 that the calendar now rosters.
+
+---
+
+## 8. What implementing it actually found (2026-07-17)
+
+Steps 1-5 are done. Step 3 landed: **38-39 on shift** on Mon 2016-06-06 10:00
+against the 123 the deployed calendar used to field. No stalls (verification 5).
+
+### 8.1 A third call site, not two
+
+The `refac/event_lifecycle` merge added
+`scripts/run_experiments.py:availability_seconds_per_resource`, a third
+independent reimplementation of the shift logic (its own holiday, vacation and
+window checks, bypassing `is_available`). It is the occupation denominator this
+plan's section 5 anticipated abstractly. Over 90 days it read 94,624
+resource-hours where the roster gives 25,375 — occupation was being divided by a
+workforce ~3.7x larger than the one that showed up.
+
+The hash design paid off exactly as section 3 hoped: the lifecycle refactor also
+added two *new* `_is_on_shift` call sites (`resource.py:582`, `:636`, the
+suspend/resume path) and both were covered for free, because they funnel through
+`is_available`.
+
+### 8.2 `roster_seed` must not be a constant under CRN
+
+The roster is a condition of the run, not a property of the policy. Two policies
+at the same replication seed must face the identical workforce or the paired
+comparison measures roster luck. `run_once` therefore uses `roster_seed + seed`
+as the effective seed: constant across policies within a replication, varying
+across replications.
+
+### 8.3 Occupation was nan, now fixed
+
+A part-time resource can draw zero rostered days in a short horizon, so its
+denominator is 0 (30 of 144 resources over 14 days). `busy/0` poisoned
+`avg_resource_occupation` to nan. Zero-availability resources are now dropped as
+*undefined* rather than counted as 0 — counting them as idle would drag the mean
+down in proportion to how much rostering-off the horizon contains.
+
+### 8.4 THE OPEN QUESTION: `capacity_per_resource=3` re-inflates the workforce
+
+**Section 5 predicted cycle time would move "possibly a lot". It barely moved.**
+Over 30 days, mean wait for a resource went 9.3h -> 9.2h and completed cases
+1102 -> 1059. Occupation *tripled* (0.51 -> 1.67 over 14 days, matching the 3.3x
+overstaffing), but queues did not explode.
+
+The reason: `capacity_per_resource=3` (`main.py:189`,
+`run_experiments.py:207,226`). Each of the ~39 rostered people runs up to **3**
+work items concurrently, so effective capacity is ~117 slots and occupation 1.67
+sits at only 56% of the ceiling of 3. Resources are still not the binding
+constraint.
+
+So the 3.3x overstaffing was not removed — it **moved from headcount into
+concurrency**. Right-sizing the roster while each person does the work of three
+leaves Part II roughly as uncontended as before.
+
+This also means "occupation" is not a share: with capacity 3 its ceiling is 3,
+not 1, so the slide-21 definition (a fraction ≤ 1) does not hold as reported.
+18 resources already exceed 1.0 with rostering *off* — this is pre-existing and
+documented at `opt_metrics.py:165`, not caused by rostering, but rostering makes
+it unmissable (56 resources over 1.0, max 22.7).
+
+**Decide before re-running the grid (section 7 step 6):** is `capacity=3`
+defensible? If a caseworker really juggles ~3 applications, then the roster fix
+alone will not make contention bind and the k-Batching re-run will likely
+reproduce its current finding. If `capacity=3` was a convenience that silently
+compensated for the 3.3x-too-small *per-person* load implied by the overstaffed
+pool, then it and `p_work` were double-counting the same slack, and capacity
+should drop toward 1 — which is the change that would actually make Part II's
+contention results mean something. Re-running the grid before settling this
+risks burning the re-run on the wrong model.
