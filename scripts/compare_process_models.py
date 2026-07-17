@@ -48,9 +48,12 @@ from simulation.components.arrival import ArrivalComponent
 from simulation.components.process import ProcessComponent
 from simulation.components.petri_process import PetriNetProcessComponent
 from simulation.components.resource import ResourceComponent
+from simulation.components.lifecycle_params import LifecycleParameters
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BPMN_PATH = REPO_ROOT / "simulation" / "models" / "bpic17_process.bpmn"
+LEGACY_REFERENCE_PATH = REPO_ROOT / "simulation_inputs.json"
+ACTIVE_REFERENCE_PATH = REPO_ROOT / "simulation_inputs_active.json"
 DEFAULT_OUT = REPO_ROOT / "output" / "validation" / "process_model_comparison"
 SIM_DURATION_SECONDS = 30 * 24 * 3600
 START_DATETIME = datetime(2016, 1, 1)
@@ -77,17 +80,26 @@ _CaseCompletionTracker.HANDLES = {
 
 
 def run_sim(use_advanced: bool, bpmn_path: Path = BPMN_PATH,
-            branching_mode: str = "probs") -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+            branching_mode: str = "probs",
+            lifecycle_mode: str = "legacy") -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     """Returns (completed-cases DataFrame, unfiltered DataFrame, run stats
     incl. completion rate). The unfiltered frame is needed for
     metrics.arrival_rate_error, which must not be restricted to completed
     cases (see that function's docstring for why)."""
-    engine = SimulationEngine(sim_duration=SIM_DURATION_SECONDS, start_datetime=START_DATETIME)
+    lifecycle_params = (
+        LifecycleParameters.from_file(ACTIVE_REFERENCE_PATH)
+        if lifecycle_mode == "active" else None
+    )
+    engine = SimulationEngine(
+        sim_duration=SIM_DURATION_SECONDS, start_datetime=START_DATETIME,
+        lifecycle_mode=lifecycle_mode)
     arrivals = ArrivalComponent(seed=SEED)
     resources = ResourceComponent(capacity_per_resource=3, seed=SEED)
     tracker = _CaseCompletionTracker()
 
-    kwargs = dict(seed=SEED, resource_component=resources, start_datetime=START_DATETIME)
+    kwargs = dict(
+        seed=SEED, resource_component=resources, start_datetime=START_DATETIME,
+        lifecycle_mode=lifecycle_mode, lifecycle_params=lifecycle_params)
     if use_advanced:
         process = PetriNetProcessComponent(
             bpmn_path=str(bpmn_path), branching_mode=branching_mode,
@@ -117,6 +129,7 @@ def run_sim(use_advanced: bool, bpmn_path: Path = BPMN_PATH,
             / max(engine.stats.get("cases_started", 1), 1), 4),
         "sim_duration_days": SIM_DURATION_SECONDS // 86400,
         "seed": SEED,
+        "lifecycle_mode": lifecycle_mode,
     }
     return df, df_all, stats
 
@@ -136,10 +149,19 @@ def main():
                         help="Suffix for the JSON filenames, e.g. 'im02'.")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT,
                         help="Directory for the per-config KPI JSON dumps.")
+    parser.add_argument("--lifecycle-mode", default="legacy",
+                        choices=["legacy", "active"],
+                        help="Lifecycle and reference baseline (default: legacy).")
+    parser.add_argument("--reference", type=Path, default=None,
+                        help="Override the reference JSON. Defaults to simulation_inputs.json "
+                             "for legacy and simulation_inputs_active.json for active.")
     args = parser.parse_args()
 
     configs = [c.strip() for c in args.configs.split(",") if c.strip()]
-    reference = metrics.load_reference()
+    reference_path = args.reference or (
+        ACTIVE_REFERENCE_PATH if args.lifecycle_mode == "active"
+        else LEGACY_REFERENCE_PATH)
+    reference = metrics.load_reference(reference_path)
     bpmn_model = pm4py.read_bpmn(str(args.bpmn))
     net, im, fm = pm4py.convert_to_petri_net(bpmn_model)
     print(f"Loaded Petri net from {args.bpmn.name}: "
@@ -149,7 +171,8 @@ def main():
     results = {}
     for label in configs:
         df, df_all, run_stats = run_sim(label == "advanced", bpmn_path=args.bpmn,
-                                        branching_mode=args.branching_mode)
+                                        branching_mode=args.branching_mode,
+                                        lifecycle_mode=args.lifecycle_mode)
         results[label] = metrics.evaluate(df, reference, net, im, fm, df_all=df_all)
         results[label]["run_stats"] = run_stats
         results[label]["config"] = {
@@ -157,6 +180,8 @@ def main():
             "bpmn": str(args.bpmn.name),
             "branching_mode": args.branching_mode if label == "advanced" else "probs",
             "processing_time_mode": "distribution",
+            "lifecycle_mode": args.lifecycle_mode,
+            "reference": str(reference_path.name),
         }
         metrics.print_report(label, results[label])
         print(f"  completion rate:             {run_stats['completion_rate']} "

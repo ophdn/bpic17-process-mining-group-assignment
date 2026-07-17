@@ -1,126 +1,117 @@
-# Processing-Time Models (Section 1.3)
+# Processing-Time and Work-Item Lifecycle Models
 
-How to generate event logs with each of the three processing-time models, and
-how to (re)train the ML artifact they rely on.
+The simulator has two deliberately separate lifecycle baselines and three
+duration samplers. `--lifecycle-mode legacy` is the default and preserves the
+original five-column, single-block `start → complete` behavior. Opt-in
+`--lifecycle-mode active` models BPIC-17 W-item sessions explicitly:
 
-The processing-time model lives in `components/process.py` (`ProcessComponent`)
-and is selected with `--mode` on `main.py`. Everything is seeded
-(`RANDOM_SEED = 42`) so a given mode produces an identical log every run.
+```text
+schedule → start → (suspend → resume)* → complete | ate_abort
+         ↘ withdraw (while still queued)
+```
 
----
+Only `W_` work items enter this state machine. Atomic `A_`/`O_` activities keep
+their synthetic start plus fallback duration and do not churn.
 
-## The three modes
+## Why active service time is separate
 
-| Mode | What it does | Assignment level | Needs artifact? |
+The historical `start → complete` span is mostly suspended waiting, not hands-on
+work. The six principal W-activities have median active work of roughly 1–16
+minutes, while their elapsed spans can be hours or days. In active mode:
+
+- each `start` or `resume` opens one active session;
+- the session ends in `complete` or `suspend`;
+- suspend releases the resource to the pool;
+- a resume-ready item goes through normal permission, shift, and allocation
+  checks before the logged `resume`;
+- `ate_abort` terminates the work item but continues the case;
+- an initial queued request may lose the allocation race to a mined withdrawal
+  timer.
+
+The CSV therefore has a sixth `work_item_id` column in active mode. Every
+lifecycle reconstruction and duration metric keys on it. Legacy output retains
+the exact original five columns.
+
+## Duration modes
+
+| `--mode` | Legacy target | Active target | Artifact |
 |---|---|---|---|
-| `distribution` | Samples from scipy distributions fitted per activity (lognorm / gamma / weibull), exponential fallback. | 1.3 **Basic** | No |
-| `ml_model` | Contextual **point estimate**: a GradientBoostingRegressor predicts `log1p(duration)` from 8 features, inverted to seconds. | 1.3 **Basic option 2** | Yes |
-| `ml_probabilistic` | Contextual **probability distribution**: 19 quantile regressors (q = 0.05…0.95) form a conditional curve; a `Uniform(0,1)` draw is interpolated to a stochastic duration. | 1.3 **Advanced I** | Yes (`--probabilistic`) |
+| `distribution` | fitted elapsed `start → complete` span | fitted next active-session duration | none |
+| `ml_model` | contextual point estimate of elapsed span | contextual point estimate of active-session seconds | mode-selected joblib |
+| `ml_probabilistic` | conditional quantile curve for elapsed span | conditional quantile curve for active-session seconds | mode-selected joblib with 19 quantile models |
 
-The 8 context features (reconstructed at sample time): label-encoded
-`activity`, `resource`, `previous_activity`, plus `day_of_week`, `hour_of_day`,
-`case_position`, `case_age_seconds`, `n_previous_activities`.
+The eight ML features are encoded activity, resource, previous activity,
+weekday, hour, case position, case age, and prior-activity count. In active mode
+they are computed once at the work item's first start and duplicated across all
+of its sessions; session index is intentionally not a v1 feature.
 
----
+Artifact metadata declares `target` and `lifecycle_schema`. Loading an active
+artifact in legacy mode or a legacy artifact in active mode fails loudly.
 
-## 1. Set up the environment (once)
+## Versioned artifacts
 
-```bash
-cd <repo-root>
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-```
+| Purpose | Legacy | Active |
+|---|---|---|
+| duration model | `simulation/models/processing_time_model.joblib` | `simulation/models/processing_time_model_active.joblib` |
+| fitted tables | `simulation_inputs.json` | `simulation_inputs_active.json` (`lifecycle` block) |
+| training metrics | `output/models/processing_time_metrics.json` | `output/models/processing_time_metrics_active.json` |
 
----
+The active parameter block contains active-session distributions, session-end
+and suspend-end hazards, resume-gap residuals (including an explicit zero mass),
+terminal-outcome continuation, withdrawal timers, and validation summaries.
+Retraining active artifacts never overwrites the legacy set.
 
-## 2. Train the ML artifact (needed for `ml_model` / `ml_probabilistic`)
+## Regenerate and train
 
-The artifact is git-ignored (`simulation/models/*.joblib`), so regenerate it
-from the raw event log. One `--probabilistic` run produces **both** the point
-model and the quantile models, covering all ML modes.
-
-```bash
-# point model only — enough for --mode ml_model
-.venv/bin/python train_processing_time_model.py --log BPIChallenge2017.xes
-
-# point + 19 quantile models — required for --mode ml_probabilistic
-.venv/bin/python train_processing_time_model.py --log BPIChallenge2017.xes --probabilistic
-```
-
-Writes `simulation/models/processing_time_model.joblib`. `distribution` mode
-needs no artifact.
-
-**Point-model quality (held-out test):** log-space R² ≈ 0.36, MAE ≈ 33.6 h
-(raw R² ≈ 0 — durations are heavy-tailed). Top features by importance:
-`case_age_seconds` (0.46), `activity` (0.23), `resource` (0.16).
-
----
-
-## 3. Run the simulation
-
-From the repo root, with the venv:
+From the repository root:
 
 ```bash
-.venv/bin/python -m simulation.main --mode distribution
-.venv/bin/python -m simulation.main --mode ml_model
-.venv/bin/python -m simulation.main --mode ml_probabilistic
+# Active lifecycle/churn tables. The _active filename also enables lifecycle
+# extraction; --lifecycle is shown explicitly for clarity.
+.venv/bin/python extract_log_info.py --log BPIChallenge2017.xes \
+  --out simulation_inputs_active.json --lifecycle
+
+# Active point + quantile artifact and versioned metrics.
+.venv/bin/python train_processing_time_model.py --log BPIChallenge2017.xes \
+  --lifecycle --probabilistic \
+  --output simulation/models/processing_time_model_active.joblib \
+  --metrics-output output/models/processing_time_metrics_active.json
+
+# Equivalent convenience wrapper (skips existing artifacts unless --force).
+.venv/bin/python setup_models.py --lifecycle active
 ```
 
-Each writes `<repo_root>/output/event_log.csv`, **overwriting** the
-previous run. To keep logs side by side:
+The legacy wrapper remains `.venv/bin/python setup_models.py`.
+
+## Run
 
 ```bash
-.venv/bin/python -m simulation.main --mode ml_model
-cp output/event_log.csv output/event_log_ml_model.csv
+# Reproducible original baseline.
+.venv/bin/python -m simulation.main --lifecycle-mode legacy --mode distribution
+
+# Active pool lifecycle.
+.venv/bin/python -m simulation.main --lifecycle-mode active --mode distribution
+.venv/bin/python -m simulation.main --lifecycle-mode active --mode ml_model
+.venv/bin/python -m simulation.main --lifecycle-mode active --mode ml_probabilistic
 ```
 
-Extra flags:
+k-batching uses expected elapsed duration in legacy mode and expected **next
+active-session** duration in active mode, because suspend/complete is the next
+resource-release point.
 
-- `--model-path <path>` — use an artifact from a non-default location.
-- Run length and seed are constants in `main.py` (`SIM_DURATION_DAYS = 30`,
-  `RANDOM_SEED = 42`).
+## Modeling limits
 
----
-
-## 4. Reference output (30-day run, seed 42)
-
-Reproducible summary statistics for each mode:
-
-| Mode | Cases started | Cases completed | Events logged | Wall time |
-|---|---:|---:|---:|---:|
-| `distribution` | 2,318 | 2,177 | 58,737 | ~4.5 s |
-| `ml_model` | 2,318 | 2,023 | 55,323 | ~10 s |
-| `ml_probabilistic` | 2,318 | 1,058 | 38,128 | ~48 s |
-
-Per-activity duration spread (start→complete), same runs:
-
-| Mode | Median | Std dev | p95 |
-|---|---:|---:|---:|
-| `distribution` | 0.05 h | 16.0 h | 6.9 h |
-| `ml_model` (point) | 2.65 h | 17.7 h | 33.4 h |
-| `ml_probabilistic` | 7.41 h | 45.8 h | 121.8 h |
-
-Reading the table: the point model (`ml_model`) collapses each context to one
-value, so it under-represents the tail. The probabilistic model
-(`ml_probabilistic`) restores that spread — which is the whole point of Advanced
-I. Because its durations are longer and more realistic, fewer cases finish
-inside the fixed 30-day window (1,058 vs. 2,177), leaving more in-flight at the
-horizon.
-
----
-
-## Notes & known limitations
-
-- **Reproducibility / variance.** Same seed → byte-identical log. In
-  `ml_probabilistic`, durations vary *within* a fixed context (the quantile
-  draw), while `ml_model` returns a constant per context.
-- **Resource feature is often `__UNKNOWN__`.** ML durations are full
-  start→complete times spanning hours/days, so the 17 permitted resources
-  (× capacity 3) stay busy and the pool saturates; most activities are then
-  sampled with no resource assigned. The wiring is correct — resources do flow
-  to the model when allocation succeeds. To make it less degenerate, raise
-  `capacity_per_resource` in `main.py`.
-- **Advanced I vs. II.** The probabilistic model targets the full start→complete
-  duration (service **plus** any waiting), so that variability is already
-  captured. Splitting service vs. waiting time (Advanced II) is an optional
-  refinement, not a prerequisite for the advanced tier.
+- v1 is serial: one in-flight W-item per case. This covers 99.8% of BPIC-17
+  cases; the small concurrent minority is outside fit claims.
+- The pool model is intentional: only about 17.5% of historical resumes use the
+  previous resource. That rate is a baseline calibration target, not invariant
+  under allocation policies.
+- Resume-ready time is not observed. The extractor subtracts only the contiguous
+  deterministic off-shift tail immediately preceding resume, using the historical
+  resume resource's weekly calendar and public holidays (not sampled vacations).
+  The fitted remainder is a calibrated residual, not a causal split between
+  customer waiting and historical queueing.
+- BPIC-17 has no distinct BPMN abort/withdraw transition. Advanced mode fires the
+  corresponding visible W-task, intersects the mined continuation with legal
+  successors after silent-transition closure, and records fallback counts when
+  the intersection is empty.

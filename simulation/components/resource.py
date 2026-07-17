@@ -324,6 +324,7 @@ class ResourceComponent:
 
     HANDLES = {
         EventType.ACTIVITY_REQUEST:   None,
+        EventType.ACTIVITY_WITHDRAW:  None,
         EventType.RESOURCE_AVAILABLE: None,
     }
 
@@ -340,6 +341,8 @@ class ResourceComponent:
         batching_k: Optional[int] = None,
         batching_max_wait_seconds: float = 4 * 3600,
         duration_model_path: Optional[str] = None,
+        lifecycle_mode: str = "legacy",
+        lifecycle_params=None,
     ):
         if batching_k is not None and piled:
             raise ValueError(
@@ -372,7 +375,11 @@ class ResourceComponent:
         self._batching_k = batching_k
         self._batching_max_wait = batching_max_wait_seconds
         self._duration_model: Optional[ExpectedDurationModel] = (
-            ExpectedDurationModel(duration_model_path) if batching_k is not None else None
+            ExpectedDurationModel(
+                duration_model_path,
+                lifecycle_mode=lifecycle_mode,
+                lifecycle_params=lifecycle_params,
+            ) if batching_k is not None else None
         )
 
         # Section 1.7: who may perform what. Any object satisfying the
@@ -434,6 +441,11 @@ class ResourceComponent:
         this discipline is replaced entirely — a request NEVER allocates
         immediately, it always queues and waits for a batch flush.
         """
+        self._arm_withdraw(engine, event)
+        token = self._queue_token(event)
+        if token is not None and token.get("state") != "queued":
+            return
+
         if self._batching_k is not None:
             if not self._qualified(engine, event):
                 self._unpermitted += 1
@@ -460,6 +472,64 @@ class ResourceComponent:
 
         self._waiting.append(event)
         self._arm_shift_wake(engine)
+
+    def on_activity_withdraw(self, engine, event: SimEvent) -> None:
+        """Resolve an active-mode withdrawal timer against its cancellable
+        queue token.  A timer that lost the race to allocation is a no-op; a
+        queued item is removed exactly once before ProcessComponent routes it.
+        """
+        token = self._queue_token(event)
+        if token is None or token.get("state") != "queued":
+            return
+
+        wid = token.get("work_item_id")
+        for i, waiting in enumerate(self._waiting):
+            waiting_token = self._queue_token(waiting)
+            if waiting_token is token or (
+                waiting_token is not None
+                and waiting_token.get("work_item_id") == wid
+            ):
+                self._waiting.pop(i)
+                token["state"] = "withdrawn"
+                self._arm_shift_wake(engine)
+                self._arm_batch_wake(engine)
+                return
+
+        # The request is no longer queued (normally because allocation won).
+        token["state"] = "allocated"
+
+    @staticmethod
+    def _queue_token(event: SimEvent) -> Optional[dict]:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        token = payload.get("_queue_token")
+        return token if isinstance(token, dict) else None
+
+    def _arm_withdraw(self, engine, event: SimEvent) -> None:
+        """Attach one mutable cancellation token and schedule the competing
+        withdrawal timer for an initial active W_ request.
+
+        Resume-ready requests deliberately carry no ``_withdraw_delay`` and
+        therefore cannot draw a second withdrawal hazard.
+        """
+        payload = event.payload if isinstance(event.payload, dict) else None
+        if not payload or payload.get("resuming") or self._queue_token(event) is not None:
+            return
+        delay = payload.get("_withdraw_delay")
+        wid = payload.get("work_item_id")
+        if delay is None or not wid or not (event.activity or "").startswith("W_"):
+            return
+
+        token = {"state": "queued", "work_item_id": wid}
+        payload["_queue_token"] = token
+        engine.schedule(SimEvent(
+            timestamp=engine.now + max(0.0, float(delay)),
+            priority=5,
+            event_type=EventType.ACTIVITY_WITHDRAW,
+            case_id=event.case_id,
+            activity=event.activity,
+            resource=None,
+            payload=payload,
+        ))
 
     def on_resource_available(self, engine, event: SimEvent) -> None:
         """Something freed up capacity. Two callers:
@@ -524,6 +594,10 @@ class ResourceComponent:
                 if self._piled and event.payload is not None:
                     for i, waiting in enumerate(self._waiting):
                         if waiting.activity != event.payload:
+                            continue
+                        # Piled Execution's "same activity" preference is for fresh
+                        # work items, not resume-ready re-requests (§4.6).
+                        if isinstance(waiting.payload, dict) and waiting.payload.get("resuming"):
                             continue
                         ct, when = self._context(engine, waiting)
                         if not self._permissions.permits(
@@ -783,9 +857,24 @@ class ResourceComponent:
     def _begin(self, engine, request: SimEvent, resource: Optional[str]) -> None:
         """Turn a granted request into an ACTIVITY_START bound to *resource*.
 
-        This is the only place an ACTIVITY_START is created, which is what keeps
-        a queued work item from also being executed by the ProcessComponent.
+        This is the only place an ACTIVITY_START (or, for a resuming re-request,
+        an ACTIVITY_RESUME) is created, which is what keeps a queued work item
+        from also being executed by the ProcessComponent.
+
+        Active mode (§4.6): a request carrying ``payload.resuming=True`` is a
+        suspended item that just re-acquired a resource, so it fires
+        ACTIVITY_RESUME instead of ACTIVITY_START. The single logged `resume`
+        therefore always means resource-bound RUNNING work, never "ready but
+        unassigned". Because the re-request goes through normal allocation, the
+        resuming resource is drawn from the pool (reproducing the observed
+        82.5% different-resource rate).
         """
+        token = self._queue_token(request)
+        if token is not None:
+            if token.get("state") != "queued":
+                return
+            token["state"] = "allocated"
+
         if resource is not None:
             self._busy[resource] = self._busy.get(resource, 0) + 1
 
@@ -793,10 +882,11 @@ class ResourceComponent:
         self._wait_total += waited
         self._wait_count += 1
 
+        resuming = isinstance(request.payload, dict) and request.payload.get("resuming")
         engine.schedule(SimEvent(
             timestamp=engine.now,
             priority=5,
-            event_type=EventType.ACTIVITY_START,
+            event_type=EventType.ACTIVITY_RESUME if resuming else EventType.ACTIVITY_START,
             case_id=request.case_id,
             activity=request.activity,
             resource=resource,
@@ -873,5 +963,6 @@ class ResourceComponent:
 
 ResourceComponent.HANDLES = {
     EventType.ACTIVITY_REQUEST:   ResourceComponent.on_activity_request,
+    EventType.ACTIVITY_WITHDRAW:  ResourceComponent.on_activity_withdraw,
     EventType.RESOURCE_AVAILABLE: ResourceComponent.on_resource_available,
 }

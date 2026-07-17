@@ -68,6 +68,7 @@ from simulation.components.petri_process import PetriNetProcessComponent
 from simulation.components.resource import ResourceComponent, RESOURCE_PERMISSIONS
 from simulation.components import permissions as perm_models
 from simulation.components.case_attributes import CaseAttributeSampler
+from simulation.components.lifecycle_params import LifecycleParameters
 from simulation.main import CaseCompletionTracker
 from analysis.availability import YearlyAvailability
 
@@ -80,6 +81,9 @@ ORGMODEL_PATH = REPO_ROOT / "models" / "permissions_orgmodel.json"
 OBSERVED_PERMS_PATH = REPO_ROOT / "models" / "permissions_observed.json"
 CASE_ATTRIBUTES_PATH = REPO_ROOT / "models" / "case_attributes.json"
 OUT_DEFAULT = REPO_ROOT / "output" / "experiments"
+ACTIVE_INPUTS_PATH = REPO_ROOT / "simulation_inputs_active.json"
+LEGACY_MODEL_PATH = REPO_ROOT / "simulation" / "models" / "processing_time_model.joblib"
+ACTIVE_MODEL_PATH = REPO_ROOT / "simulation" / "models" / "processing_time_model_active.joblib"
 
 # BPIC-17 starts 2016-01-01 -- must match simulation/main.py's anchor so
 # weekday/hour-of-day features (MDN arrivals, calendar) align.
@@ -195,7 +199,7 @@ def is_known_policy(policy: str) -> bool:
 
 def build_resource_component(
     policy: str, seed: int, calendar, excluded: Optional[Set[str]],
-    permission_model=None,
+    permission_model=None, lifecycle_mode: str = "legacy", lifecycle_params=None,
 ) -> ResourceComponent:
     k = parse_kbatch_policy(policy)
     if k is not None:
@@ -207,7 +211,10 @@ def build_resource_component(
             permissions=permission_model,
             excluded_resources=excluded,
             batching_k=k,
-            duration_model_path=str(REPO_ROOT / "simulation" / "models" / "processing_time_model.joblib"),
+            duration_model_path=str(
+                ACTIVE_MODEL_PATH if lifecycle_mode == "active" else LEGACY_MODEL_PATH),
+            lifecycle_mode=lifecycle_mode,
+            lifecycle_params=lifecycle_params,
         )
     if policy not in KNOWN_POLICIES:
         raise ValueError(
@@ -267,12 +274,20 @@ def availability_seconds_per_resource(
 def run_once(
     policy: str, seed: int, days: int, scenario: str, crn: bool,
     process_model: str, branching_mode: str, permissions: str = "orgmodel",
+    excluded_override: Optional[Set[str]] = None,
+    lifecycle_mode: str = "legacy",
 ) -> tuple[pd.DataFrame, dict]:
     """Build and run one (policy, seed, scenario) simulation.
 
     Returns (event-log DataFrame, metadata dict) where metadata has
     arrival_times, completed_case_ids, availability_seconds, engine_stats --
     everything opt_metrics.evaluate() needs, plus run bookkeeping.
+
+    `excluded_override`: an explicit set of resources to remove for THIS
+    run, bypassing the scenario's own removal logic. This is what the
+    "fire two employees" management question needs -- a *fixed* leave-N-out
+    set, evaluated across seeds, rather than the 'outage' scenario's random
+    20% (which reshuffles per seed). Pass an empty set to force nobody out.
     """
     duration = days * 86400
 
@@ -280,18 +295,28 @@ def run_once(
     perms, case_attrs = load_permission_model(permissions, seed)
     resource_pool = (perms.resources() if perms is not None
                      else sorted(RESOURCE_PERMISSIONS))
-    excluded = scenario_excluded_resources(scenario, seed, resource_pool)
+    excluded = (excluded_override if excluded_override is not None
+                else scenario_excluded_resources(scenario, seed, resource_pool))
 
-    engine = SimulationEngine(sim_duration=duration, start_datetime=START_DATETIME, verbose=False)
+    lifecycle_params = (
+        LifecycleParameters.from_file(ACTIVE_INPUTS_PATH)
+        if lifecycle_mode == "active" else None
+    )
+    engine = SimulationEngine(
+        sim_duration=duration, start_datetime=START_DATETIME, verbose=False,
+        lifecycle_mode=lifecycle_mode)
     arrivals = ArrivalComponent(seed=seed, **scenario_arrival_kwargs(scenario))
     resources = build_resource_component(policy, seed, calendar, excluded,
-                                         permission_model=perms)
+                                         permission_model=perms,
+                                         lifecycle_mode=lifecycle_mode,
+                                         lifecycle_params=lifecycle_params)
     recorder = _ArrivalRecorder()
     tracker = CaseCompletionTracker()
 
     proc_kwargs = dict(
         seed=seed, mode="distribution", start_datetime=START_DATETIME,
         resource_component=resources, crn=crn, case_attributes=case_attrs,
+        lifecycle_mode=lifecycle_mode, lifecycle_params=lifecycle_params,
     )
     if process_model == "advanced":
         process = PetriNetProcessComponent(
@@ -326,6 +351,7 @@ def run_once(
         "completed_case_ids": tracker.completed_case_ids,
         "availability_seconds": availability_seconds,
         "engine_stats": dict(engine.stats),
+        "lifecycle_mode": lifecycle_mode,
     }
     return df, meta
 
@@ -354,7 +380,7 @@ def apply_warmup(df: pd.DataFrame, meta: dict, warmup_days: float) -> tuple[pd.D
 # WIP diagnostic (for choosing --warmup-days)
 # ---------------------------------------------------------------------
 
-def report_wip(days: int) -> None:
+def report_wip(days: int, lifecycle_mode: str = "legacy") -> None:
     """Print open-case count (arrived, not yet reached CASE_COMPLETE) per
     day for one pilot run (policy=random, seed=1) -- eyeball where it
     plateaus and pass that as --warmup-days. Cheap substitute for a full
@@ -369,15 +395,24 @@ def report_wip(days: int) -> None:
     duration = days * 86400
     calendar = YearlyAvailability.from_json(AVAILABILITY_MODEL_PATH)
     perms, case_attrs = load_permission_model("orgmodel", seed=1)
-    engine = SimulationEngine(sim_duration=duration, start_datetime=START_DATETIME, verbose=False)
+    lifecycle_params = (
+        LifecycleParameters.from_file(ACTIVE_INPUTS_PATH)
+        if lifecycle_mode == "active" else None
+    )
+    engine = SimulationEngine(
+        sim_duration=duration, start_datetime=START_DATETIME, verbose=False,
+        lifecycle_mode=lifecycle_mode)
     arrivals = ArrivalComponent(seed=1)
     resources = build_resource_component("random", 1, calendar, None,
-                                         permission_model=perms)
+                                         permission_model=perms,
+                                         lifecycle_mode=lifecycle_mode,
+                                         lifecycle_params=lifecycle_params)
     arrival_rec = _ArrivalRecorder()
     complete_rec = _CompletionRecorder()
     process = ProcessComponent(
         seed=1, mode="distribution", start_datetime=START_DATETIME,
         resource_component=resources, crn=True, case_attributes=case_attrs,
+        lifecycle_mode=lifecycle_mode, lifecycle_params=lifecycle_params,
     )
     engine.register(arrivals)
     engine.register(resources)
@@ -530,6 +565,9 @@ def parse_args():
                         "'orgmodel' (mined OrdinoR model, the team default), "
                         "'observed' (log-mined resource x activity matrix), "
                         "'hardcoded' (original top-20 map).")
+    p.add_argument("--lifecycle-mode", default="legacy", choices=["legacy", "active"],
+                   help="Lifecycle/artifact baseline (default: legacy). Active loads "
+                        "simulation_inputs_active.json and logs work_item_id.")
     p.add_argument("--no-crn", dest="crn", action="store_false",
                    help="Disable Common Random Numbers (paired comparisons "
                         "become unreliable -- see module docstring).")
@@ -544,7 +582,7 @@ def main():
     args = parse_args()
 
     if args.report_wip:
-        report_wip(args.days)
+        report_wip(args.days, args.lifecycle_mode)
         return
 
     policies = [x.strip() for x in args.policies.split(",") if x.strip()]
@@ -565,6 +603,7 @@ def main():
             df, meta = run_once(
                 policy, seed, args.days, args.scenario, args.crn,
                 args.process_model, args.branching_mode, args.permissions,
+                lifecycle_mode=args.lifecycle_mode,
             )
             df, meta = apply_warmup(df, meta, args.warmup_days)
             if df.empty:
