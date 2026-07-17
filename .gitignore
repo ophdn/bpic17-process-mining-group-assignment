@@ -89,6 +89,9 @@ target/
 
 # Jupyter Notebook
 .ipynb_checkpoints
+# Derived evaluation checkpoints are local accelerators. Summary tables remain
+# versioned under output/evaluation/.
+output/evaluation*/run_cache/
 
 # IPython
 profile_default/
@@ -163,6 +166,7 @@ activemq-data/
 .env
 .envrc
 .venv
+.venv*/
 env/
 venv/
 ENV/
@@ -236,6 +240,7 @@ pyproject.toml
 
 # documentation
 *.pdf
+!visualization/*.pdf
 
 # generated data
 *.csv
@@ -250,6 +255,7 @@ notebooks/**/resource_intervals.json
 notebooks/**/resource_availability_model.json
 
 output/completed_cases.txt
+output/completed_cases_active_*.txt
 
 # graphify knowledge-graph output (generated locally, not shared)
 graphify-out/

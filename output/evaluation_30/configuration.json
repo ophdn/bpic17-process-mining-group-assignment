@@ -1,0 +1,44 @@
+{
+  "horizon_days": 30,
+  "seeds": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "scenario": "normal",
+  "crn": true,
+  "process_model": "advanced",
+  "branching_mode": "visit",
+  "permissions": "orgmodel",
+  "lifecycle_mode": "active",
+  "processing_time_mode": "distribution",
+  "capacity": 1,
+  "roster_seed": 42,
+  "arrival_model": "mdn",
+  "cache_schema_version": 2,
+  "provenance_sha256": {
+    "scripts/opt_metrics.py": "ad95259eac1f84bb6a91614a35e60679f90ae8a588ea3b06d1c163a0a254aafe",
+    "scripts/run_experiments.py": "970b4d8c0ffe641f33c1e580c668b82a70e7d521239663527ba1dc9f134f48b7",
+    "simulation/components/resource.py": "96bf8725a1c28699b8cd3cfc1e260874a4c5508a019f794d0ea7290c3d155c85",
+    "simulation/components/process.py": "73497a32fe26fd48e18f6b7cf4c52419ad9c8f8cae6e7327b9575184cd51db47",
+    "models/availability_model.json": "6611bc99ceb5e9d9e740368f2b669fc123f25ac711e2925a0112b3a3dd196ebf",
+    "simulation_inputs_active.json": "ff5199678d0c64e722ce2978d8ea05dc01a1be43560e40e5f303d6db6f1a9541"
+  },
+  "effective_roster_seed_by_seed": {
+    "1": 43,
+    "2": 44,
+    "3": 45,
+    "4": 46
+  },
+  "policies": [
+    "random",
+    "piled",
+    "kbatch5"
+  ],
+  "resource_pool_size": 144,
+  "human_resource_count": 143,
+  "automated_resources": [
+    "User_1"
+  ]
+}

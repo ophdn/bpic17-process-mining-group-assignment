@@ -153,7 +153,7 @@ from scipy.optimize import linear_sum_assignment
 from ..core.events import SimEvent, EventType
 from .permissions import PermissionModel, StaticPermissions
 from ..policies import AllocationPolicy, AllocationState, RandomPolicy
-from ..expected_duration import ExpectedDurationModel
+from ..expected_duration import ExpectedDurationModel, distribution_mean_seconds
 
 
 # ── Resource permission map (from BPIC-17 resource_activity_map) ─────────────
@@ -294,12 +294,66 @@ RESOURCE_PERMISSIONS: Dict[str, Set[str]] = {
 # this component — see simulation/components/permissions.py.
 DEFAULT_PERMISSIONS = StaticPermissions(RESOURCE_PERMISSIONS)
 
+
+# ── How many work items may one resource hold at once? ────────────────────────
+#
+# This is a modelling assumption, not a tuning knob, and it only makes sense
+# next to the duration semantics of the lifecycle mode it runs in. The duration
+# model has no concurrent-load feature (its eight ML features are activity,
+# resource, previous activity, weekday, hour, case position, case age and
+# prior-activity count), so N concurrent items each finish exactly as fast as
+# one. Capacity therefore multiplies a resource's throughput for free, with no
+# context-switching penalty — which is why the number has to be defensible.
+#
+# active
+#   A resource is held only for one hands-on session (median 0.8–2.7 min across
+#   the six principal W-activities) and `suspend` releases it back to the pool.
+#   Measured on the real log: of 254,370 active sessions across 148 resources,
+#   98.4% of busy time is spent in exactly ONE session. Interleaving is already
+#   modelled explicitly by suspend/resume, so any capacity > 1 double-counts it.
+#   Team decision 2026-07-17 (Johannes): 1, as the only value the log supports.
+#
+# legacy
+#   A resource is held for the entire elapsed start→complete span, which is
+#   mostly suspended waiting rather than work. Real elapsed spans overlap at a
+#   median peak of 54 per resource (max 150; 134/145 resources exceed 3), so 1
+#   would be catastrophically tight — it would pin a person to one application
+#   for hours. 3 is the historical value, kept so existing evidence reproduces.
+#   It is not defended as correct, only as unchanged; the honest legacy value is
+#   much closer to 54. See docs/PLAN_pwork_roster.md §8.4.
+DEFAULT_CAPACITY_ACTIVE = 1
+DEFAULT_CAPACITY_LEGACY = 3
+
+# Base seed for the p_work roster draw. Rostering is ON by default (team
+# decision 2026-07-17): a fitted component of the Section 1.6 model that the
+# runtime ignores is not a "safe default", it is a silently wrong one. Without
+# it the deployed calendar fields ~123 people on a Monday morning where the
+# model we validated expects ~37, so every run is ~3.3x overstaffed and Part II
+# has no real contention. Pass roster_seed=None (CLI: --no-roster) to reproduce
+# pre-rostering evidence logs. See docs/PLAN_pwork_roster.md.
+DEFAULT_ROSTER_SEED = 42
+
+
+def capacity_for_mode(lifecycle_mode: str) -> int:
+    """Default work items per resource for *lifecycle_mode*.
+
+    The same number means opposite things in the two modes, so this must be
+    derived from the mode rather than fixed globally.
+    """
+    return (DEFAULT_CAPACITY_ACTIVE if lifecycle_mode == "active"
+            else DEFAULT_CAPACITY_LEGACY)
+
 # payload tags on synthetic resource=None RESOURCE_AVAILABLE wake-up events,
 # so on_resource_available's k-batching branch resets only the specific
 # wake mechanism that actually fired (see the comment there for why
 # resetting both indiscriminately is a real bug, not just untidy).
 _SHIFT_WAKE = "__shift_wake__"
 _BATCH_WAKE = "__batch_wake__"
+
+# D1 (Park & Song): a predicted successor only joins the allocation epoch as
+# a phantom once its case's current activity is expected to finish within
+# this window — strategic idling is for imminent work, not multi-day locks.
+PARKSONG_LOOKAHEAD_SECONDS = 3600.0
 
 
 class ResourceComponent:
@@ -324,6 +378,7 @@ class ResourceComponent:
 
     HANDLES = {
         EventType.ACTIVITY_REQUEST:   None,
+        EventType.ACTIVITY_WITHDRAW:  None,
         EventType.RESOURCE_AVAILABLE: None,
     }
 
@@ -340,19 +395,55 @@ class ResourceComponent:
         batching_k: Optional[int] = None,
         batching_max_wait_seconds: float = 4 * 3600,
         duration_model_path: Optional[str] = None,
+        lifecycle_mode: str = "legacy",
+        lifecycle_params=None,
+        pull: Optional[str] = None,
+        parksong: bool = False,
+        krm_delta: Optional[float] = None,
     ):
-        if batching_k is not None and piled:
+        modes = {
+            "piled": piled, "batching_k": batching_k is not None,
+            "pull": pull is not None, "parksong": parksong,
+            "krm_delta": krm_delta is not None,
+        }
+        active_modes = [name for name, on in modes.items() if on]
+        if len(active_modes) > 1:
             raise ValueError(
-                "batching_k and piled=True are mutually exclusive — they "
-                "define different (incompatible) deferred-allocation "
-                "disciplines. Pick one."
+                f"{active_modes} are mutually exclusive — each redefines "
+                "the deferred-allocation discipline. Pick one."
             )
         if batching_k is not None and batching_k < 1:
             raise ValueError(f"batching_k must be >= 1, got {batching_k!r}")
+        if pull is not None and pull not in ("spt", "laf"):
+            raise ValueError(f"pull must be 'spt' or 'laf', got {pull!r}")
+        if krm_delta is not None and krm_delta <= 0:
+            raise ValueError(f"krm_delta must be > 0, got {krm_delta!r}")
 
         self._capacity = capacity_per_resource
         self._rng = random.Random(seed)
         self._piled = piled
+
+        # Pull-side selection discipline (Russell et al. pull patterns,
+        # simulated): when a resource frees up, IT picks which waiting item
+        # to take, by a local preference — instead of the system's FIFO
+        # first-permitted scan (push/R-DE). Two rules:
+        #   "spt" — the item with the shortest expected duration for THIS
+        #           resource (myopic local optimum). Note the honest scope:
+        #           without the trained ML duration artifact the expected-
+        #           duration model falls back to per-activity distribution
+        #           means, which are resource-independent — SPT then reduces
+        #           to a shortest-processing-time queue discipline. Still a
+        #           genuinely different rule from FIFO, but not personalised.
+        #   "laf" — longest-active-first (lecture deck 04, F31): the item
+        #           whose CASE has been in the system longest. Distinct from
+        #           queue-FIFO: an old case's fresh request outranks a young
+        #           case's long-waiting one.
+        # Deliberately NOT a FIFO relabel — "freed resource takes the
+        # longest-waiting item" would be behaviourally identical to the
+        # existing R-DE drain and prove nothing. Applies at task-completion
+        # releases; the shift-open drain stays FIFO (a few events per day
+        # vs. thousands of releases — documented simplification).
+        self._pull = pull
 
         # Instance-level resource removal (scenario experiments: "outage",
         # the management "fire two employees" question). Excluded resources
@@ -368,12 +459,50 @@ class ResourceComponent:
         # self._rng.choice(available) call, just behind a seam.
         self._policy: AllocationPolicy = policy or RandomPolicy(rng=self._rng)
 
-        # k-Batching (Zeng & Zhao) — see module docstring.
+        # k-Batching (Zeng & Zhao) — see module docstring. The expected-
+        # duration model is shared with SPT-pull and the two advanced
+        # policies (all cost on it).
         self._batching_k = batching_k
         self._batching_max_wait = batching_max_wait_seconds
         self._duration_model: Optional[ExpectedDurationModel] = (
-            ExpectedDurationModel(duration_model_path) if batching_k is not None else None
+            ExpectedDurationModel(
+                duration_model_path,
+                lifecycle_mode=lifecycle_mode,
+                lifecycle_params=lifecycle_params,
+            ) if (batching_k is not None or pull == "spt"
+                  or parksong or krm_delta is not None) else None
         )
+
+        # LAF-pull bookkeeping: case_id -> sim time of its first request
+        # ever seen here ("how long has this case been in the system").
+        self._case_first_seen: Dict[str, float] = {}
+
+        # D1 — Park & Song 2019, prediction-based allocation with strategic
+        # idling: at every allocation epoch (request or release), solve one
+        # assignment over the REAL waiting items plus PHANTOM items — the
+        # predicted next activity of every case currently in service
+        # (see simulation/policies_advanced.py for the predictor and the
+        # documented LSTM->branching-model substitution). A resource the
+        # solver matches to a phantom is deliberately left idle this epoch:
+        # it is the best fit for work about to arrive (strategic idling).
+        # Phantom weight is 1.0 x expected duration — the simplest honest
+        # choice; a probability-discounted weight is future work.
+        self._parksong = parksong
+        self._predictor = None
+        if parksong:
+            from ..policies_advanced import NextActivityPredictor
+            self._predictor = NextActivityPredictor()
+        # case_id -> (current activity, its payload) while in service.
+        self._active_cases: Dict[str, tuple] = {}
+
+        # D2 — Kunkler & Rinderle-Ma 2024, assignment variant with dummy-
+        # resource costs: each waiting item also gets a private dummy column
+        # costing krm_delta x its own mean expected duration. An item the
+        # solver sends to its dummy stays queued — deferring is chosen over
+        # a bad fit whenever every free resource would cost more than delta
+        # times the item's baseline, which is the paper's "wait under
+        # uncertain availability" outcome expressed as a cost.
+        self._krm_delta = krm_delta
 
         # Section 1.7: who may perform what. Any object satisfying the
         # PermissionModel protocol; defaults to the hardcoded observed map.
@@ -434,6 +563,14 @@ class ResourceComponent:
         this discipline is replaced entirely — a request NEVER allocates
         immediately, it always queues and waits for a batch flush.
         """
+        self._arm_withdraw(engine, event)
+        token = self._queue_token(event)
+        if token is not None and token.get("state") != "queued":
+            return
+
+        if self._pull == "laf" and event.case_id is not None:
+            self._case_first_seen.setdefault(event.case_id, event.timestamp)
+
         if self._batching_k is not None:
             if not self._qualified(engine, event):
                 self._unpermitted += 1
@@ -443,6 +580,16 @@ class ResourceComponent:
             self._maybe_flush_batch(engine)
             self._arm_shift_wake(engine)
             self._arm_batch_wake(engine)
+            return
+
+        if self._parksong or self._krm_delta is not None:
+            if not self._qualified(engine, event):
+                self._unpermitted += 1
+                self._begin(engine, event, None)
+                return
+            self._waiting.append(event)
+            self._epoch_flush(engine)
+            self._arm_shift_wake(engine)
             return
 
         resource = self._allocate(engine, event)
@@ -460,6 +607,64 @@ class ResourceComponent:
 
         self._waiting.append(event)
         self._arm_shift_wake(engine)
+
+    def on_activity_withdraw(self, engine, event: SimEvent) -> None:
+        """Resolve an active-mode withdrawal timer against its cancellable
+        queue token.  A timer that lost the race to allocation is a no-op; a
+        queued item is removed exactly once before ProcessComponent routes it.
+        """
+        token = self._queue_token(event)
+        if token is None or token.get("state") != "queued":
+            return
+
+        wid = token.get("work_item_id")
+        for i, waiting in enumerate(self._waiting):
+            waiting_token = self._queue_token(waiting)
+            if waiting_token is token or (
+                waiting_token is not None
+                and waiting_token.get("work_item_id") == wid
+            ):
+                self._waiting.pop(i)
+                token["state"] = "withdrawn"
+                self._arm_shift_wake(engine)
+                self._arm_batch_wake(engine)
+                return
+
+        # The request is no longer queued (normally because allocation won).
+        token["state"] = "allocated"
+
+    @staticmethod
+    def _queue_token(event: SimEvent) -> Optional[dict]:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        token = payload.get("_queue_token")
+        return token if isinstance(token, dict) else None
+
+    def _arm_withdraw(self, engine, event: SimEvent) -> None:
+        """Attach one mutable cancellation token and schedule the competing
+        withdrawal timer for an initial active W_ request.
+
+        Resume-ready requests deliberately carry no ``_withdraw_delay`` and
+        therefore cannot draw a second withdrawal hazard.
+        """
+        payload = event.payload if isinstance(event.payload, dict) else None
+        if not payload or payload.get("resuming") or self._queue_token(event) is not None:
+            return
+        delay = payload.get("_withdraw_delay")
+        wid = payload.get("work_item_id")
+        if delay is None or not wid or not (event.activity or "").startswith("W_"):
+            return
+
+        token = {"state": "queued", "work_item_id": wid}
+        payload["_queue_token"] = token
+        engine.schedule(SimEvent(
+            timestamp=engine.now + max(0.0, float(delay)),
+            priority=5,
+            event_type=EventType.ACTIVITY_WITHDRAW,
+            case_id=event.case_id,
+            activity=event.activity,
+            resource=None,
+            payload=payload,
+        ))
 
     def on_resource_available(self, engine, event: SimEvent) -> None:
         """Something freed up capacity. Two callers:
@@ -504,6 +709,15 @@ class ResourceComponent:
             self._arm_batch_wake(engine)
             return
 
+        if self._parksong or self._krm_delta is not None:
+            if event.resource is not None:
+                self._busy[event.resource] = max(0, self._busy.get(event.resource, 0) - 1)
+            elif event.payload == _SHIFT_WAKE:
+                self._wake_at = None
+            self._epoch_flush(engine)
+            self._arm_shift_wake(engine)
+            return
+
         resource = event.resource
 
         if resource is not None:
@@ -525,6 +739,10 @@ class ResourceComponent:
                     for i, waiting in enumerate(self._waiting):
                         if waiting.activity != event.payload:
                             continue
+                        # Piled Execution's "same activity" preference is for fresh
+                        # work items, not resume-ready re-requests (§4.6).
+                        if isinstance(waiting.payload, dict) and waiting.payload.get("resuming"):
+                            continue
                         ct, when = self._context(engine, waiting)
                         if not self._permissions.permits(
                                 resource, waiting.activity, case_type=ct, when=when):
@@ -533,6 +751,33 @@ class ResourceComponent:
                         self._begin(engine, waiting, resource)
                         self._arm_shift_wake(engine)
                         return
+
+                if self._pull is not None:
+                    # Pull discipline: the freed resource picks its preferred
+                    # permitted item (see constructor docstring), instead of
+                    # the system's FIFO first-permitted scan below. Strict
+                    # "<" keeps the earliest-queued item on ties, so the
+                    # rule is deterministic and consumes no RNG.
+                    best_i = None
+                    best_key = None
+                    for i, waiting in enumerate(self._waiting):
+                        ct, when = self._context(engine, waiting)
+                        if not self._permissions.permits(
+                                resource, waiting.activity, case_type=ct, when=when):
+                            continue
+                        if self._pull == "spt":
+                            key = self._duration_model.expected_duration(
+                                waiting.activity, resource)
+                        else:  # "laf"
+                            key = self._case_first_seen.get(
+                                waiting.case_id, waiting.timestamp)
+                        if best_key is None or key < best_key:
+                            best_key, best_i = key, i
+                    if best_i is not None:
+                        waiting = self._waiting.pop(best_i)
+                        self._begin(engine, waiting, resource)
+                    self._arm_shift_wake(engine)
+                    return
 
                 for i, waiting in enumerate(self._waiting):
                     ct, when = self._context(engine, waiting)
@@ -621,6 +866,126 @@ class ResourceComponent:
         if assigned_ids:
             self._waiting = [w for w in self._waiting if id(w) not in assigned_ids]
 
+    # ------------------------------------------------------------------
+    # Advanced policies (Part II): D1 Park & Song, D2 Kunkler & Rinderle-Ma
+    # ------------------------------------------------------------------
+
+    def on_case_complete(self, engine, event: SimEvent) -> None:
+        """Drop D1's in-service bookkeeping for a finished case, so no
+        phantom successor is planned for it. No-op outside parksong mode."""
+        if self._parksong and event.case_id is not None:
+            self._active_cases.pop(event.case_id, None)
+
+    def _epoch_flush(self, engine) -> None:
+        """One allocation epoch for the advanced policies (see constructor
+        docstrings): a single assignment over the whole waiting queue.
+
+        D1 (parksong): rows are real waiting items PLUS phantom items (the
+        predicted next activity of each in-service case). A phantom
+        assigned a resource reserves it — the resource idles this epoch
+        (strategic idling); only real-item assignments call _begin.
+
+        D2 (krm): rows are the real waiting items; columns gain one
+        private dummy per item costing ``krm_delta x`` the item's mean
+        expected duration. An item assigned its dummy stays queued.
+
+        Deterministic (argmin assignment, no RNG). One pass per trigger:
+        every request and every release re-runs the epoch, so there is no
+        max-wait valve to arm — the queue is reconsidered continuously.
+        """
+        if not self._waiting:
+            return
+        free = self._free_resources(engine)
+        if not free:
+            return
+
+        real: List[SimEvent] = list(self._waiting)
+        phantoms: List[SimEvent] = []
+        phantom_penalty: List[float] = []
+        if self._parksong:
+            for case_id, (activity, payload, begun_at) in self._active_cases.items():
+                pred = self._predictor.predict(activity)
+                if pred is None:
+                    continue
+                nxt, p_next = pred
+                # Strategic idling is only strategic for IMMINENT work: the
+                # successor arrives when the current activity finishes, so a
+                # phantom joins the epoch only once the expected remaining
+                # service time is inside the lookahead. Without this gate, a
+                # resource sits reserved for DAYS while a long validation
+                # runs — measured: cases completed collapsed 158 -> 15 on a
+                # 5-day run before the gate existed.
+                eta = begun_at + self._duration_model.expected_duration(activity, None)
+                if eta - engine.now > PARKSONG_LOOKAHEAD_SECONDS:
+                    continue
+                # Unscheduled pseudo-event: exists only to carry the
+                # (activity, case payload) execution context into the cost
+                # matrix — it is never scheduled, logged, or begun.
+                phantoms.append(SimEvent(
+                    timestamp=engine.now, priority=5,
+                    event_type=EventType.ACTIVITY_REQUEST,
+                    case_id=case_id, activity=nxt, payload=payload,
+                ))
+                # Uncertainty penalty: reserving for a p=0.5 prediction
+                # should cost twice what reserving for a sure thing does.
+                phantom_penalty.append(1.0 / max(p_next, 1e-6))
+
+        items = real + phantoms
+        n, m = len(items), len(free)
+        n_real = len(real)
+        n_dummies = n_real if self._krm_delta is not None else 0
+
+        PROHIBITIVE = 1e12
+        cost = np.full((n, m + n_dummies), PROHIBITIVE)
+        for i, req in enumerate(items):
+            ct, when = self._context(engine, req)
+            penalty = phantom_penalty[i - n_real] if i >= n_real else 1.0
+            for j, r in enumerate(free):
+                if self._permissions.permits(r, req.activity, case_type=ct, when=when):
+                    cost[i, j] = penalty * self._duration_model.expected_duration(req.activity, r)
+
+        # Phantom spread gate (D1): reserving a resource for predicted work
+        # only pays if that resource is a strictly BETTER fit than the
+        # alternatives — with resource-independent expected durations (no
+        # trained artifact) every reservation can only hurt, never help,
+        # and measured occupation collapsed to 0.08 vs 0.47 baseline. A
+        # phantom whose permitted costs show no spread is dropped from the
+        # epoch (its row is set prohibitive so the solver ignores it).
+        for i in range(n_real, n):
+            row = cost[i, :m]
+            finite = row[row < PROHIBITIVE]
+            if len(finite) == 0 or finite.max() - finite.min() <= 1e-9:
+                cost[i, :m] = PROHIBITIVE
+
+        if n_dummies:
+            now = engine.now
+            for i, req in enumerate(real):
+                # Deferral price = delta x the item's baseline duration,
+                # PLUS the time it has already waited (aging). Without the
+                # aging term, delta < 1 under resource-independent costs
+                # defers everything forever — measured: a 5-day run logged
+                # zero events. With it, deferral stays attractive only
+                # until the accumulated wait eats the margin.
+                cost[i, m + i] = (self._krm_delta * distribution_mean_seconds(req.activity)
+                                  + (now - req.timestamp))
+
+        row_ind, col_ind = linear_sum_assignment(cost)
+
+        assigned_ids = set()
+        for i, j in zip(row_ind, col_ind):
+            if cost[i, j] >= PROHIBITIVE:
+                continue
+            if i >= n_real:
+                continue  # phantom matched a resource: reservation, idle it
+            if j >= m:
+                continue  # item matched its dummy: defer, stays queued
+            req = items[i]
+            assigned_ids.add(id(req))
+            self._begin(engine, req, free[j])
+
+        if assigned_ids:
+            self._waiting = [w for w in self._waiting if id(w) not in assigned_ids]
+
     def _drain(self, engine) -> None:
         """Start as many queued work items as the on-duty pool can take."""
         still: List[SimEvent] = []
@@ -649,15 +1014,22 @@ class ResourceComponent:
         return case_type, when
 
     def _qualified(self, engine, event: SimEvent) -> bool:
-        """Is *anyone at all* permitted this work item, busy or not?
+        """Can *anyone ever* perform this work item, independent of time?
 
         Distinguishes "everyone is busy or off-shift" (queue and wait) from
         "nobody may ever do this" (a hole in the permission model — queuing would
         strand the case forever).
+
+        The current time must deliberately be omitted here. An OrdinoR model can
+        grant a capability on some weekdays but not others. Zero candidates on
+        Sunday therefore means "wait for a permitted weekday", not "run the item
+        unassigned". ``_allocate`` still uses the full current context, so this
+        broader check cannot assign an impermissible resource; it only decides
+        whether the request belongs in the queue.
         """
-        ct, when = self._context(engine, event)
+        ct, _ = self._context(engine, event)
         return bool(self._permissions.candidates(
-            event.activity, case_type=ct, when=when))
+            event.activity, case_type=ct, when=None))
 
     # -- availability (Section 1.6) --------------------------------------
 
@@ -754,6 +1126,14 @@ class ResourceComponent:
         Windows are per weekday, so the candidate times are the window starts of
         each upcoming day. We scan forward day by day and take the earliest that
         is strictly in the future.
+
+        This scan reimplements the calendar's own checks (holiday, vacation and
+        — since rostering — `_works_today`) rather than calling `is_available`,
+        because it asks a different question: not "is r on duty now?" but "when
+        does r's window next open?". The roster check must be mirrored here or
+        the simulation wakes up expecting staff who are not rostered that day
+        and stalls with work still queued. The hash draw is what makes the two
+        sites agree for free.
         """
         from datetime import datetime, time, timedelta
 
@@ -772,6 +1152,8 @@ class ResourceComponent:
                 w = windows.get(dow)
                 if w is None or d in self._calendar.vacations.get(res, ()):
                     continue
+                if not self._calendar._works_today(res, d):
+                    continue
                 t = (midnight + timedelta(hours=w[0]) - self._start).total_seconds()
                 if t > engine.now and (best is None or t < best):
                     best = t
@@ -783,9 +1165,34 @@ class ResourceComponent:
     def _begin(self, engine, request: SimEvent, resource: Optional[str]) -> None:
         """Turn a granted request into an ACTIVITY_START bound to *resource*.
 
-        This is the only place an ACTIVITY_START is created, which is what keeps
-        a queued work item from also being executed by the ProcessComponent.
+        This is the only place an ACTIVITY_START (or, for a resuming re-request,
+        an ACTIVITY_RESUME) is created, which is what keeps a queued work item
+        from also being executed by the ProcessComponent.
+
+        Active mode (§4.6): a request carrying ``payload.resuming=True`` is a
+        suspended item that just re-acquired a resource, so it fires
+        ACTIVITY_RESUME instead of ACTIVITY_START. The single logged `resume`
+        therefore always means resource-bound RUNNING work, never "ready but
+        unassigned". Because the re-request goes through normal allocation, the
+        resuming resource is drawn from the pool (reproducing the observed
+        82.5% different-resource rate).
         """
+        token = self._queue_token(request)
+        if token is not None:
+            if token.get("state") != "queued":
+                return
+            token["state"] = "allocated"
+
+        if self._parksong and request.case_id is not None:
+            # D1 bookkeeping: this case is now in service on this activity —
+            # its predicted successor becomes a phantom item at the next
+            # allocation epoch, but only once the successor's arrival is
+            # imminent (begin time + expected duration inside the lookahead;
+            # see _epoch_flush). Overwritten on the case's next _begin,
+            # dropped on CASE_COMPLETE.
+            self._active_cases[request.case_id] = (
+                request.activity, request.payload, engine.now)
+
         if resource is not None:
             self._busy[resource] = self._busy.get(resource, 0) + 1
 
@@ -793,10 +1200,11 @@ class ResourceComponent:
         self._wait_total += waited
         self._wait_count += 1
 
+        resuming = isinstance(request.payload, dict) and request.payload.get("resuming")
         engine.schedule(SimEvent(
             timestamp=engine.now,
             priority=5,
-            event_type=EventType.ACTIVITY_START,
+            event_type=EventType.ACTIVITY_RESUME if resuming else EventType.ACTIVITY_START,
             case_id=request.case_id,
             activity=request.activity,
             resource=resource,
@@ -873,5 +1281,8 @@ class ResourceComponent:
 
 ResourceComponent.HANDLES = {
     EventType.ACTIVITY_REQUEST:   ResourceComponent.on_activity_request,
+    EventType.ACTIVITY_WITHDRAW:  ResourceComponent.on_activity_withdraw,
     EventType.RESOURCE_AVAILABLE: ResourceComponent.on_resource_available,
+    # D1 bookkeeping only (no-op outside parksong mode).
+    EventType.CASE_COMPLETE:      ResourceComponent.on_case_complete,
 }

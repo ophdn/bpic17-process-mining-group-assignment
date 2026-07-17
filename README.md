@@ -295,7 +295,13 @@ rationale (R-RBA, R-DE, and the upgrade path).
 
 ### First-time setup (clone → add the log → run)
 
-1. Install dependencies: `pip install -r requirements.txt`.
+1. Create the project environment and install dependencies into that exact
+   interpreter. This also installs `ipykernel`, which VS Code and Jupyter need
+   to execute notebook cells:
+   ```bash
+   python3 -m venv .venv
+   .venv/bin/python -m pip install -r requirements.txt
+   ```
 2. The **default** run needs **no raw log** — the fitted distributions, BPMN,
    availability model and branching probabilities are all committed:
    ```bash
@@ -308,6 +314,7 @@ rationale (R-RBA, R-DE, and the upgrade path).
    `data/`), then regenerate **every** gitignored artifact with one command:
    ```bash
    .venv/bin/python setup_models.py            # add --force to retrain
+   .venv/bin/python setup_models.py --lifecycle active  # versioned lifecycle artifacts
    ```
    This writes `simulation/models/processing_time_model.joblib` (point + 19
    quantile models) and `simulation/models/decision_rules.joblib`. Artifacts
@@ -320,6 +327,7 @@ From the repo root, inside the virtualenv:
 .venv/bin/python -m simulation.main --process-model basic      # flat next-activity probability graph (Section 1.4 Basic)
 .venv/bin/python -m simulation.main --mode ml_model            # contextual point-estimate ML durations
 .venv/bin/python -m simulation.main --mode ml_probabilistic    # contextual probabilistic ML durations
+.venv/bin/python -m simulation.main --lifecycle-mode active    # W_ active sessions + suspend/resume lifecycle
 
 # Resources (Sections 1.6–1.8)
 .venv/bin/python -m simulation.main --availability calendar     # §1.6: fitted per-resource shifts/holidays/vacation (DEFAULT)
@@ -343,10 +351,12 @@ permission model's case/time gating is genuinely binding).
 
 Output is always saved to `<repo_root>/output/event_log.csv`, regardless of
 the working directory you run from.
-The `ml_*` modes need a trained artifact — run `setup_models.py` (see
+The legacy `ml_*` modes need a trained artifact — run `setup_models.py` (see
 first-time setup above), or see **[Processing-Time Models
 (Section 1.3)](simulation/PROCESSING_TIMES.md)** for training, mode
-details and reference statistics. To check whether Basic or Advanced (or any
+details and reference statistics. Active lifecycle ML modes use the separate
+artifact family built by `setup_models.py --lifecycle active`; the legacy
+artifacts are never overwritten. To check whether Basic or Advanced (or any
 change you make) better approximates the real BPIC-17 process, run
 `scripts/compare_process_models.py` — see
 [docs/paper_insights_discovering_simulation_models.md](docs/paper_insights_discovering_simulation_models.md)
@@ -359,7 +369,8 @@ To enable verbose event-by-event output (useful for debugging), set
 
 ## The event log (CSV output)
 
-The logger writes a PM4Py-compatible event log. Every `ACTIVITY_START` and `ACTIVITY_COMPLETE` event is recorded as one row:
+The logger writes a PM4Py-compatible event log. Legacy mode records every
+`ACTIVITY_START` and `ACTIVITY_COMPLETE` event using the original five columns:
 
 | Column | Description |
 |---|---|
@@ -368,6 +379,11 @@ The logger writes a PM4Py-compatible event log. Every `ACTIVITY_START` and `ACTI
 | `time:timestamp` | ISO-8601 datetime (anchored to a configurable start date) |
 | `lifecycle:transition` | `start` or `complete` |
 | `org:resource` | Resource that executed the activity |
+
+Active mode adds `schedule`, `suspend`, `resume`, `ate_abort`, and `withdraw`
+rows for `W_` items plus a sixth `work_item_id` column. Atomic `A_`/`O_` items
+retain their synthetic start/complete pairs. Use `work_item_id`, not
+`(case, activity)`, to reconstruct lifecycle sessions.
 
 To save the log after a run:
 

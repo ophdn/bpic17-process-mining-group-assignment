@@ -49,6 +49,7 @@ Output (in --out, default output/experiments/):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import random as _random
 import re
 import sys
@@ -63,12 +64,18 @@ from scipy import stats as scipy_stats
 from simulation.core.engine import SimulationEngine
 from simulation.core.events import EventType, SimEvent
 from simulation.components.arrival import ArrivalComponent
+from simulation.components.arrival_mdn import MDNArrivalComponent
 from simulation.components.process import ProcessComponent
 from simulation.components.petri_process import PetriNetProcessComponent
-from simulation.components.resource import ResourceComponent, RESOURCE_PERMISSIONS
+from simulation.components.resource import (
+    DEFAULT_CAPACITY_ACTIVE, DEFAULT_CAPACITY_LEGACY, DEFAULT_ROSTER_SEED,
+    RESOURCE_PERMISSIONS, ResourceComponent, capacity_for_mode,
+)
 from simulation.components import permissions as perm_models
+from simulation.policies import RoundRobinPolicy, ShortestQueuePolicy
 from simulation.components.case_attributes import CaseAttributeSampler
-from simulation.main import CaseCompletionTracker
+from simulation.components.lifecycle_params import LifecycleParameters
+from simulation.main import USE_MDN_ARRIVALS, CaseCompletionTracker
 from analysis.availability import YearlyAvailability
 
 import scripts.opt_metrics as opt_metrics
@@ -80,15 +87,103 @@ ORGMODEL_PATH = REPO_ROOT / "models" / "permissions_orgmodel.json"
 OBSERVED_PERMS_PATH = REPO_ROOT / "models" / "permissions_observed.json"
 CASE_ATTRIBUTES_PATH = REPO_ROOT / "models" / "case_attributes.json"
 OUT_DEFAULT = REPO_ROOT / "output" / "experiments"
+ACTIVE_INPUTS_PATH = REPO_ROOT / "simulation_inputs_active.json"
+LEGACY_MODEL_PATH = REPO_ROOT / "simulation" / "models" / "processing_time_model.joblib"
+ACTIVE_MODEL_PATH = REPO_ROOT / "simulation" / "models" / "processing_time_model_active.joblib"
+
+# Files that can change the meaning of a cached evaluation result.  Keep these
+# as repository-relative names so the resulting manifest is stable across
+# machines and can be written directly into notebook provenance.
+EVALUATION_PROVENANCE_PATHS = (
+    "scripts/opt_metrics.py",
+    "scripts/run_experiments.py",
+    "simulation/components/resource.py",
+    "simulation/components/process.py",
+    "models/availability_model.json",
+    "simulation_inputs_active.json",
+)
 
 # BPIC-17 starts 2016-01-01 -- must match simulation/main.py's anchor so
 # weekday/hour-of-day features (MDN arrivals, calendar) align.
 START_DATETIME = datetime(2016, 1, 1)
 
-KNOWN_POLICIES = {"random", "piled"}
+KNOWN_POLICIES = {"random", "piled", "roundrobin", "shortestqueue",
+                  "pullspt", "pulllaf", "parksong"}
+_KRM_RE = re.compile(r"^krm(\d+(?:\.\d+)?)$")  # krm1, krm0.5, krm2 -> delta
 KNOWN_SCENARIOS = {"normal", "peak", "outage"}
 _KBATCH_RE = re.compile(r"^kbatch(\d+)$")
 OUTAGE_FRACTION = 0.20
+
+
+def evaluation_provenance_hashes() -> Dict[str, str]:
+    """Return SHA-256 fingerprints for evaluation code and fitted inputs.
+
+    A metric-only cache key is unsafe: resource allocation, lifecycle handling,
+    the experiment wiring, or a fitted calendar can change while
+    ``opt_metrics.py`` stays untouched.  The notebooks include this complete
+    manifest in every cache key and in their exported configuration.
+    """
+    return {
+        relative_path: hashlib.sha256(
+            (REPO_ROOT / relative_path).read_bytes()
+        ).hexdigest()
+        for relative_path in EVALUATION_PROVENANCE_PATHS
+    }
+
+
+def validate_resource_diagnostics(
+    df: pd.DataFrame,
+    resource_stats: dict,
+    per_resource_occupation: dict,
+    capacity: int,
+) -> dict:
+    """Validate and return JSON-safe resource diagnostics for one run.
+
+    Active work must always be assigned to a permitted resource.  With unit
+    capacity, active busy time cannot exceed one unit of realized calendar
+    availability.  Queue length is not a failure condition, but it is retained
+    because it makes finite-horizon truncation visible.
+    """
+    required_columns = {"lifecycle:transition", "org:resource"}
+    missing_columns = required_columns - set(df.columns)
+    if missing_columns:
+        raise AssertionError(
+            f"event log lacks resource-diagnostic columns: {sorted(missing_columns)}"
+        )
+
+    active = df["lifecycle:transition"].isin({"start", "resume"})
+    active_resources = df.loc[active, "org:resource"]
+    missing_resource_starts = int(
+        active_resources.isna().sum()
+        + active_resources.dropna().astype(str).str.strip().eq("").sum()
+    )
+    unpermitted = int(resource_stats.get("unpermitted_activities", -1))
+    still_queued = int(resource_stats.get("still_queued_at_end", -1))
+
+    occupation = pd.to_numeric(
+        pd.Series(per_resource_occupation, dtype="object"), errors="coerce"
+    ).dropna()
+    max_occupation = float(occupation.max()) if not occupation.empty else None
+
+    if unpermitted != 0:
+        raise AssertionError(f"run contains {unpermitted} unpermitted activities")
+    if missing_resource_starts != 0:
+        raise AssertionError(
+            f"run contains {missing_resource_starts} unassigned start/resume events"
+        )
+    if still_queued < 0:
+        raise AssertionError("resource stats do not contain still_queued_at_end")
+    if capacity == 1 and max_occupation is not None and max_occupation > 1.0 + 1e-9:
+        raise AssertionError(
+            f"resource occupation {max_occupation:.6f} exceeds unit capacity"
+        )
+
+    return {
+        "unpermitted_activities": unpermitted,
+        "still_queued_at_end": still_queued,
+        "missing_resource_starts": missing_resource_starts,
+        "max_resource_occupation": max_occupation,
+    }
 
 
 # ---------------------------------------------------------------------
@@ -141,6 +236,29 @@ def scenario_arrival_kwargs(scenario: str) -> dict:
     return {}
 
 
+def build_arrival_component(seed: int, scenario: str):
+    """Mirror simulation/main.py's Section-1.2 arrival wiring.
+
+    This runner used to hardcode the parametric ArrivalComponent and never
+    consulted main.USE_MDN_ARRIVALS at all, so the Part II grid silently ran on
+    the *rejected* arrival model no matter what that switch said -- flipping it
+    would not have reached these experiments. Deriving the choice from the same
+    switch is what keeps main.py and the grid describing one engine.
+
+    output/arrival_model_eval.md: the parametric inter-arrival distribution is
+    statistically distinguishable from the real log (KS p = 3.18e-24) where the
+    MDN is not (p = 0.389), and the MDN is ~12x closer on weekday shape. That
+    matters most exactly here: the Section 1.6 roster gates staff by weekday and
+    hour, so mis-shaped arrival timing misaligns demand against supply, which is
+    what every contention and occupation number in Part II measures.
+    """
+    if USE_MDN_ARRIVALS:
+        return MDNArrivalComponent(
+            seed=seed, start_datetime=START_DATETIME,
+            **scenario_arrival_kwargs(scenario))
+    return ArrivalComponent(seed=seed, **scenario_arrival_kwargs(scenario))
+
+
 def load_permission_model(kind: str, seed: int):
     """Mirror simulation/main.py's Section-1.7 wiring: returns
     (permission_model_or_None, case_attribute_sampler_or_None).
@@ -189,40 +307,76 @@ def parse_kbatch_policy(policy: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
+def parse_krm_policy(policy: str) -> Optional[float]:
+    """'krm1' -> 1.0, 'krm0.5' -> 0.5, else None — Kunkler & Rinderle-Ma
+    dummy-resource cost with delta as a multiplier on each item's mean
+    expected duration (D2; sweep the delta the same way as kbatchN)."""
+    m = _KRM_RE.match(policy)
+    return float(m.group(1)) if m else None
+
+
 def is_known_policy(policy: str) -> bool:
-    return policy in KNOWN_POLICIES or parse_kbatch_policy(policy) is not None
+    return (policy in KNOWN_POLICIES
+            or parse_kbatch_policy(policy) is not None
+            or parse_krm_policy(policy) is not None)
 
 
 def build_resource_component(
     policy: str, seed: int, calendar, excluded: Optional[Set[str]],
-    permission_model=None,
+    permission_model=None, lifecycle_mode: str = "legacy", lifecycle_params=None,
+    capacity: Optional[int] = None,
 ) -> ResourceComponent:
+    if capacity is None:
+        capacity = capacity_for_mode(lifecycle_mode)
     k = parse_kbatch_policy(policy)
     if k is not None:
         return ResourceComponent(
-            capacity_per_resource=3,
+            capacity_per_resource=capacity,
             seed=seed,
             calendar=calendar,
             start_datetime=START_DATETIME,
             permissions=permission_model,
             excluded_resources=excluded,
             batching_k=k,
-            duration_model_path=str(REPO_ROOT / "simulation" / "models" / "processing_time_model.joblib"),
+            duration_model_path=str(
+                ACTIVE_MODEL_PATH if lifecycle_mode == "active" else LEGACY_MODEL_PATH),
+            lifecycle_mode=lifecycle_mode,
+            lifecycle_params=lifecycle_params,
         )
-    if policy not in KNOWN_POLICIES:
+    if not is_known_policy(policy):
         raise ValueError(
             f"unknown policy {policy!r} (known: {sorted(KNOWN_POLICIES)}, "
-            f"or 'kbatchN' for k-Batching with k=N). Add new conditions "
-            "here as Part II lands R-RRA / R-SHQ."
+            f"'kbatchN' for k-Batching with k=N, or 'krmD' for "
+            "Kunkler & Rinderle-Ma with delta=D, e.g. krm1, krm0.5)."
         )
+    selection_policy = None
+    if policy == "roundrobin":
+        selection_policy = RoundRobinPolicy()
+    elif policy == "shortestqueue":
+        selection_policy = ShortestQueuePolicy()
+
+    pull = {"pullspt": "spt", "pulllaf": "laf"}.get(policy)
+    krm_delta = parse_krm_policy(policy)
+    parksong = (policy == "parksong")
+    needs_duration_model = pull == "spt" or parksong or krm_delta is not None
+
     return ResourceComponent(
-        capacity_per_resource=3,
+        capacity_per_resource=capacity,
         seed=seed,
         calendar=calendar,
         start_datetime=START_DATETIME,
         permissions=permission_model,
         piled=(policy == "piled"),
+        policy=selection_policy,
+        pull=pull,
+        parksong=parksong,
+        krm_delta=krm_delta,
+        duration_model_path=(
+            str(ACTIVE_MODEL_PATH if lifecycle_mode == "active" else LEGACY_MODEL_PATH)
+            if needs_duration_model else None),
         excluded_resources=excluded,
+        lifecycle_mode=lifecycle_mode,
+        lifecycle_params=lifecycle_params,
     )
 
 
@@ -235,28 +389,79 @@ def availability_seconds_per_resource(
     Mirrors ResourceComponent._is_on_shift's convention exactly: a resource
     absent from the calendar's weekly windows (e.g. automated accounts like
     User_1) is always on duty, not a fallback -- see resource.py.
-    """
-    if calendar is None:
-        secs = horizon_days * 86400.0
-        return {r: secs for r in resources}
 
-    out = {r: 0.0 for r in resources}
-    for day in range(horizon_days):
-        d = (start_dt + timedelta(days=day)).date()
-        if d in calendar.holidays:
-            continue
+    This is the denominator of the slide-21 occupation definition, so it has to
+    mirror the roster too: counting window-hours on days a resource is not
+    rostered on would divide busy time by a workforce that never showed up, and
+    occupation would read low while looking perfectly plausible. `_works_today`
+    is keyed by (seed, resource, date), so this independent scan agrees with the
+    runtime's allocation decisions without sharing any state with them.
+    """
+    intervals = availability_intervals_per_resource(
+        calendar, start_dt, horizon_days, resources,
+    )
+    return {
+        resource: sum((end - start).total_seconds() for start, end in spans)
+        for resource, spans in intervals.items()
+    }
+
+
+def availability_intervals_per_resource(
+    calendar: Optional[YearlyAvailability], start_dt: datetime, horizon_days: int,
+    resources,
+) -> Dict[str, list[tuple[datetime, datetime]]]:
+    """Realized on-duty intervals within the simulation horizon.
+
+    Occupation is the share of *available* time spent working.  A task may
+    finish after its resource's shift ends, so summing its full active session
+    against scheduled hours can exceed one even with unit capacity.  Supplying
+    the actual intervals lets the metric count only the active-session overlap
+    with the realized roster while separately reporting overtime.
+    """
+    horizon_end = start_dt + timedelta(days=horizon_days)
+    out = {resource: [] for resource in resources}
+    if calendar is None:
+        if horizon_end > start_dt:
+            for resource in resources:
+                out[resource].append((start_dt, horizon_end))
+        return out
+
+    system = getattr(calendar, "system", None)
+    first_day = datetime.combine(start_dt.date(), datetime.min.time())
+    for day in range(horizon_days + 1):
+        day_start = first_day + timedelta(days=day)
+        if day_start >= horizon_end:
+            break
+        d = day_start.date()
         dow = d.weekday()
-        for r in resources:
-            windows = calendar.weekly.windows.get(r)
+        for resource in resources:
+            windows = calendar.weekly.windows.get(resource)
             if windows is None:
-                out[r] += 86400.0
-                continue
-            if d in calendar.vacations.get(r, ()):
-                continue
-            w = windows.get(dow)
-            if w is None:
-                continue
-            out[r] += (w[1] - w[0]) * 3600.0
+                # Mirrors ResourceComponent._is_on_shift: known system accounts
+                # (and calendars predating the system set) are always available;
+                # an unfitted human is not.
+                if system is not None and resource not in system:
+                    continue
+                interval_start = max(start_dt, day_start)
+                interval_end = min(horizon_end, day_start + timedelta(days=1))
+            else:
+                if d in calendar.holidays:
+                    continue
+                if d in calendar.vacations.get(resource, ()):
+                    continue
+                if not calendar._works_today(resource, d):
+                    continue
+                window = windows.get(dow)
+                if window is None:
+                    continue
+                interval_start = max(
+                    start_dt, day_start + timedelta(hours=window[0]),
+                )
+                interval_end = min(
+                    horizon_end, day_start + timedelta(hours=window[1]),
+                )
+            if interval_end > interval_start:
+                out[resource].append((interval_start, interval_end))
     return out
 
 
@@ -266,40 +471,84 @@ def availability_seconds_per_resource(
 
 def run_once(
     policy: str, seed: int, days: int, scenario: str, crn: bool,
-    process_model: str, branching_mode: str, permissions: str = "orgmodel",
+    process_model: str, branching_mode: str, *, lifecycle_mode: str,
+    processing_time_mode: str = "distribution", permissions: str = "orgmodel",
     excluded_override: Optional[Set[str]] = None,
+    roster_seed: Optional[int] = DEFAULT_ROSTER_SEED,
+    capacity: Optional[int] = None,
 ) -> tuple[pd.DataFrame, dict]:
     """Build and run one (policy, seed, scenario) simulation.
 
     Returns (event-log DataFrame, metadata dict) where metadata has
-    arrival_times, completed_case_ids, availability_seconds, engine_stats --
-    everything opt_metrics.evaluate() needs, plus run bookkeeping.
+    arrival_times, completed_case_ids, availability_seconds, engine_stats, and
+    resource_stats -- everything opt_metrics.evaluate() and the evaluation
+    guardrails need, plus run bookkeeping.
+
+    ``lifecycle_mode`` is deliberately required. Evaluation callers must choose
+    the active-session model or the legacy elapsed-duration model explicitly;
+    silently falling back to legacy data invalidated the original notebook.
 
     `excluded_override`: an explicit set of resources to remove for THIS
     run, bypassing the scenario's own removal logic. This is what the
     "fire two employees" management question needs -- a *fixed* leave-N-out
     set, evaluated across seeds, rather than the 'outage' scenario's random
     20% (which reshuffles per seed). Pass an empty set to force nobody out.
+
+    `roster_seed`: base seed for the p_work roster draw (None = rostering off).
+    The *effective* seed is `roster_seed + seed`, which is what CRN requires:
+    the roster is a condition of the run, not a property of the policy, so two
+    policies at the same replication seed must face the identical workforce or
+    the paired comparison measures roster luck instead of the policy. Adding
+    the replication seed keeps rosters varying across replications, so the grid
+    still samples workforce variability rather than fixing one lucky draw.
     """
+    if lifecycle_mode not in {"legacy", "active"}:
+        raise ValueError(
+            f"lifecycle_mode must be 'legacy' or 'active', got {lifecycle_mode!r}")
+    if processing_time_mode not in {"distribution", "ml_model", "ml_probabilistic"}:
+        raise ValueError(
+            "processing_time_mode must be distribution|ml_model|ml_probabilistic, "
+            f"got {processing_time_mode!r}")
+
     duration = days * 86400
 
-    calendar = YearlyAvailability.from_json(AVAILABILITY_MODEL_PATH)
+    # Effective roster seed = base + run seed (see docstring). Capture the
+    # resolved capacity too, so the run's provenance records what actually ran
+    # rather than the None sentinels -- these two defaults change the numbers,
+    # so a result file that does not name them is not reproducible.
+    effective_roster_seed = None if roster_seed is None else roster_seed + seed
+    effective_capacity = (capacity if capacity is not None
+                          else capacity_for_mode(lifecycle_mode))
+
+    calendar = YearlyAvailability.from_json(
+        AVAILABILITY_MODEL_PATH, roster_seed=effective_roster_seed,
+    )
     perms, case_attrs = load_permission_model(permissions, seed)
     resource_pool = (perms.resources() if perms is not None
                      else sorted(RESOURCE_PERMISSIONS))
     excluded = (excluded_override if excluded_override is not None
                 else scenario_excluded_resources(scenario, seed, resource_pool))
 
-    engine = SimulationEngine(sim_duration=duration, start_datetime=START_DATETIME, verbose=False)
-    arrivals = ArrivalComponent(seed=seed, **scenario_arrival_kwargs(scenario))
+    lifecycle_params = (
+        LifecycleParameters.from_file(ACTIVE_INPUTS_PATH)
+        if lifecycle_mode == "active" else None
+    )
+    engine = SimulationEngine(
+        sim_duration=duration, start_datetime=START_DATETIME, verbose=False,
+        lifecycle_mode=lifecycle_mode)
+    arrivals = build_arrival_component(seed, scenario)
     resources = build_resource_component(policy, seed, calendar, excluded,
-                                         permission_model=perms)
+                                         permission_model=perms,
+                                         lifecycle_mode=lifecycle_mode,
+                                         lifecycle_params=lifecycle_params,
+                                         capacity=effective_capacity)
     recorder = _ArrivalRecorder()
     tracker = CaseCompletionTracker()
 
     proc_kwargs = dict(
-        seed=seed, mode="distribution", start_datetime=START_DATETIME,
+        seed=seed, mode=processing_time_mode, start_datetime=START_DATETIME,
         resource_component=resources, crn=crn, case_attributes=case_attrs,
+        lifecycle_mode=lifecycle_mode, lifecycle_params=lifecycle_params,
     )
     if process_model == "advanced":
         process = PetriNetProcessComponent(
@@ -328,12 +577,36 @@ def run_once(
     availability_seconds = availability_seconds_per_resource(
         calendar, START_DATETIME, days, resource_pool,
     )
+    availability_intervals = availability_intervals_per_resource(
+        calendar, START_DATETIME, days, resource_pool,
+    )
 
     meta = {
         "arrival_times": arrival_times,
         "completed_case_ids": tracker.completed_case_ids,
         "availability_seconds": availability_seconds,
+        "availability_intervals": availability_intervals,
         "engine_stats": dict(engine.stats),
+        "resource_stats": resources.stats(),
+        "lifecycle_mode": lifecycle_mode,
+        "processing_time_mode": processing_time_mode,
+        "configuration": {
+            "policy": policy,
+            "seed": seed,
+            "horizon_days": days,
+            "scenario": scenario,
+            "crn": crn,
+            "process_model": process_model,
+            "branching_mode": branching_mode,
+            "permissions": permissions,
+            "lifecycle_mode": lifecycle_mode,
+            "processing_time_mode": processing_time_mode,
+            "roster_seed": effective_roster_seed,
+            "capacity": effective_capacity,
+            "arrival_model": "mdn" if USE_MDN_ARRIVALS else "parametric",
+            "excluded_resources": sorted(excluded or ()),
+            "resource_pool_size": len(resource_pool),
+        },
     }
     return df, meta
 
@@ -362,7 +635,7 @@ def apply_warmup(df: pd.DataFrame, meta: dict, warmup_days: float) -> tuple[pd.D
 # WIP diagnostic (for choosing --warmup-days)
 # ---------------------------------------------------------------------
 
-def report_wip(days: int) -> None:
+def report_wip(days: int, lifecycle_mode: str = "legacy") -> None:
     """Print open-case count (arrived, not yet reached CASE_COMPLETE) per
     day for one pilot run (policy=random, seed=1) -- eyeball where it
     plateaus and pass that as --warmup-days. Cheap substitute for a full
@@ -377,15 +650,24 @@ def report_wip(days: int) -> None:
     duration = days * 86400
     calendar = YearlyAvailability.from_json(AVAILABILITY_MODEL_PATH)
     perms, case_attrs = load_permission_model("orgmodel", seed=1)
-    engine = SimulationEngine(sim_duration=duration, start_datetime=START_DATETIME, verbose=False)
+    lifecycle_params = (
+        LifecycleParameters.from_file(ACTIVE_INPUTS_PATH)
+        if lifecycle_mode == "active" else None
+    )
+    engine = SimulationEngine(
+        sim_duration=duration, start_datetime=START_DATETIME, verbose=False,
+        lifecycle_mode=lifecycle_mode)
     arrivals = ArrivalComponent(seed=1)
     resources = build_resource_component("random", 1, calendar, None,
-                                         permission_model=perms)
+                                         permission_model=perms,
+                                         lifecycle_mode=lifecycle_mode,
+                                         lifecycle_params=lifecycle_params)
     arrival_rec = _ArrivalRecorder()
     complete_rec = _CompletionRecorder()
     process = ProcessComponent(
         seed=1, mode="distribution", start_datetime=START_DATETIME,
         resource_component=resources, crn=True, case_attributes=case_attrs,
+        lifecycle_mode=lifecycle_mode, lifecycle_params=lifecycle_params,
     )
     engine.register(arrivals)
     engine.register(resources)
@@ -538,10 +820,37 @@ def parse_args():
                         "'orgmodel' (mined OrdinoR model, the team default), "
                         "'observed' (log-mined resource x activity matrix), "
                         "'hardcoded' (original top-20 map).")
+    p.add_argument("--lifecycle-mode", default="active", choices=["legacy", "active"],
+                   help="Lifecycle/artifact baseline (default: active). Active loads "
+                        "simulation_inputs_active.json and logs work_item_id.")
+    p.add_argument("--processing-time-mode", default="distribution",
+                   choices=["distribution", "ml_model", "ml_probabilistic"],
+                   help="Duration sampler used consistently across policy runs.")
     p.add_argument("--no-crn", dest="crn", action="store_false",
                    help="Disable Common Random Numbers (paired comparisons "
                         "become unreliable -- see module docstring).")
     p.set_defaults(crn=True)
+    p.add_argument("--roster-seed", type=int, default=None, metavar="N",
+                   help=f"Base seed for the p_work roster draw (effective seed "
+                        f"is N+run seed, so policies within a replication share "
+                        f"a roster -- required for CRN). Default "
+                        f"{DEFAULT_ROSTER_SEED}; rostering is ON by default. "
+                        f"Without it the Monday workforce is ~123 against the "
+                        f"validated ~37 and contention is not real.")
+    p.add_argument("--no-roster", action="store_true", default=False,
+                   help="Disable the p_work roster (pre-rostering behaviour, "
+                        "~3.3x overstaffed). For reproducing older evidence.")
+    p.add_argument("--capacity", type=int, default=None, metavar="N",
+                   help=f"Work items one resource may hold at once. Default is "
+                        f"derived from --lifecycle-mode: "
+                        f"{DEFAULT_CAPACITY_ACTIVE} for active (98.4%% of real "
+                        f"busy time is a single hands-on session, and "
+                        f"suspend/resume already models the interleaving), "
+                        f"{DEFAULT_CAPACITY_LEGACY} for legacy (whose durations "
+                        f"are elapsed spans that really do overlap, median peak "
+                        f"54). The duration model has no concurrent-load "
+                        f"feature, so N parallel items each finish as fast as "
+                        f"one: N multiplies throughput for free.")
     p.add_argument("--out", default=str(OUT_DEFAULT))
     p.add_argument("--report-wip", action="store_true",
                    help="Print a WIP-over-time diagnostic and exit (ignores --policies/--seeds).")
@@ -552,8 +861,15 @@ def main():
     args = parse_args()
 
     if args.report_wip:
-        report_wip(args.days)
+        report_wip(args.days, args.lifecycle_mode)
         return
+
+    if args.roster_seed is not None and args.no_roster:
+        print("--roster-seed and --no-roster are mutually exclusive.", file=sys.stderr)
+        sys.exit(1)
+    # Explicit N wins; --no-roster disables; otherwise the default is ON.
+    roster_seed = None if args.no_roster else (
+        args.roster_seed if args.roster_seed is not None else DEFAULT_ROSTER_SEED)
 
     policies = [x.strip() for x in args.policies.split(",") if x.strip()]
     unknown = [p for p in policies if not is_known_policy(p)]
@@ -572,7 +888,12 @@ def main():
         for seed in seeds:
             df, meta = run_once(
                 policy, seed, args.days, args.scenario, args.crn,
-                args.process_model, args.branching_mode, args.permissions,
+                args.process_model, args.branching_mode,
+                lifecycle_mode=args.lifecycle_mode,
+                processing_time_mode=args.processing_time_mode,
+                permissions=args.permissions,
+                roster_seed=roster_seed,
+                capacity=args.capacity,
             )
             df, meta = apply_warmup(df, meta, args.warmup_days)
             if df.empty:

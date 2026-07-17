@@ -30,7 +30,10 @@ from simulation.components.arrival import ArrivalComponent
 from simulation.components.arrival_mdn import MDNArrivalComponent
 from simulation.components.process import ProcessComponent
 from simulation.components.petri_process import PetriNetProcessComponent
-from simulation.components.resource import ResourceComponent
+from simulation.components.resource import (
+    DEFAULT_CAPACITY_ACTIVE, DEFAULT_CAPACITY_LEGACY, DEFAULT_ROSTER_SEED,
+    ResourceComponent, capacity_for_mode,
+)
 from simulation.components import permissions as perm_models
 from simulation.components.case_attributes import CaseAttributeSampler
 
@@ -55,6 +58,10 @@ OUTPUT_PATH = REPO_ROOT / "output" / "event_log.csv"
 # live under simulation/models/.
 # Default trained-model artifact for the ML processing-time modes
 DEFAULT_MODEL_PATH = REPO_ROOT / "simulation" / "models" / "processing_time_model.joblib"
+# Active-lifecycle artifacts (§4.8) — versioned so retraining never overwrites the
+# legacy artifacts and a legacy run stays bit-reproducible.
+ACTIVE_MODEL_PATH = REPO_ROOT / "simulation" / "models" / "processing_time_model_active.joblib"
+ACTIVE_INPUTS_PATH = REPO_ROOT / "simulation_inputs_active.json"
 
 # Section 1.4 Advanced: BPMN model discovered from the real BPIC-17 log
 # (Inductive Miner). Loaded and converted to a Petri net whose firing rules
@@ -102,7 +109,19 @@ CaseCompletionTracker.HANDLES = {
 # Arrival-Modell wählen:
 #   False = parametrisch (LogNormal, Section 1.2 Basic)
 #   True  = MDN, zeitabhängig (Section 1.2 Advanced) — Gewichte aus train_arrival_mdn.py
-USE_MDN_ARRIVALS = False
+#
+# ON by default (team decision 2026-07-17: every fitted engine component runs by
+# default). output/arrival_model_eval.md evaluated both against the raw log over
+# 90 days and the parametric model is *statistically rejected* — inter-arrival
+# KS p = 3.18e-24, i.e. its inter-arrival distribution is distinguishable from
+# reality with near-certainty — while the MDN is not (p = 0.389). The MDN is
+# also ~8x better on hour-of-day shape (MAE 0.0036 vs 0.0295) and ~12x better on
+# weekday shape (0.0029 vs 0.0344).
+#
+# Weekday/hour shape is not cosmetic here: the Section 1.6 roster gates staff by
+# weekday and hour, so getting arrival *timing* wrong misaligns demand against
+# supply, which is precisely what any contention or occupation result measures.
+USE_MDN_ARRIVALS = True
 
 # ── Build & run ───────────────────────────────────────────────────────────────
 
@@ -117,22 +136,50 @@ def main(
     decision_rules_path: str | None = None,
     piled_execution: bool = False,
     k_batching: int | None = None,
+    lifecycle_mode: str = "legacy",
+    active_inputs_path: str | None = None,
+    roster_seed: int | None = DEFAULT_ROSTER_SEED,
+    capacity: int | None = None,
 ):
+    if lifecycle_mode not in ("legacy", "active"):
+        raise ValueError(f"lifecycle_mode must be legacy|active, got {lifecycle_mode!r}")
+    if capacity is None:
+        capacity = capacity_for_mode(lifecycle_mode)
+    if model_path is None:
+        model_path = str(
+            ACTIVE_MODEL_PATH if lifecycle_mode == "active" else DEFAULT_MODEL_PATH
+        )
     engine = SimulationEngine(
         sim_duration=SIM_DURATION_SECONDS,
         start_datetime=START_DATETIME,
         verbose=False,   # set True to print every event (slow for large runs)
+        lifecycle_mode=lifecycle_mode,
     )
+
+    # Active lifecycle mode (§4.4): load the mined active-time + churn parameters.
+    # Legacy mode never constructs this and keeps the hardcoded constants.
+    lifecycle_params = None
+    if lifecycle_mode == "active":
+        from simulation.components.lifecycle_params import LifecycleParameters
+        lifecycle_params = LifecycleParameters.from_file(
+            active_inputs_path or str(ACTIVE_INPUTS_PATH))
 
     # Section 1.6: resource availability. "calendar" loads the model fitted in
     # notebooks/01_resource_availability.ipynb — per-resource shifts, discovered
     # public holidays, and sampled vacation. "always" leaves every resource on
     # duty around the clock, which is the pre-1.6 behaviour and the baseline the
     # calendar is measured against.
+    #
+    # roster_seed additionally rolls the fitted p_work (does this resource work
+    # this weekday at all?), which takes the Monday-morning workforce from ~123
+    # to ~37 and is what makes contention real. None = off, the pre-rostering
+    # behaviour. It is a run parameter, so it is set here and not read from the
+    # serialised calendar.
     calendar = None
     if availability == "calendar":
         from analysis.availability import YearlyAvailability
-        calendar = YearlyAvailability.from_json(AVAILABILITY_MODEL_PATH)
+        calendar = YearlyAvailability.from_json(
+            AVAILABILITY_MODEL_PATH, roster_seed=roster_seed)
 
     # Section 1.7: who may perform what.
     #   "orgmodel" — the OrdinoR organizational model (Advanced): resources
@@ -157,14 +204,16 @@ def main(
         arrivals = ArrivalComponent(seed=RANDOM_SEED)
     process   = ProcessComponent(seed=RANDOM_SEED)
     resources = ResourceComponent(
-        capacity_per_resource=3,
+        capacity_per_resource=capacity,
         seed=RANDOM_SEED,
         calendar=calendar,
         start_datetime=START_DATETIME,
         permissions=perms,      # Section 1.7: who may perform what
         piled=piled_execution,  # Piled Execution (R-PE, Pattern 38) — default off
         batching_k=k_batching,  # k-Batching (Zeng & Zhao) — default off, exclusive w/ piled
-        duration_model_path=str(DEFAULT_MODEL_PATH) if k_batching else None,
+        duration_model_path=model_path if k_batching else None,
+        lifecycle_mode=lifecycle_mode,
+        lifecycle_params=lifecycle_params,
     )
 
     process_kwargs = dict(
@@ -174,6 +223,8 @@ def main(
         start_datetime=START_DATETIME,   # anchor for day_of_week / hour_of_day
         resource_component=resources,    # so resources are released on complete
         case_attributes=case_attrs,      # Section 1.7: case types for the org model
+        lifecycle_mode=lifecycle_mode,   # legacy | active (§4.4)
+        lifecycle_params=lifecycle_params,
     )
     if process_model == "advanced":
         process = PetriNetProcessComponent(
@@ -240,8 +291,21 @@ if __name__ == "__main__":
         help="Processing-time model (default: distribution).",
     )
     parser.add_argument(
-        "--model-path", default=str(DEFAULT_MODEL_PATH),
-        help="Path to the trained joblib artifact (ML modes only).",
+        "--model-path", default=None,
+        help="Path to the trained joblib artifact (ML modes only). Defaults to the "
+             "legacy artifact in legacy mode and the _active artifact in active mode.",
+    )
+    parser.add_argument(
+        "--lifecycle-mode", default="legacy", choices=["legacy", "active"],
+        help="'legacy' (default) reproduces today's single start->complete block "
+             "bit-for-bit (five-column log). 'active' runs the W_ work-item "
+             "suspend/resume state machine with active-service-time durations "
+             "(six-column log, work_item_id), loading the mined parameters from "
+             "--active-inputs-path (implementationplan §3/§4.4).",
+    )
+    parser.add_argument(
+        "--active-inputs-path", default=str(ACTIVE_INPUTS_PATH),
+        help="Path to simulation_inputs_active.json (--lifecycle-mode active only).",
     )
     parser.add_argument(
         "--process-model", default="advanced",
@@ -299,16 +363,56 @@ if __name__ == "__main__":
              "waited past 4h. Default off (None). Mutually exclusive with "
              "--piled-execution.",
     )
+    parser.add_argument(
+        "--roster-seed", type=int, default=None, metavar="N",
+        help=f"Base seed for the p_work roster draw (does this resource work "
+             f"this weekday at all?). Default {DEFAULT_ROSTER_SEED}. Rostering "
+             f"is ON by default: without it the calendar fields ~123 people on "
+             f"a Monday morning where the validated Section 1.6 model expects "
+             f"~37. --availability calendar only.",
+    )
+    parser.add_argument(
+        "--no-roster", action="store_true", default=False,
+        help="Disable the p_work roster (the pre-rostering behaviour). Use to "
+             "reproduce evidence logs generated before rostering landed; the "
+             "workforce is then ~3.3x overstaffed and contention is not real.",
+    )
+    parser.add_argument(
+        "--capacity", type=int, default=None, metavar="N",
+        help=f"Work items one resource may hold at once. Default is derived "
+             f"from --lifecycle-mode: {DEFAULT_CAPACITY_ACTIVE} for active "
+             f"(98.4%% of real busy time is a single hands-on session, and "
+             f"suspend/resume already models the interleaving), "
+             f"{DEFAULT_CAPACITY_LEGACY} for legacy (whose durations are "
+             f"elapsed spans that really do overlap, median peak 54). The "
+             f"duration model has no concurrent-load feature, so N parallel "
+             f"items each finish as fast as one.",
+    )
     args = parser.parse_args()
+    if args.capacity is not None and args.capacity < 1:
+        parser.error("--capacity must be >= 1.")
     if args.piled_execution and args.k_batching is not None:
         parser.error("--piled-execution and --k-batching are mutually exclusive.")
+    if args.roster_seed is not None and args.no_roster:
+        parser.error("--roster-seed and --no-roster are mutually exclusive.")
+    if args.roster_seed is not None and args.availability != "calendar":
+        parser.error("--roster-seed requires --availability calendar.")
+    # Explicit N wins; --no-roster disables; otherwise the default is ON.
+    roster_seed = None if args.no_roster else (
+        args.roster_seed if args.roster_seed is not None else DEFAULT_ROSTER_SEED)
     # Default branching: "visit" on the Petri net (A1 winner, see
     # output/validation/branching_probs_vs_rules/), plain "probs" on basic.
     branching_mode = args.branching_mode or (
         "visit" if args.process_model == "advanced" else "probs")
+    # Artifact selection (§4.8): default the ML model path to the versioned _active
+    # artifact in active mode, the legacy one otherwise; an explicit --model-path
+    # always wins.
+    model_path = args.model_path or (
+        str(ACTIVE_MODEL_PATH) if args.lifecycle_mode == "active"
+        else str(DEFAULT_MODEL_PATH))
     main(
         mode=args.mode,
-        model_path=args.model_path,
+        model_path=model_path,
         process_model=args.process_model,
         bpmn_path=args.bpmn_path,
         availability=args.availability,
@@ -317,4 +421,8 @@ if __name__ == "__main__":
         decision_rules_path=args.decision_rules_path,
         piled_execution=args.piled_execution,
         k_batching=args.k_batching,
+        lifecycle_mode=args.lifecycle_mode,
+        active_inputs_path=args.active_inputs_path,
+        roster_seed=roster_seed,
+        capacity=args.capacity,
     )

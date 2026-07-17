@@ -76,3 +76,43 @@ class RandomPolicy:
 
     def select(self, activity: str, candidates: List[str], state: AllocationState) -> str:
         return self._rng.choice(candidates)
+
+
+class RoundRobinPolicy:
+    """R-RRA (Round Robin Allocation, Russell et al. Pattern 16).
+
+    Cycle through the qualified candidates so work is spread evenly by
+    turn-taking rather than by chance. The cursor is per activity: the
+    candidate sets of different activities differ (and shift with the
+    calendar/roster), so one global cursor would drift arbitrarily —
+    turn-taking is only well-defined within one activity's candidate
+    pool. Deterministic: consumes no RNG draws, so enabling it cannot
+    perturb any other component's random stream (CRN-safe by
+    construction).
+
+    The cursor advances by position, not by remembered resource, so a
+    candidate list that changes between calls (someone went off shift)
+    degrades gracefully: we still rotate over whatever is available now.
+    """
+
+    def __init__(self):
+        self._cursor: Dict[str, int] = {}
+
+    def select(self, activity: str, candidates: List[str], state: AllocationState) -> str:
+        i = self._cursor.get(activity, 0) % len(candidates)
+        self._cursor[activity] = i + 1
+        return candidates[i]
+
+
+class ShortestQueuePolicy:
+    """R-SHQ (Shortest Queue, Russell et al. Pattern 17).
+
+    Give the work item to the candidate with the least on their plate
+    right now (lowest live busy count). Ties break by candidate-list
+    order, which is deterministic (permission-model resource order) —
+    NOT randomly, so this policy also consumes no RNG draws and leaves
+    every other component's random stream untouched (CRN-safe).
+    """
+
+    def select(self, activity: str, candidates: List[str], state: AllocationState) -> str:
+        return min(candidates, key=lambda r: state.busy.get(r, 0))

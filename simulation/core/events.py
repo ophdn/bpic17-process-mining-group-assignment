@@ -15,9 +15,17 @@ class EventType(Enum):
     CASE_COMPLETE = auto()      # A case has finished all activities
 
     # Activity lifecycle
-    ACTIVITY_REQUEST = auto()   # Work item enabled; waiting for a resource
+    ACTIVITY_REQUEST = auto()   # Work item enabled; waiting for a resource (logged `schedule` for W_)
     ACTIVITY_START = auto()     # An activity starts executing (resource held)
     ACTIVITY_COMPLETE = auto()  # An activity finishes executing
+
+    # Work-item lifecycle churn (active mode only; W_ work items) — §4.1.
+    # No ACTIVITY_SCHEDULE: ACTIVITY_REQUEST already *is* the scheduling event, so a
+    # second schedule event would risk duplicate queue entries.
+    ACTIVITY_SUSPEND = auto()   # A running session pauses; resource released to the pool
+    ACTIVITY_RESUME = auto()    # A suspended item resumes RUNNING (emitted after allocation)
+    ACTIVITY_ABORT = auto()     # Work item killed (ate_abort); the case continues
+    ACTIVITY_WITHDRAW = auto()  # A SCHEDULED item is removed from the queue before starting
 
     # Resource lifecycle
     RESOURCE_AVAILABLE = auto() # A resource becomes available

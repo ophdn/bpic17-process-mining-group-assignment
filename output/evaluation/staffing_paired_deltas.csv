@@ -1,0 +1,3 @@
+staffing_scenario_vs_baseline,n_pairs,delta_cycle_time_days,delta_cycle_time_days_ci95,delta_completed_cases,delta_completed_cases_ci95,delta_occupation,delta_occupation_ci95,delta_fairness,delta_fairness_ci95,delta_time_to_decision_days,delta_time_to_decision_days_ci95,delta_decision_reach_share,delta_decision_reach_share_ci95
+remove_low,4,0.0,0.0,0.0,0.0,0.0035767872716905708,0.0038502402944825195,-0.0006884022583225624,0.000910760059430415,0.0,0.0,0.0,0.0
+remove_high,4,0.041657717099615826,0.04488654085092661,-0.75,5.415616045974392,0.0010802311444139123,0.005943421300611255,0.006224094535372454,0.007446757030041829,0.04182002366522834,0.045159357494508424,-0.0012435209067866854,0.009077633088638877

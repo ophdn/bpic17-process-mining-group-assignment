@@ -63,9 +63,11 @@ class SimulationEngine:
         sim_duration: float,
         start_datetime: Optional[datetime] = None,
         verbose: bool = False,
+        lifecycle_mode: str = "legacy",
     ):
         self.sim_duration = sim_duration
         self.verbose = verbose
+        self.lifecycle_mode = lifecycle_mode
 
         # --- State ---
         self._now: float = 0.0          # Current simulation clock
@@ -79,7 +81,8 @@ class SimulationEngine:
         }
 
         # --- Built-in logger (always registered) ---
-        self.logger = EventLogger(start_datetime=start_datetime)
+        self.logger = EventLogger(start_datetime=start_datetime,
+                                  lifecycle_mode=lifecycle_mode)
         self._register_builtin_handlers()
 
         # --- Statistics ---
@@ -214,6 +217,16 @@ class SimulationEngine:
         """Register the engine's own internal handlers."""
         self.register_handler(EventType.ACTIVITY_START, self._on_activity_event)
         self.register_handler(EventType.ACTIVITY_COMPLETE, self._on_activity_event)
+        # Active mode: forward the W_ lifecycle transitions to the logger too. The
+        # logger alone cannot produce these rows without an engine-registered
+        # forwarder (implementationplan §4.2). In legacy mode they are never
+        # scheduled and ACTIVITY_REQUEST is not forwarded, so the log stays
+        # exactly start/complete.
+        if self.lifecycle_mode == "active":
+            for et in (EventType.ACTIVITY_REQUEST, EventType.ACTIVITY_SUSPEND,
+                       EventType.ACTIVITY_RESUME, EventType.ACTIVITY_ABORT,
+                       EventType.ACTIVITY_WITHDRAW):
+                self.register_handler(et, self._on_activity_event)
         self.register_handler(EventType.CASE_ARRIVAL, self._on_case_arrival)
         self.register_handler(EventType.CASE_COMPLETE, self._on_case_complete)
         self.register_handler(EventType.SIM_END, self._on_sim_end)

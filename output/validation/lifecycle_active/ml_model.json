@@ -1,0 +1,481 @@
+{
+  "configuration": {
+    "lifecycle_mode": "active",
+    "log": "output/event_log_active_ml_model.csv",
+    "completed_cases": 1353,
+    "logged_rows": 148908,
+    "label": "ml_model"
+  },
+  "general_metrics": {
+    "n_cases": 1353,
+    "branching": {
+      "per_activity_tvd": {
+        "A_Accepted": 0.0148,
+        "A_Cancelled": null,
+        "A_Complete": 0.0978,
+        "A_Concept": 0.0013,
+        "A_Create Application": 0.0007,
+        "A_Denied": null,
+        "A_Incomplete": 0.5047,
+        "A_Pending": null,
+        "A_Submitted": 0.0684,
+        "A_Validating": 0.7375,
+        "O_Accepted": 0.0117,
+        "O_Cancelled": null,
+        "O_Create Offer": 0.0127,
+        "O_Created": 0.0693,
+        "O_Refused": null,
+        "O_Returned": 0.2689,
+        "O_Sent (mail and online)": 0.2557,
+        "O_Sent (online only)": null,
+        "W_Assess potential fraud": null,
+        "W_Call after offers": null,
+        "W_Call incomplete files": 0.0124,
+        "W_Complete application": 0.0149,
+        "W_Handle leads": 0.0,
+        "W_Personal Loan collection": null,
+        "W_Shortened completion ": null,
+        "W_Validate application": 0.0861
+      },
+      "mean_tvd": 0.1348,
+      "activities_missing_in_run": [
+        "A_Cancelled",
+        "A_Denied",
+        "A_Pending",
+        "O_Cancelled",
+        "O_Refused",
+        "O_Sent (online only)",
+        "W_Assess potential fraud",
+        "W_Call after offers",
+        "W_Personal Loan collection",
+        "W_Shortened completion "
+      ]
+    },
+    "processing_times": {
+      "per_activity": {
+        "W_Complete application": {
+          "sim_mean_s": 71.4,
+          "ref_mean_s": 372.92,
+          "sim_std_s": 19.3,
+          "ref_std_s": 954.14,
+          "rel_err_mean": 0.8086
+        },
+        "W_Call after offers": null,
+        "W_Validate application": {
+          "sim_mean_s": 95.4,
+          "ref_mean_s": 449.33,
+          "sim_std_s": 55.8,
+          "ref_std_s": 1678.54,
+          "rel_err_mean": 0.7876
+        },
+        "W_Call incomplete files": {
+          "sim_mean_s": 62.0,
+          "ref_mean_s": 226.67,
+          "sim_std_s": 16.8,
+          "ref_std_s": 1240.59,
+          "rel_err_mean": 0.7265
+        },
+        "W_Handle leads": {
+          "sim_mean_s": 65.6,
+          "ref_mean_s": 180.27,
+          "sim_std_s": 27.9,
+          "ref_std_s": 1490.14,
+          "rel_err_mean": 0.6359
+        },
+        "W_Assess potential fraud": null,
+        "W_Shortened completion ": null,
+        "W_Personal Loan collection": null
+      },
+      "mean_rel_err": 0.7396,
+      "target": "active_session_seconds"
+    },
+    "arrival_rate": {
+      "sim_mean_interarrival_s": 1118.02,
+      "ref_mean_interarrival_s": 1002.23,
+      "rel_err": 0.1155,
+      "sim_daily_arrivals_mean": 76.46,
+      "ref_daily_arrivals_mean": 86.09,
+      "daily_arrivals_rel_err": 0.1118
+    },
+    "arrival_profile": {
+      "hour_of_day_mae": 0.0297,
+      "day_of_week_mae": 0.0427
+    },
+    "variants": {
+      "ref_top20_variants_reproduced": 10,
+      "ref_top20_traffic_coverage_pct": 16.41
+    },
+    "case_stats": {
+      "sim_case_length_mean": 27.09,
+      "ref_case_length_mean": 15.09,
+      "case_length_rel_err": 0.7951,
+      "sim_case_duration_mean_s": 180053.0,
+      "ref_case_duration_mean_s": 1887879.72,
+      "case_duration_rel_err": 0.9046
+    },
+    "lifecycle": {
+      "suspend_counts": {
+        "per_activity": {
+          "W_Handle leads": {
+            "sim_mean": 0.0625,
+            "ref_mean": 0.0684,
+            "abs_error": 0.0059,
+            "n_work_items": 112
+          },
+          "W_Complete application": {
+            "sim_mean": 0.3484,
+            "ref_mean": 1.0534,
+            "abs_error": 0.705,
+            "n_work_items": 620
+          },
+          "W_Call after offers": null,
+          "W_Validate application": {
+            "sim_mean": 1.3176,
+            "ref_mean": 1.4633,
+            "abs_error": 0.1457,
+            "n_work_items": 3026
+          },
+          "W_Call incomplete files": {
+            "sim_mean": 2.3043,
+            "ref_mean": 2.5747,
+            "abs_error": 0.2704,
+            "n_work_items": 69
+          },
+          "W_Assess potential fraud": null
+        },
+        "mean_abs_error": 0.2817
+      }
+    }
+  },
+  "lifecycle": {
+    "transition_counts": {
+      "suspend": 4369,
+      "schedule": 3827,
+      "start": 3809,
+      "resume": 2329,
+      "ate_abort": 2040,
+      "complete": 1769,
+      "withdraw": 18
+    },
+    "terminal_recomposition": {
+      "ate_abort": {
+        "work_items": 2040,
+        "elapsed_seconds": {
+          "n": 2040,
+          "mean": 38319.63636351813,
+          "median": 109.25023049999999,
+          "p90": 103871.91676520034
+        },
+        "active_seconds": {
+          "n": 2040,
+          "mean": 156.80021103039215,
+          "median": 104.56132600000001,
+          "p90": 318.07697110000015
+        },
+        "non_active_seconds": {
+          "n": 2040,
+          "mean": 38162.83615248775,
+          "median": 0.0,
+          "p90": 103736.85812640033
+        },
+        "suspends": {
+          "n": 2040,
+          "mean": 1.6872549019607843,
+          "median": 1.0,
+          "p90": 3.0
+        }
+      },
+      "complete": {
+        "work_items": 1769,
+        "elapsed_seconds": {
+          "n": 1769,
+          "mean": 26032.951775386093,
+          "median": 90.033314,
+          "p90": 76045.695047
+        },
+        "active_seconds": {
+          "n": 1769,
+          "mean": 138.95084972922555,
+          "median": 88.236853,
+          "p90": 273.8040388
+        },
+        "non_active_seconds": {
+          "n": 1769,
+          "mean": 25894.00092565687,
+          "median": 0.0,
+          "p90": 75124.85370680003
+        },
+        "suspends": {
+          "n": 1769,
+          "mean": 0.5240248728094969,
+          "median": 0.0,
+          "p90": 2.0
+        }
+      },
+      "withdraw": {
+        "work_items": 18,
+        "elapsed_seconds": {
+          "n": 18,
+          "mean": 129.32571755555557,
+          "median": 63.237742,
+          "p90": 222.32528530000025
+        },
+        "active_seconds": {
+          "n": 18,
+          "mean": 0.0,
+          "median": 0.0,
+          "p90": 0.0
+        },
+        "non_active_seconds": {
+          "n": 18,
+          "mean": 129.32571755555557,
+          "median": 63.237742,
+          "p90": 222.32528530000025
+        },
+        "suspends": {
+          "n": 18,
+          "mean": 0.0,
+          "median": 0.0,
+          "p90": 0.0
+        }
+      }
+    },
+    "by_activity_and_terminal": {
+      "W_Call incomplete files": {
+        "ate_abort": {
+          "work_items": 63,
+          "elapsed_seconds": {
+            "n": 63,
+            "mean": 34805.472971253956,
+            "median": 1928.470529,
+            "p90": 142737.18279940018
+          },
+          "active_seconds": {
+            "n": 63,
+            "mean": 148.71416809523805,
+            "median": 110.19487,
+            "p90": 361.3560576
+          },
+          "suspends": {
+            "n": 63,
+            "mean": 2.3968253968253967,
+            "median": 2.0,
+            "p90": 5.800000000000004
+          }
+        },
+        "complete": {
+          "work_items": 6,
+          "elapsed_seconds": {
+            "n": 6,
+            "mean": 68074.5057555,
+            "median": 2134.7933915,
+            "p90": 202026.437217
+          },
+          "active_seconds": {
+            "n": 6,
+            "mean": 174.06366233333333,
+            "median": 130.674071,
+            "p90": 329.230258
+          },
+          "suspends": {
+            "n": 6,
+            "mean": 1.3333333333333333,
+            "median": 1.0,
+            "p90": 3.0
+          }
+        }
+      },
+      "W_Complete application": {
+        "ate_abort": {
+          "work_items": 216,
+          "elapsed_seconds": {
+            "n": 216,
+            "mean": 72.10060868055555,
+            "median": 69.184454,
+            "p90": 88.2983815
+          },
+          "active_seconds": {
+            "n": 216,
+            "mean": 72.10060868055555,
+            "median": 69.184454,
+            "p90": 88.2983815
+          },
+          "suspends": {
+            "n": 216,
+            "mean": 1.0,
+            "median": 1.0,
+            "p90": 1.0
+          }
+        },
+        "complete": {
+          "work_items": 401,
+          "elapsed_seconds": {
+            "n": 401,
+            "mean": 70.98857988279302,
+            "median": 67.470379,
+            "p90": 86.869441
+          },
+          "active_seconds": {
+            "n": 401,
+            "mean": 70.98857988279302,
+            "median": 67.470379,
+            "p90": 86.869441
+          },
+          "suspends": {
+            "n": 401,
+            "mean": 0.0,
+            "median": 0.0,
+            "p90": 0.0
+          }
+        },
+        "withdraw": {
+          "work_items": 3,
+          "elapsed_seconds": {
+            "n": 3,
+            "mean": 460.829117,
+            "median": 483.874644,
+            "p90": 771.73808
+          },
+          "active_seconds": {
+            "n": 3,
+            "mean": 0.0,
+            "median": 0.0,
+            "p90": 0.0
+          },
+          "suspends": {
+            "n": 3,
+            "mean": 0.0,
+            "median": 0.0,
+            "p90": 0.0
+          }
+        }
+      },
+      "W_Handle leads": {
+        "ate_abort": {
+          "work_items": 7,
+          "elapsed_seconds": {
+            "n": 7,
+            "mean": 64.790685,
+            "median": 64.924811,
+            "p90": 92.24977840000001
+          },
+          "active_seconds": {
+            "n": 7,
+            "mean": 64.790685,
+            "median": 64.924811,
+            "p90": 92.24977840000001
+          },
+          "suspends": {
+            "n": 7,
+            "mean": 1.0,
+            "median": 1.0,
+            "p90": 1.0
+          }
+        },
+        "complete": {
+          "work_items": 90,
+          "elapsed_seconds": {
+            "n": 90,
+            "mean": 65.70495348888889,
+            "median": 65.40643850000001,
+            "p90": 105.3065346
+          },
+          "active_seconds": {
+            "n": 90,
+            "mean": 65.70495348888889,
+            "median": 65.40643850000001,
+            "p90": 105.3065346
+          },
+          "suspends": {
+            "n": 90,
+            "mean": 0.0,
+            "median": 0.0,
+            "p90": 0.0
+          }
+        },
+        "withdraw": {
+          "work_items": 15,
+          "elapsed_seconds": {
+            "n": 15,
+            "mean": 63.02503766666668,
+            "median": 62.697125,
+            "p90": 74.14143200000001
+          },
+          "active_seconds": {
+            "n": 15,
+            "mean": 0.0,
+            "median": 0.0,
+            "p90": 0.0
+          },
+          "suspends": {
+            "n": 15,
+            "mean": 0.0,
+            "median": 0.0,
+            "p90": 0.0
+          }
+        }
+      },
+      "W_Validate application": {
+        "ate_abort": {
+          "work_items": 1754,
+          "elapsed_seconds": {
+            "n": 1754,
+            "mean": 43308.60097954276,
+            "median": 127.5240215,
+            "p90": 134195.6330994
+          },
+          "active_seconds": {
+            "n": 1754,
+            "mean": 167.88835327366021,
+            "median": 113.922632,
+            "p90": 338.5217273
+          },
+          "suspends": {
+            "n": 1754,
+            "mean": 1.7491448118586088,
+            "median": 1.0,
+            "p90": 3.0
+          }
+        },
+        "complete": {
+          "work_items": 1272,
+          "elapsed_seconds": {
+            "n": 1272,
+            "mean": 35856.49747624056,
+            "median": 131.7209125,
+            "p90": 97179.81106300006
+          },
+          "active_seconds": {
+            "n": 1272,
+            "mean": 165.392928341195,
+            "median": 113.96937750000001,
+            "p90": 323.2041334
+          },
+          "suspends": {
+            "n": 1272,
+            "mean": 0.7224842767295597,
+            "median": 0.0,
+            "p90": 2.0
+          }
+        }
+      }
+    },
+    "resume_ownership": {
+      "same_resource": 323,
+      "total_resumes": 2329,
+      "same_resource_rate": 0.1386861313868613,
+      "by_activity": {
+        "W_Call incomplete files": {
+          "same_resource": 4,
+          "total_resumes": 96,
+          "same_resource_rate": 0.041666666666666664
+        },
+        "W_Validate application": {
+          "same_resource": 319,
+          "total_resumes": 2233,
+          "same_resource_rate": 0.14285714285714285
+        }
+      }
+    }
+  }
+}
