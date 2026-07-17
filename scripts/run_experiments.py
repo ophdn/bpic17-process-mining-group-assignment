@@ -49,6 +49,7 @@ Output (in --out, default output/experiments/):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import random as _random
 import re
 import sys
@@ -89,6 +90,18 @@ ACTIVE_INPUTS_PATH = REPO_ROOT / "simulation_inputs_active.json"
 LEGACY_MODEL_PATH = REPO_ROOT / "simulation" / "models" / "processing_time_model.joblib"
 ACTIVE_MODEL_PATH = REPO_ROOT / "simulation" / "models" / "processing_time_model_active.joblib"
 
+# Files that can change the meaning of a cached evaluation result.  Keep these
+# as repository-relative names so the resulting manifest is stable across
+# machines and can be written directly into notebook provenance.
+EVALUATION_PROVENANCE_PATHS = (
+    "scripts/opt_metrics.py",
+    "scripts/run_experiments.py",
+    "simulation/components/resource.py",
+    "simulation/components/process.py",
+    "models/availability_model.json",
+    "simulation_inputs_active.json",
+)
+
 # BPIC-17 starts 2016-01-01 -- must match simulation/main.py's anchor so
 # weekday/hour-of-day features (MDN arrivals, calendar) align.
 START_DATETIME = datetime(2016, 1, 1)
@@ -97,6 +110,77 @@ KNOWN_POLICIES = {"random", "piled"}
 KNOWN_SCENARIOS = {"normal", "peak", "outage"}
 _KBATCH_RE = re.compile(r"^kbatch(\d+)$")
 OUTAGE_FRACTION = 0.20
+
+
+def evaluation_provenance_hashes() -> Dict[str, str]:
+    """Return SHA-256 fingerprints for evaluation code and fitted inputs.
+
+    A metric-only cache key is unsafe: resource allocation, lifecycle handling,
+    the experiment wiring, or a fitted calendar can change while
+    ``opt_metrics.py`` stays untouched.  The notebooks include this complete
+    manifest in every cache key and in their exported configuration.
+    """
+    return {
+        relative_path: hashlib.sha256(
+            (REPO_ROOT / relative_path).read_bytes()
+        ).hexdigest()
+        for relative_path in EVALUATION_PROVENANCE_PATHS
+    }
+
+
+def validate_resource_diagnostics(
+    df: pd.DataFrame,
+    resource_stats: dict,
+    per_resource_occupation: dict,
+    capacity: int,
+) -> dict:
+    """Validate and return JSON-safe resource diagnostics for one run.
+
+    Active work must always be assigned to a permitted resource.  With unit
+    capacity, active busy time cannot exceed one unit of realized calendar
+    availability.  Queue length is not a failure condition, but it is retained
+    because it makes finite-horizon truncation visible.
+    """
+    required_columns = {"lifecycle:transition", "org:resource"}
+    missing_columns = required_columns - set(df.columns)
+    if missing_columns:
+        raise AssertionError(
+            f"event log lacks resource-diagnostic columns: {sorted(missing_columns)}"
+        )
+
+    active = df["lifecycle:transition"].isin({"start", "resume"})
+    active_resources = df.loc[active, "org:resource"]
+    missing_resource_starts = int(
+        active_resources.isna().sum()
+        + active_resources.dropna().astype(str).str.strip().eq("").sum()
+    )
+    unpermitted = int(resource_stats.get("unpermitted_activities", -1))
+    still_queued = int(resource_stats.get("still_queued_at_end", -1))
+
+    occupation = pd.to_numeric(
+        pd.Series(per_resource_occupation, dtype="object"), errors="coerce"
+    ).dropna()
+    max_occupation = float(occupation.max()) if not occupation.empty else None
+
+    if unpermitted != 0:
+        raise AssertionError(f"run contains {unpermitted} unpermitted activities")
+    if missing_resource_starts != 0:
+        raise AssertionError(
+            f"run contains {missing_resource_starts} unassigned start/resume events"
+        )
+    if still_queued < 0:
+        raise AssertionError("resource stats do not contain still_queued_at_end")
+    if capacity == 1 and max_occupation is not None and max_occupation > 1.0 + 1e-9:
+        raise AssertionError(
+            f"resource occupation {max_occupation:.6f} exceeds unit capacity"
+        )
+
+    return {
+        "unpermitted_activities": unpermitted,
+        "still_queued_at_end": still_queued,
+        "missing_resource_starts": missing_resource_starts,
+        "max_resource_occupation": max_occupation,
+    }
 
 
 # ---------------------------------------------------------------------
@@ -282,29 +366,71 @@ def availability_seconds_per_resource(
     is keyed by (seed, resource, date), so this independent scan agrees with the
     runtime's allocation decisions without sharing any state with them.
     """
-    if calendar is None:
-        secs = horizon_days * 86400.0
-        return {r: secs for r in resources}
+    intervals = availability_intervals_per_resource(
+        calendar, start_dt, horizon_days, resources,
+    )
+    return {
+        resource: sum((end - start).total_seconds() for start, end in spans)
+        for resource, spans in intervals.items()
+    }
 
-    out = {r: 0.0 for r in resources}
-    for day in range(horizon_days):
-        d = (start_dt + timedelta(days=day)).date()
-        if d in calendar.holidays:
-            continue
+
+def availability_intervals_per_resource(
+    calendar: Optional[YearlyAvailability], start_dt: datetime, horizon_days: int,
+    resources,
+) -> Dict[str, list[tuple[datetime, datetime]]]:
+    """Realized on-duty intervals within the simulation horizon.
+
+    Occupation is the share of *available* time spent working.  A task may
+    finish after its resource's shift ends, so summing its full active session
+    against scheduled hours can exceed one even with unit capacity.  Supplying
+    the actual intervals lets the metric count only the active-session overlap
+    with the realized roster while separately reporting overtime.
+    """
+    horizon_end = start_dt + timedelta(days=horizon_days)
+    out = {resource: [] for resource in resources}
+    if calendar is None:
+        if horizon_end > start_dt:
+            for resource in resources:
+                out[resource].append((start_dt, horizon_end))
+        return out
+
+    system = getattr(calendar, "system", None)
+    first_day = datetime.combine(start_dt.date(), datetime.min.time())
+    for day in range(horizon_days + 1):
+        day_start = first_day + timedelta(days=day)
+        if day_start >= horizon_end:
+            break
+        d = day_start.date()
         dow = d.weekday()
-        for r in resources:
-            windows = calendar.weekly.windows.get(r)
+        for resource in resources:
+            windows = calendar.weekly.windows.get(resource)
             if windows is None:
-                out[r] += 86400.0
-                continue
-            if d in calendar.vacations.get(r, ()):
-                continue
-            if not calendar._works_today(r, d):
-                continue
-            w = windows.get(dow)
-            if w is None:
-                continue
-            out[r] += (w[1] - w[0]) * 3600.0
+                # Mirrors ResourceComponent._is_on_shift: known system accounts
+                # (and calendars predating the system set) are always available;
+                # an unfitted human is not.
+                if system is not None and resource not in system:
+                    continue
+                interval_start = max(start_dt, day_start)
+                interval_end = min(horizon_end, day_start + timedelta(days=1))
+            else:
+                if d in calendar.holidays:
+                    continue
+                if d in calendar.vacations.get(resource, ()):
+                    continue
+                if not calendar._works_today(resource, d):
+                    continue
+                window = windows.get(dow)
+                if window is None:
+                    continue
+                interval_start = max(
+                    start_dt, day_start + timedelta(hours=window[0]),
+                )
+                interval_end = min(
+                    horizon_end, day_start + timedelta(hours=window[1]),
+                )
+            if interval_end > interval_start:
+                out[resource].append((interval_start, interval_end))
     return out
 
 
@@ -323,8 +449,9 @@ def run_once(
     """Build and run one (policy, seed, scenario) simulation.
 
     Returns (event-log DataFrame, metadata dict) where metadata has
-    arrival_times, completed_case_ids, availability_seconds, engine_stats --
-    everything opt_metrics.evaluate() needs, plus run bookkeeping.
+    arrival_times, completed_case_ids, availability_seconds, engine_stats, and
+    resource_stats -- everything opt_metrics.evaluate() and the evaluation
+    guardrails need, plus run bookkeeping.
 
     ``lifecycle_mode`` is deliberately required. Evaluation callers must choose
     the active-session model or the legacy elapsed-duration model explicitly;
@@ -419,12 +546,17 @@ def run_once(
     availability_seconds = availability_seconds_per_resource(
         calendar, START_DATETIME, days, resource_pool,
     )
+    availability_intervals = availability_intervals_per_resource(
+        calendar, START_DATETIME, days, resource_pool,
+    )
 
     meta = {
         "arrival_times": arrival_times,
         "completed_case_ids": tracker.completed_case_ids,
         "availability_seconds": availability_seconds,
+        "availability_intervals": availability_intervals,
         "engine_stats": dict(engine.stats),
+        "resource_stats": resources.stats(),
         "lifecycle_mode": lifecycle_mode,
         "processing_time_mode": processing_time_mode,
         "configuration": {

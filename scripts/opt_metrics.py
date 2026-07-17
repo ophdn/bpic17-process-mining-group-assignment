@@ -158,22 +158,47 @@ def average_cycle_time(
 # 2. Average Resource Occupation (slide 21)
 # ---------------------------------------------------------------------
 
-def resource_busy_seconds(df: pd.DataFrame) -> pd.Series:
+def resource_busy_seconds(
+    df: pd.DataFrame,
+    availability_intervals: Optional[Mapping[str, Iterable[tuple]]] = None,
+) -> pd.Series:
     """Total busy seconds per resource (sum of paired running sessions).
     Legacy logs have one start→complete session per instance; active logs also
     pair resume→suspend/complete on work_item_id. Rows without a resource are
     excluded. NOTE: with capacity > 1 a resource can run instances in
     parallel, so busy time can exceed wall time — occupation > 1 then
-    signals exactly that modeling artefact."""
+    signals exactly that modeling artefact.
+
+    If realized availability intervals are supplied, only the overlap between
+    each active session and those intervals is counted. This is required for
+    the slide-21 occupation definition because the simulator allows a task
+    started near shift end to finish as overtime rather than preempting it.
+    """
     inst = paired_instances(df)
     inst = inst[inst["resource"].notna() & (inst["resource"] != "")]
-    busy = (inst["complete"] - inst["start"]).dt.total_seconds()
+    if availability_intervals is None:
+        busy = (inst["complete"] - inst["start"]).dt.total_seconds()
+    else:
+        def overlap_seconds(row):
+            total = 0.0
+            for available_start, available_end in availability_intervals.get(
+                row["resource"], ()
+            ):
+                overlap_start = max(row["start"], pd.Timestamp(available_start))
+                overlap_end = min(row["complete"], pd.Timestamp(available_end))
+                if overlap_end > overlap_start:
+                    total += (overlap_end - overlap_start).total_seconds()
+            return total
+
+        busy = inst.apply(overlap_seconds, axis=1)
     return busy.groupby(inst["resource"]).sum()
 
 def average_resource_occupation(
     df: pd.DataFrame,
     availability_seconds: Optional[Mapping[str, float]] = None,
     resource_subset: Optional[Iterable[str]] = None,
+    *,
+    availability_intervals: Optional[Mapping[str, Iterable[tuple]]] = None,
 ) -> dict:
     """Mean share the resources are working during their availabilities.
 
@@ -188,7 +213,8 @@ def average_resource_occupation(
     e.g. User_1) has a huge availability denominator and a tiny occupation
     ratio, which distorts a staffing metric it is not really part of.
     """
-    busy = resource_busy_seconds(df)
+    raw_busy = resource_busy_seconds(df)
+    busy = resource_busy_seconds(df, availability_intervals)
     if availability_seconds is not None:
         avail = pd.Series(dict(availability_seconds), dtype=float)
         basis = "availability_windows"
@@ -201,6 +227,8 @@ def average_resource_occupation(
     if resource_subset is not None:
         keep = set(resource_subset)
         avail = avail[avail.index.isin(keep)]
+        raw_busy = raw_busy[raw_busy.index.isin(keep)]
+        busy = busy[busy.index.isin(keep)]
 
     # Resources that were available but never worked count with occupation 0.
     # A resource with no scheduled availability inside a short horizon has no
@@ -209,11 +237,20 @@ def average_resource_occupation(
     zero_availability = sorted(avail.index[avail <= 0].astype(str))
     valid_avail = avail[avail > 0]
     occupation = (busy.reindex(valid_avail.index).fillna(0.0) / valid_avail).to_dict()
+    outside_availability = (
+        raw_busy.reindex(valid_avail.index).fillna(0.0)
+        - busy.reindex(valid_avail.index).fillna(0.0)
+    ).clip(lower=0.0)
     return {
         "avg_resource_occupation": float(np.mean(list(occupation.values())))
             if occupation else float("nan"),
         "per_resource": {r: round(v, 4) for r, v in sorted(occupation.items())},
         "availability_basis": basis,
+        "busy_time_basis": (
+            "active_overlap_with_availability"
+            if availability_intervals is not None else "all_active_time"
+        ),
+        "busy_seconds_outside_availability": float(outside_availability.sum()),
         "n_resources_evaluated": int(len(occupation)),
         "n_resources_zero_availability": int(len(zero_availability)),
         "zero_availability_resources": zero_availability,
@@ -440,6 +477,7 @@ def evaluate(
     fairness_weights: Optional[Mapping[str, float]] = None,
     completed_case_ids=None,
     resource_subset: Optional[Iterable[str]] = None,
+    availability_intervals: Optional[Mapping[str, Iterable[tuple]]] = None,
 ) -> dict:
     """All three slide-21 metrics on one simulated event log.
 
@@ -463,7 +501,12 @@ def evaluate(
     if completed_case_ids is not None:
         df_completed = df[df["case:concept:name"].isin(set(completed_case_ids))]
 
-    occ = average_resource_occupation(df, availability_seconds, resource_subset)
+    occ = average_resource_occupation(
+        df,
+        availability_seconds,
+        resource_subset,
+        availability_intervals=availability_intervals,
+    )
     return {
         "cycle_time": average_cycle_time(df_completed, arrival_times),
         "occupation": occ,

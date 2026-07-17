@@ -73,6 +73,20 @@ class ZeroAvailabilityTests(unittest.TestCase):
         self.assertEqual(list(got["per_resource"]), ["r1"])
         self.assertEqual(got["avg_resource_occupation"], 0.5)
 
+    def test_overtime_is_not_divided_by_scheduled_availability(self):
+        """A near-close start may finish overtime without implying capacity > 1."""
+        df = _log([("r1", 7 * 3600 + 55 * 60, 8 * 3600 + 10 * 60)])
+        got = average_resource_occupation(
+            df,
+            {"r1": 8 * 3600.0},
+            availability_intervals={
+                "r1": [(BASE, BASE + pd.Timedelta(hours=8))],
+            },
+        )
+        self.assertAlmostEqual(got["per_resource"]["r1"], 300 / (8 * 3600), places=4)
+        self.assertEqual(got["busy_seconds_outside_availability"], 600.0)
+        self.assertEqual(got["busy_time_basis"], "active_overlap_with_availability")
+
 
 if __name__ == "__main__":
     unittest.main()
