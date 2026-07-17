@@ -107,7 +107,8 @@ EVALUATION_PROVENANCE_PATHS = (
 # weekday/hour-of-day features (MDN arrivals, calendar) align.
 START_DATETIME = datetime(2016, 1, 1)
 
-KNOWN_POLICIES = {"random", "piled", "roundrobin", "shortestqueue"}
+KNOWN_POLICIES = {"random", "piled", "roundrobin", "shortestqueue",
+                  "pullspt", "pulllaf"}
 KNOWN_SCENARIOS = {"normal", "peak", "outage"}
 _KBATCH_RE = re.compile(r"^kbatch(\d+)$")
 OUTAGE_FRACTION = 0.20
@@ -343,6 +344,8 @@ def build_resource_component(
     elif policy == "shortestqueue":
         selection_policy = ShortestQueuePolicy()
 
+    pull = {"pullspt": "spt", "pulllaf": "laf"}.get(policy)
+
     return ResourceComponent(
         capacity_per_resource=capacity,
         seed=seed,
@@ -351,6 +354,10 @@ def build_resource_component(
         permissions=permission_model,
         piled=(policy == "piled"),
         policy=selection_policy,
+        pull=pull,
+        duration_model_path=(
+            str(ACTIVE_MODEL_PATH if lifecycle_mode == "active" else LEGACY_MODEL_PATH)
+            if pull == "spt" else None),
         excluded_resources=excluded,
         lifecycle_mode=lifecycle_mode,
         lifecycle_params=lifecycle_params,

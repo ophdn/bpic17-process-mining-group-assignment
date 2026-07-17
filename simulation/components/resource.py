@@ -392,6 +392,7 @@ class ResourceComponent:
         duration_model_path: Optional[str] = None,
         lifecycle_mode: str = "legacy",
         lifecycle_params=None,
+        pull: Optional[str] = None,
     ):
         if batching_k is not None and piled:
             raise ValueError(
@@ -401,10 +402,39 @@ class ResourceComponent:
             )
         if batching_k is not None and batching_k < 1:
             raise ValueError(f"batching_k must be >= 1, got {batching_k!r}")
+        if pull is not None and pull not in ("spt", "laf"):
+            raise ValueError(f"pull must be 'spt' or 'laf', got {pull!r}")
+        if pull is not None and (piled or batching_k is not None):
+            raise ValueError(
+                "pull is mutually exclusive with piled/batching_k — each "
+                "redefines the deferred-allocation discipline. Pick one."
+            )
 
         self._capacity = capacity_per_resource
         self._rng = random.Random(seed)
         self._piled = piled
+
+        # Pull-side selection discipline (Russell et al. pull patterns,
+        # simulated): when a resource frees up, IT picks which waiting item
+        # to take, by a local preference — instead of the system's FIFO
+        # first-permitted scan (push/R-DE). Two rules:
+        #   "spt" — the item with the shortest expected duration for THIS
+        #           resource (myopic local optimum). Note the honest scope:
+        #           without the trained ML duration artifact the expected-
+        #           duration model falls back to per-activity distribution
+        #           means, which are resource-independent — SPT then reduces
+        #           to a shortest-processing-time queue discipline. Still a
+        #           genuinely different rule from FIFO, but not personalised.
+        #   "laf" — longest-active-first (lecture deck 04, F31): the item
+        #           whose CASE has been in the system longest. Distinct from
+        #           queue-FIFO: an old case's fresh request outranks a young
+        #           case's long-waiting one.
+        # Deliberately NOT a FIFO relabel — "freed resource takes the
+        # longest-waiting item" would be behaviourally identical to the
+        # existing R-DE drain and prove nothing. Applies at task-completion
+        # releases; the shift-open drain stays FIFO (a few events per day
+        # vs. thousands of releases — documented simplification).
+        self._pull = pull
 
         # Instance-level resource removal (scenario experiments: "outage",
         # the management "fire two employees" question). Excluded resources
@@ -420,7 +450,8 @@ class ResourceComponent:
         # self._rng.choice(available) call, just behind a seam.
         self._policy: AllocationPolicy = policy or RandomPolicy(rng=self._rng)
 
-        # k-Batching (Zeng & Zhao) — see module docstring.
+        # k-Batching (Zeng & Zhao) — see module docstring. The expected-
+        # duration model is shared with SPT-pull (both cost on it).
         self._batching_k = batching_k
         self._batching_max_wait = batching_max_wait_seconds
         self._duration_model: Optional[ExpectedDurationModel] = (
@@ -428,8 +459,12 @@ class ResourceComponent:
                 duration_model_path,
                 lifecycle_mode=lifecycle_mode,
                 lifecycle_params=lifecycle_params,
-            ) if batching_k is not None else None
+            ) if (batching_k is not None or pull == "spt") else None
         )
+
+        # LAF-pull bookkeeping: case_id -> sim time of its first request
+        # ever seen here ("how long has this case been in the system").
+        self._case_first_seen: Dict[str, float] = {}
 
         # Section 1.7: who may perform what. Any object satisfying the
         # PermissionModel protocol; defaults to the hardcoded observed map.
@@ -494,6 +529,9 @@ class ResourceComponent:
         token = self._queue_token(event)
         if token is not None and token.get("state") != "queued":
             return
+
+        if self._pull == "laf" and event.case_id is not None:
+            self._case_first_seen.setdefault(event.case_id, event.timestamp)
 
         if self._batching_k is not None:
             if not self._qualified(engine, event):
@@ -656,6 +694,33 @@ class ResourceComponent:
                         self._begin(engine, waiting, resource)
                         self._arm_shift_wake(engine)
                         return
+
+                if self._pull is not None:
+                    # Pull discipline: the freed resource picks its preferred
+                    # permitted item (see constructor docstring), instead of
+                    # the system's FIFO first-permitted scan below. Strict
+                    # "<" keeps the earliest-queued item on ties, so the
+                    # rule is deterministic and consumes no RNG.
+                    best_i = None
+                    best_key = None
+                    for i, waiting in enumerate(self._waiting):
+                        ct, when = self._context(engine, waiting)
+                        if not self._permissions.permits(
+                                resource, waiting.activity, case_type=ct, when=when):
+                            continue
+                        if self._pull == "spt":
+                            key = self._duration_model.expected_duration(
+                                waiting.activity, resource)
+                        else:  # "laf"
+                            key = self._case_first_seen.get(
+                                waiting.case_id, waiting.timestamp)
+                        if best_key is None or key < best_key:
+                            best_key, best_i = key, i
+                    if best_i is not None:
+                        waiting = self._waiting.pop(best_i)
+                        self._begin(engine, waiting, resource)
+                    self._arm_shift_wake(engine)
+                    return
 
                 for i, waiting in enumerate(self._waiting):
                     ct, when = self._context(engine, waiting)
