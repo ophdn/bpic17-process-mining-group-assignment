@@ -13,3 +13,8 @@ ipykernel==7.2.0
 matplotlib==3.10.9
 seaborn==0.13.2
 networkx==3.6.1   # §1.7 resource-map (force-directed layout of the org groups)
+
+# Tests. The suite is unittest-based and runs on the stdlib
+# (`python -m unittest discover -s tests`), so pytest is optional -- it is here
+# for the nicer output and `-k` selection, and runs the same TestCases unchanged.
+pytest==9.0.1
