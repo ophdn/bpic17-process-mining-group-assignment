@@ -39,7 +39,7 @@ class ZeroAvailabilityTests(unittest.TestCase):
         self.assertFalse(math.isnan(got["avg_resource_occupation"]),
                          "a zero-availability resource poisoned the mean")
         self.assertEqual(got["avg_resource_occupation"], 0.5)
-        self.assertEqual(got["undefined_zero_availability"], ["r_never_rostered"])
+        self.assertEqual(got["zero_availability_resources"], ["r_never_rostered"])
         self.assertNotIn("r_never_rostered", got["per_resource"])
 
     def test_zero_availability_is_not_counted_as_idle(self):
@@ -63,7 +63,7 @@ class ZeroAvailabilityTests(unittest.TestCase):
         got = average_resource_occupation(df, {"r1": 7200.0, "r_idle": 7200.0})
         self.assertEqual(got["per_resource"]["r_idle"], 0.0)
         self.assertEqual(got["avg_resource_occupation"], 0.25)
-        self.assertEqual(got["undefined_zero_availability"], [])
+        self.assertEqual(got["zero_availability_resources"], [])
 
     def test_subset_filter_still_applies(self):
         df = _log([("r1", 0, 3600), ("r2", 0, 7200)])

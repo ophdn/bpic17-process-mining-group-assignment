@@ -1,0 +1,26 @@
+{
+  "horizon_days": 10,
+  "seeds": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "scenario": "normal",
+  "crn": true,
+  "process_model": "advanced",
+  "branching_mode": "visit",
+  "permissions": "orgmodel",
+  "lifecycle_mode": "active",
+  "processing_time_mode": "distribution",
+  "policies": [
+    "random",
+    "piled",
+    "kbatch5"
+  ],
+  "resource_pool_size": 144,
+  "human_resource_count": 143,
+  "automated_resources": [
+    "User_1"
+  ]
+}

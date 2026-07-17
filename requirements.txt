@@ -8,7 +8,7 @@ pm4py==2.7.23.1
 scikit-learn==1.9.0
 scipy==1.18.0
 
-# Resource analysis notebooks (Sections 1.6 / 1.7)
+# Jupyter kernel and visualization support (required by all notebooks)
 ipykernel==7.2.0
 matplotlib==3.10.9
 seaborn==0.13.2

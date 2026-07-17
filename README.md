@@ -294,7 +294,13 @@ rationale (R-RBA, R-DE, and the upgrade path).
 
 ### First-time setup (clone → add the log → run)
 
-1. Install dependencies: `pip install -r requirements.txt`.
+1. Create the project environment and install dependencies into that exact
+   interpreter. This also installs `ipykernel`, which VS Code and Jupyter need
+   to execute notebook cells:
+   ```bash
+   python3 -m venv .venv
+   .venv/bin/python -m pip install -r requirements.txt
+   ```
 2. The **default** run needs **no raw log** — the fitted distributions, BPMN,
    availability model and branching probabilities are all committed:
    ```bash

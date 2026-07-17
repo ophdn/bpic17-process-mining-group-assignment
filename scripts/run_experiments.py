@@ -260,6 +260,8 @@ def build_resource_component(
         permissions=permission_model,
         piled=(policy == "piled"),
         excluded_resources=excluded,
+        lifecycle_mode=lifecycle_mode,
+        lifecycle_params=lifecycle_params,
     )
 
 
@@ -312,9 +314,9 @@ def availability_seconds_per_resource(
 
 def run_once(
     policy: str, seed: int, days: int, scenario: str, crn: bool,
-    process_model: str, branching_mode: str, permissions: str = "orgmodel",
+    process_model: str, branching_mode: str, *, lifecycle_mode: str,
+    processing_time_mode: str = "distribution", permissions: str = "orgmodel",
     excluded_override: Optional[Set[str]] = None,
-    lifecycle_mode: str = "legacy",
     roster_seed: Optional[int] = DEFAULT_ROSTER_SEED,
     capacity: Optional[int] = None,
 ) -> tuple[pd.DataFrame, dict]:
@@ -323,6 +325,10 @@ def run_once(
     Returns (event-log DataFrame, metadata dict) where metadata has
     arrival_times, completed_case_ids, availability_seconds, engine_stats --
     everything opt_metrics.evaluate() needs, plus run bookkeeping.
+
+    ``lifecycle_mode`` is deliberately required. Evaluation callers must choose
+    the active-session model or the legacy elapsed-duration model explicitly;
+    silently falling back to legacy data invalidated the original notebook.
 
     `excluded_override`: an explicit set of resources to remove for THIS
     run, bypassing the scenario's own removal logic. This is what the
@@ -338,11 +344,26 @@ def run_once(
     the replication seed keeps rosters varying across replications, so the grid
     still samples workforce variability rather than fixing one lucky draw.
     """
+    if lifecycle_mode not in {"legacy", "active"}:
+        raise ValueError(
+            f"lifecycle_mode must be 'legacy' or 'active', got {lifecycle_mode!r}")
+    if processing_time_mode not in {"distribution", "ml_model", "ml_probabilistic"}:
+        raise ValueError(
+            "processing_time_mode must be distribution|ml_model|ml_probabilistic, "
+            f"got {processing_time_mode!r}")
+
     duration = days * 86400
 
+    # Effective roster seed = base + run seed (see docstring). Capture the
+    # resolved capacity too, so the run's provenance records what actually ran
+    # rather than the None sentinels -- these two defaults change the numbers,
+    # so a result file that does not name them is not reproducible.
+    effective_roster_seed = None if roster_seed is None else roster_seed + seed
+    effective_capacity = (capacity if capacity is not None
+                          else capacity_for_mode(lifecycle_mode))
+
     calendar = YearlyAvailability.from_json(
-        AVAILABILITY_MODEL_PATH,
-        roster_seed=None if roster_seed is None else roster_seed + seed,
+        AVAILABILITY_MODEL_PATH, roster_seed=effective_roster_seed,
     )
     perms, case_attrs = load_permission_model(permissions, seed)
     resource_pool = (perms.resources() if perms is not None
@@ -362,12 +383,12 @@ def run_once(
                                          permission_model=perms,
                                          lifecycle_mode=lifecycle_mode,
                                          lifecycle_params=lifecycle_params,
-                                         capacity=capacity)
+                                         capacity=effective_capacity)
     recorder = _ArrivalRecorder()
     tracker = CaseCompletionTracker()
 
     proc_kwargs = dict(
-        seed=seed, mode="distribution", start_datetime=START_DATETIME,
+        seed=seed, mode=processing_time_mode, start_datetime=START_DATETIME,
         resource_component=resources, crn=crn, case_attributes=case_attrs,
         lifecycle_mode=lifecycle_mode, lifecycle_params=lifecycle_params,
     )
@@ -405,6 +426,24 @@ def run_once(
         "availability_seconds": availability_seconds,
         "engine_stats": dict(engine.stats),
         "lifecycle_mode": lifecycle_mode,
+        "processing_time_mode": processing_time_mode,
+        "configuration": {
+            "policy": policy,
+            "seed": seed,
+            "horizon_days": days,
+            "scenario": scenario,
+            "crn": crn,
+            "process_model": process_model,
+            "branching_mode": branching_mode,
+            "permissions": permissions,
+            "lifecycle_mode": lifecycle_mode,
+            "processing_time_mode": processing_time_mode,
+            "roster_seed": effective_roster_seed,
+            "capacity": effective_capacity,
+            "arrival_model": "mdn" if USE_MDN_ARRIVALS else "parametric",
+            "excluded_resources": sorted(excluded or ()),
+            "resource_pool_size": len(resource_pool),
+        },
     }
     return df, meta
 
@@ -618,9 +657,12 @@ def parse_args():
                         "'orgmodel' (mined OrdinoR model, the team default), "
                         "'observed' (log-mined resource x activity matrix), "
                         "'hardcoded' (original top-20 map).")
-    p.add_argument("--lifecycle-mode", default="legacy", choices=["legacy", "active"],
-                   help="Lifecycle/artifact baseline (default: legacy). Active loads "
+    p.add_argument("--lifecycle-mode", default="active", choices=["legacy", "active"],
+                   help="Lifecycle/artifact baseline (default: active). Active loads "
                         "simulation_inputs_active.json and logs work_item_id.")
+    p.add_argument("--processing-time-mode", default="distribution",
+                   choices=["distribution", "ml_model", "ml_probabilistic"],
+                   help="Duration sampler used consistently across policy runs.")
     p.add_argument("--no-crn", dest="crn", action="store_false",
                    help="Disable Common Random Numbers (paired comparisons "
                         "become unreliable -- see module docstring).")
@@ -683,8 +725,10 @@ def main():
         for seed in seeds:
             df, meta = run_once(
                 policy, seed, args.days, args.scenario, args.crn,
-                args.process_model, args.branching_mode, args.permissions,
+                args.process_model, args.branching_mode,
                 lifecycle_mode=args.lifecycle_mode,
+                processing_time_mode=args.processing_time_mode,
+                permissions=args.permissions,
                 roster_seed=roster_seed,
                 capacity=args.capacity,
             )
