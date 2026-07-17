@@ -72,6 +72,7 @@ from simulation.components.resource import (
     RESOURCE_PERMISSIONS, ResourceComponent, capacity_for_mode,
 )
 from simulation.components import permissions as perm_models
+from simulation.policies import RoundRobinPolicy, ShortestQueuePolicy
 from simulation.components.case_attributes import CaseAttributeSampler
 from simulation.components.lifecycle_params import LifecycleParameters
 from simulation.main import USE_MDN_ARRIVALS, CaseCompletionTracker
@@ -106,7 +107,7 @@ EVALUATION_PROVENANCE_PATHS = (
 # weekday/hour-of-day features (MDN arrivals, calendar) align.
 START_DATETIME = datetime(2016, 1, 1)
 
-KNOWN_POLICIES = {"random", "piled"}
+KNOWN_POLICIES = {"random", "piled", "roundrobin", "shortestqueue"}
 KNOWN_SCENARIOS = {"normal", "peak", "outage"}
 _KBATCH_RE = re.compile(r"^kbatch(\d+)$")
 OUTAGE_FRACTION = 0.20
@@ -336,6 +337,12 @@ def build_resource_component(
             f"or 'kbatchN' for k-Batching with k=N). Add new conditions "
             "here as Part II lands R-RRA / R-SHQ."
         )
+    selection_policy = None
+    if policy == "roundrobin":
+        selection_policy = RoundRobinPolicy()
+    elif policy == "shortestqueue":
+        selection_policy = ShortestQueuePolicy()
+
     return ResourceComponent(
         capacity_per_resource=capacity,
         seed=seed,
@@ -343,6 +350,7 @@ def build_resource_component(
         start_datetime=START_DATETIME,
         permissions=permission_model,
         piled=(policy == "piled"),
+        policy=selection_policy,
         excluded_resources=excluded,
         lifecycle_mode=lifecycle_mode,
         lifecycle_params=lifecycle_params,
