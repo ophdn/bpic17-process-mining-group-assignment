@@ -51,6 +51,7 @@ resource rather than assuming office hours.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -372,6 +373,41 @@ class YearlyAvailability:
     holidays: set          # of datetime.date
     vacations: Dict[str, set]   # resource -> set of dates on leave
     system: set = field(default_factory=set)   # automated accounts (no office hours)
+    roster_seed: Optional[int] = None          # None = rostering off, see _works_today
+
+    def _works_today(self, resource: str, d) -> bool:
+        """Is *resource* rostered on at all on date *d*?
+
+        `p_work` is a per-(resource, weekday) probability: the chance a resource
+        works that weekday at all. It is a property of a **day**, whereas
+        `is_available` answers about an **instant**, so the draw has to be
+        stable across every call made within one simulated day.
+
+        The draw is therefore a hash of (roster_seed, resource, date), not an
+        RNG stream. `is_available` is called many times per simulated day (once
+        per allocation attempt); a fresh draw per call would make a resource
+        flicker on and off *within* a day, which is worse than not modelling
+        p_work at all. A hash is stable within a day, independent across days,
+        reproducible across processes, and lets independent call sites (e.g.
+        `_next_shift_open`, the occupation denominator) each ask and get the
+        same answer without sharing any state.
+
+        `roster_seed=None` disables rostering and preserves the pre-1.6
+        always-on-within-window behaviour, so calendars fitted before this
+        existed stay reproducible.
+        """
+        if self.roster_seed is None:
+            return True
+        p = self.weekly.p_work.get(resource, {}).get(d.weekday(), 0.0)
+        if p <= 0.0:
+            return False
+        if p >= 1.0:
+            return True
+        h = hashlib.blake2b(
+            f"{self.roster_seed}|{resource}|{d.isoformat()}".encode(),
+            digest_size=8,
+        ).digest()
+        return int.from_bytes(h, "big") / 2**64 < p
 
     def is_available(self, resource: str, when) -> bool:
         """Is *resource* on duty at *when*?
@@ -383,6 +419,8 @@ class YearlyAvailability:
         if d in self.holidays:
             return False
         if d in self.vacations.get(resource, ()):
+            return False
+        if not self._works_today(resource, d):
             return False
         hour = when.hour + when.minute / 60 + when.second / 3600
         return self.weekly.is_open(resource, d.weekday(), hour)
@@ -411,7 +449,16 @@ class YearlyAvailability:
         return path
 
     @classmethod
-    def from_json(cls, path: str | Path) -> "YearlyAvailability":
+    def from_json(
+        cls, path: str | Path, roster_seed: Optional[int] = None,
+    ) -> "YearlyAvailability":
+        """Load a fitted calendar.
+
+        `roster_seed` is deliberately *not* serialised by `to_json`: it is a run
+        parameter (like the simulation seed), not a fitted one, so it is set at
+        load time by the caller. Default None keeps rostering off — see
+        `_works_today`.
+        """
         import datetime as _dt
 
         d = json.loads(Path(path).read_text())
@@ -427,6 +474,7 @@ class YearlyAvailability:
             vacations={r: {_dt.date.fromisoformat(s) for s in ds}
                        for r, ds in d["vacations"].items()},
             system=set(d.get("system", ())),
+            roster_seed=roster_seed,
         )
 
 
