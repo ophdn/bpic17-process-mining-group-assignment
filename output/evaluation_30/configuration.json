@@ -1,5 +1,5 @@
 {
-  "horizon_days": 10,
+  "horizon_days": 30,
   "seeds": [
     1,
     2,
