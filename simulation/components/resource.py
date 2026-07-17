@@ -772,15 +772,22 @@ class ResourceComponent:
         return case_type, when
 
     def _qualified(self, engine, event: SimEvent) -> bool:
-        """Is *anyone at all* permitted this work item, busy or not?
+        """Can *anyone ever* perform this work item, independent of time?
 
         Distinguishes "everyone is busy or off-shift" (queue and wait) from
         "nobody may ever do this" (a hole in the permission model — queuing would
         strand the case forever).
+
+        The current time must deliberately be omitted here. An OrdinoR model can
+        grant a capability on some weekdays but not others. Zero candidates on
+        Sunday therefore means "wait for a permitted weekday", not "run the item
+        unassigned". ``_allocate`` still uses the full current context, so this
+        broader check cannot assign an impermissible resource; it only decides
+        whether the request belongs in the queue.
         """
-        ct, when = self._context(engine, event)
+        ct, _ = self._context(engine, event)
         return bool(self._permissions.candidates(
-            event.activity, case_type=ct, when=when))
+            event.activity, case_type=ct, when=None))
 
     # -- availability (Section 1.6) --------------------------------------
 
