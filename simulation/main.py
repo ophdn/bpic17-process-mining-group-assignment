@@ -31,7 +31,7 @@ from simulation.components.arrival_mdn import MDNArrivalComponent
 from simulation.components.process import ProcessComponent
 from simulation.components.petri_process import PetriNetProcessComponent
 from simulation.components.resource import (
-    DEFAULT_CAPACITY_ACTIVE, DEFAULT_CAPACITY_LEGACY,
+    DEFAULT_CAPACITY_ACTIVE, DEFAULT_CAPACITY_LEGACY, DEFAULT_ROSTER_SEED,
     ResourceComponent, capacity_for_mode,
 )
 from simulation.components import permissions as perm_models
@@ -109,7 +109,19 @@ CaseCompletionTracker.HANDLES = {
 # Arrival-Modell wählen:
 #   False = parametrisch (LogNormal, Section 1.2 Basic)
 #   True  = MDN, zeitabhängig (Section 1.2 Advanced) — Gewichte aus train_arrival_mdn.py
-USE_MDN_ARRIVALS = False
+#
+# ON by default (team decision 2026-07-17: every fitted engine component runs by
+# default). output/arrival_model_eval.md evaluated both against the raw log over
+# 90 days and the parametric model is *statistically rejected* — inter-arrival
+# KS p = 3.18e-24, i.e. its inter-arrival distribution is distinguishable from
+# reality with near-certainty — while the MDN is not (p = 0.389). The MDN is
+# also ~8x better on hour-of-day shape (MAE 0.0036 vs 0.0295) and ~12x better on
+# weekday shape (0.0029 vs 0.0344).
+#
+# Weekday/hour shape is not cosmetic here: the Section 1.6 roster gates staff by
+# weekday and hour, so getting arrival *timing* wrong misaligns demand against
+# supply, which is precisely what any contention or occupation result measures.
+USE_MDN_ARRIVALS = True
 
 # ── Build & run ───────────────────────────────────────────────────────────────
 
@@ -126,7 +138,7 @@ def main(
     k_batching: int | None = None,
     lifecycle_mode: str = "legacy",
     active_inputs_path: str | None = None,
-    roster_seed: int | None = None,
+    roster_seed: int | None = DEFAULT_ROSTER_SEED,
     capacity: int | None = None,
 ):
     if lifecycle_mode not in ("legacy", "active"):
@@ -353,12 +365,17 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--roster-seed", type=int, default=None, metavar="N",
-        help="Roll the fitted p_work (does this resource work this weekday at "
-             "all?) per (resource, day), seeded by N. Takes the Monday-morning "
-             "workforce from ~123 to ~37, which is the validated Section 1.6 "
-             "figure, and is what makes contention real. Default off (None), "
-             "which keeps the pre-rostering behaviour and reproduces older "
-             "evidence logs. --availability calendar only.",
+        help=f"Base seed for the p_work roster draw (does this resource work "
+             f"this weekday at all?). Default {DEFAULT_ROSTER_SEED}. Rostering "
+             f"is ON by default: without it the calendar fields ~123 people on "
+             f"a Monday morning where the validated Section 1.6 model expects "
+             f"~37. --availability calendar only.",
+    )
+    parser.add_argument(
+        "--no-roster", action="store_true", default=False,
+        help="Disable the p_work roster (the pre-rostering behaviour). Use to "
+             "reproduce evidence logs generated before rostering landed; the "
+             "workforce is then ~3.3x overstaffed and contention is not real.",
     )
     parser.add_argument(
         "--capacity", type=int, default=None, metavar="N",
@@ -376,8 +393,13 @@ if __name__ == "__main__":
         parser.error("--capacity must be >= 1.")
     if args.piled_execution and args.k_batching is not None:
         parser.error("--piled-execution and --k-batching are mutually exclusive.")
+    if args.roster_seed is not None and args.no_roster:
+        parser.error("--roster-seed and --no-roster are mutually exclusive.")
     if args.roster_seed is not None and args.availability != "calendar":
         parser.error("--roster-seed requires --availability calendar.")
+    # Explicit N wins; --no-roster disables; otherwise the default is ON.
+    roster_seed = None if args.no_roster else (
+        args.roster_seed if args.roster_seed is not None else DEFAULT_ROSTER_SEED)
     # Default branching: "visit" on the Petri net (A1 winner, see
     # output/validation/branching_probs_vs_rules/), plain "probs" on basic.
     branching_mode = args.branching_mode or (
@@ -401,6 +423,6 @@ if __name__ == "__main__":
         k_batching=args.k_batching,
         lifecycle_mode=args.lifecycle_mode,
         active_inputs_path=args.active_inputs_path,
-        roster_seed=args.roster_seed,
+        roster_seed=roster_seed,
         capacity=args.capacity,
     )

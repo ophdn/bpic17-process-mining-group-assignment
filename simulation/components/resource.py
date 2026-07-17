@@ -324,6 +324,15 @@ DEFAULT_PERMISSIONS = StaticPermissions(RESOURCE_PERMISSIONS)
 DEFAULT_CAPACITY_ACTIVE = 1
 DEFAULT_CAPACITY_LEGACY = 3
 
+# Base seed for the p_work roster draw. Rostering is ON by default (team
+# decision 2026-07-17): a fitted component of the Section 1.6 model that the
+# runtime ignores is not a "safe default", it is a silently wrong one. Without
+# it the deployed calendar fields ~123 people on a Monday morning where the
+# model we validated expects ~37, so every run is ~3.3x overstaffed and Part II
+# has no real contention. Pass roster_seed=None (CLI: --no-roster) to reproduce
+# pre-rostering evidence logs. See docs/PLAN_pwork_roster.md.
+DEFAULT_ROSTER_SEED = 42
+
 
 def capacity_for_mode(lifecycle_mode: str) -> int:
     """Default work items per resource for *lifecycle_mode*.

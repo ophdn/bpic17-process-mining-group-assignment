@@ -63,16 +63,17 @@ from scipy import stats as scipy_stats
 from simulation.core.engine import SimulationEngine
 from simulation.core.events import EventType, SimEvent
 from simulation.components.arrival import ArrivalComponent
+from simulation.components.arrival_mdn import MDNArrivalComponent
 from simulation.components.process import ProcessComponent
 from simulation.components.petri_process import PetriNetProcessComponent
 from simulation.components.resource import (
-    DEFAULT_CAPACITY_ACTIVE, DEFAULT_CAPACITY_LEGACY,
+    DEFAULT_CAPACITY_ACTIVE, DEFAULT_CAPACITY_LEGACY, DEFAULT_ROSTER_SEED,
     RESOURCE_PERMISSIONS, ResourceComponent, capacity_for_mode,
 )
 from simulation.components import permissions as perm_models
 from simulation.components.case_attributes import CaseAttributeSampler
 from simulation.components.lifecycle_params import LifecycleParameters
-from simulation.main import CaseCompletionTracker
+from simulation.main import USE_MDN_ARRIVALS, CaseCompletionTracker
 from analysis.availability import YearlyAvailability
 
 import scripts.opt_metrics as opt_metrics
@@ -146,6 +147,29 @@ def scenario_arrival_kwargs(scenario: str) -> dict:
     if scenario == "peak":
         return {"scale_factor": 1.3}
     return {}
+
+
+def build_arrival_component(seed: int, scenario: str):
+    """Mirror simulation/main.py's Section-1.2 arrival wiring.
+
+    This runner used to hardcode the parametric ArrivalComponent and never
+    consulted main.USE_MDN_ARRIVALS at all, so the Part II grid silently ran on
+    the *rejected* arrival model no matter what that switch said -- flipping it
+    would not have reached these experiments. Deriving the choice from the same
+    switch is what keeps main.py and the grid describing one engine.
+
+    output/arrival_model_eval.md: the parametric inter-arrival distribution is
+    statistically distinguishable from the real log (KS p = 3.18e-24) where the
+    MDN is not (p = 0.389), and the MDN is ~12x closer on weekday shape. That
+    matters most exactly here: the Section 1.6 roster gates staff by weekday and
+    hour, so mis-shaped arrival timing misaligns demand against supply, which is
+    what every contention and occupation number in Part II measures.
+    """
+    if USE_MDN_ARRIVALS:
+        return MDNArrivalComponent(
+            seed=seed, start_datetime=START_DATETIME,
+            **scenario_arrival_kwargs(scenario))
+    return ArrivalComponent(seed=seed, **scenario_arrival_kwargs(scenario))
 
 
 def load_permission_model(kind: str, seed: int):
@@ -291,7 +315,7 @@ def run_once(
     process_model: str, branching_mode: str, permissions: str = "orgmodel",
     excluded_override: Optional[Set[str]] = None,
     lifecycle_mode: str = "legacy",
-    roster_seed: Optional[int] = None,
+    roster_seed: Optional[int] = DEFAULT_ROSTER_SEED,
     capacity: Optional[int] = None,
 ) -> tuple[pd.DataFrame, dict]:
     """Build and run one (policy, seed, scenario) simulation.
@@ -333,7 +357,7 @@ def run_once(
     engine = SimulationEngine(
         sim_duration=duration, start_datetime=START_DATETIME, verbose=False,
         lifecycle_mode=lifecycle_mode)
-    arrivals = ArrivalComponent(seed=seed, **scenario_arrival_kwargs(scenario))
+    arrivals = build_arrival_component(seed, scenario)
     resources = build_resource_component(policy, seed, calendar, excluded,
                                          permission_model=perms,
                                          lifecycle_mode=lifecycle_mode,
@@ -602,12 +626,15 @@ def parse_args():
                         "become unreliable -- see module docstring).")
     p.set_defaults(crn=True)
     p.add_argument("--roster-seed", type=int, default=None, metavar="N",
-                   help="Roll the fitted p_work per (resource, day), base seed N "
-                        "(effective seed is N+run seed, so policies within a "
-                        "replication share a roster -- required for CRN). Takes "
-                        "the Monday workforce from ~123 to the validated ~37 and "
-                        "makes contention real. Default off, which reproduces "
-                        "pre-rostering evidence logs.")
+                   help=f"Base seed for the p_work roster draw (effective seed "
+                        f"is N+run seed, so policies within a replication share "
+                        f"a roster -- required for CRN). Default "
+                        f"{DEFAULT_ROSTER_SEED}; rostering is ON by default. "
+                        f"Without it the Monday workforce is ~123 against the "
+                        f"validated ~37 and contention is not real.")
+    p.add_argument("--no-roster", action="store_true", default=False,
+                   help="Disable the p_work roster (pre-rostering behaviour, "
+                        "~3.3x overstaffed). For reproducing older evidence.")
     p.add_argument("--capacity", type=int, default=None, metavar="N",
                    help=f"Work items one resource may hold at once. Default is "
                         f"derived from --lifecycle-mode: "
@@ -632,6 +659,13 @@ def main():
         report_wip(args.days, args.lifecycle_mode)
         return
 
+    if args.roster_seed is not None and args.no_roster:
+        print("--roster-seed and --no-roster are mutually exclusive.", file=sys.stderr)
+        sys.exit(1)
+    # Explicit N wins; --no-roster disables; otherwise the default is ON.
+    roster_seed = None if args.no_roster else (
+        args.roster_seed if args.roster_seed is not None else DEFAULT_ROSTER_SEED)
+
     policies = [x.strip() for x in args.policies.split(",") if x.strip()]
     unknown = [p for p in policies if not is_known_policy(p)]
     if unknown:
@@ -651,7 +685,7 @@ def main():
                 policy, seed, args.days, args.scenario, args.crn,
                 args.process_model, args.branching_mode, args.permissions,
                 lifecycle_mode=args.lifecycle_mode,
-                roster_seed=args.roster_seed,
+                roster_seed=roster_seed,
                 capacity=args.capacity,
             )
             df, meta = apply_warmup(df, meta, args.warmup_days)
