@@ -1,0 +1,28 @@
+{
+  "method": "MaskablePPO",
+  "paper": "Middelhuis et al., Information Systems 128 (2025) 102492",
+  "timesteps": 100000,
+  "episode_days": 3,
+  "seed": 1,
+  "scenario": "normal",
+  "process_model": "advanced",
+  "branching_mode": "visit",
+  "permissions": "orgmodel",
+  "lifecycle_mode": "active",
+  "processing_time_mode": "distribution",
+  "capacity": null,
+  "roster_seed": 42,
+  "observation_size": 342,
+  "action_count": 3457,
+  "hyperparameters": {
+    "network": [
+      128,
+      128
+    ],
+    "n_steps": 25600,
+    "batch_size": 256,
+    "learning_rate": 3e-05,
+    "gamma": 0.999,
+    "clip_range": 0.2
+  }
+}

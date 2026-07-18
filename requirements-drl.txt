@@ -1,0 +1,7 @@
+# Optional Deep Reinforcement Learning stack.  The normal simulator does not
+# import these packages.  Versions are kept aligned because sb3-contrib and
+# stable-baselines3 share internal interfaces.
+-r requirements.txt
+gymnasium==1.3.0
+stable-baselines3==2.9.0
+sb3-contrib==2.9.0

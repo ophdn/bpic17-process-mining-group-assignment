@@ -11,7 +11,8 @@ docs/ROADMAP.md Phase B.
 Policy registry (extend as Part II lands more allocation strategies):
     random  -- R-RMA uniform random pick (Section 1.8 Basic baseline)
     piled   -- R-PE Piled Execution (same-activity batching on the wait queue)
-(k-batching, R-RRA, R-SHQ land here as they're implemented.)
+    drl     -- frozen masked-PPO policy (requires --drl-model)
+(k-batching and KRM use parameterized names such as kbatch5 and krm1.)
 
 Scenarios:
     normal  -- as-is
@@ -27,10 +28,10 @@ diverges them — required for the paired comparisons below to mean anything
 (see process.py's module docstring, and output/piled_execution_eval.md for
 what happens without it).
 
-Warm-up: case-based (not time-based, see apply_warmup() docstring) --
-exclude every case that arrived before --warmup-days. Pick the value by
-first running with --report-wip to see the work-in-progress (open case
-count) time series and choosing where it plateaus.
+Warm-up uses two matching views: process metrics exclude cases that arrived
+before --warmup-days, while resource metrics retain every activity that
+overlaps the post-warm-up time window. Pick the value by first running with
+--report-wip under the same simulation configuration.
 
 Usage:
     cd <repo-root>
@@ -50,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import random as _random
 import re
 import sys
@@ -71,11 +73,13 @@ from simulation.components.resource import (
     DEFAULT_CAPACITY_ACTIVE, DEFAULT_CAPACITY_LEGACY, DEFAULT_ROSTER_SEED,
     RESOURCE_PERMISSIONS, ResourceComponent, capacity_for_mode,
 )
-from simulation.components import permissions as perm_models
 from simulation.policies import RoundRobinPolicy, ShortestQueuePolicy
-from simulation.components.case_attributes import CaseAttributeSampler
 from simulation.components.lifecycle_params import LifecycleParameters
-from simulation.main import USE_MDN_ARRIVALS, CaseCompletionTracker
+from simulation.main import (
+    USE_MDN_ARRIVALS,
+    CaseCompletionTracker,
+    load_permission_context,
+)
 from analysis.availability import YearlyAvailability
 
 import scripts.opt_metrics as opt_metrics
@@ -83,9 +87,6 @@ import scripts.opt_metrics as opt_metrics
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BPMN_PATH = REPO_ROOT / "simulation" / "models" / "bpic17_process.bpmn"
 AVAILABILITY_MODEL_PATH = REPO_ROOT / "models" / "availability_model.json"
-ORGMODEL_PATH = REPO_ROOT / "models" / "permissions_orgmodel.json"
-OBSERVED_PERMS_PATH = REPO_ROOT / "models" / "permissions_observed.json"
-CASE_ATTRIBUTES_PATH = REPO_ROOT / "models" / "case_attributes.json"
 OUT_DEFAULT = REPO_ROOT / "output" / "experiments"
 ACTIVE_INPUTS_PATH = REPO_ROOT / "simulation_inputs_active.json"
 LEGACY_MODEL_PATH = REPO_ROOT / "simulation" / "models" / "processing_time_model.joblib"
@@ -99,7 +100,19 @@ EVALUATION_PROVENANCE_PATHS = (
     "scripts/run_experiments.py",
     "simulation/components/resource.py",
     "simulation/components/process.py",
+    "simulation/components/petri_process.py",
+    "simulation/components/arrival_mdn.py",
+    "simulation/components/arrival_mdn_weights.npz",
+    "simulation/policies.py",
+    "simulation/policies_advanced.py",
+    "simulation/drl.py",
+    "simulation/models/bpic17_process.bpmn",
+    "simulation/models/dp_branching_probs.json",
+    "simulation_inputs.json",
     "models/availability_model.json",
+    "models/case_attributes.json",
+    "models/permissions_observed.json",
+    "models/permissions_orgmodel.json",
     "simulation_inputs_active.json",
 )
 
@@ -108,7 +121,7 @@ EVALUATION_PROVENANCE_PATHS = (
 START_DATETIME = datetime(2016, 1, 1)
 
 KNOWN_POLICIES = {"random", "piled", "roundrobin", "shortestqueue",
-                  "pullspt", "pulllaf", "parksong"}
+                  "pullspt", "pulllaf", "parksong", "drl"}
 _KRM_RE = re.compile(r"^krm(\d+(?:\.\d+)?)$")  # krm1, krm0.5, krm2 -> delta
 KNOWN_SCENARIOS = {"normal", "peak", "outage"}
 _KBATCH_RE = re.compile(r"^kbatch(\d+)$")
@@ -261,24 +274,15 @@ def build_arrival_component(seed: int, scenario: str):
 
 def load_permission_model(kind: str, seed: int):
     """Mirror simulation/main.py's Section-1.7 wiring: returns
-    (permission_model_or_None, case_attribute_sampler_or_None).
+    (permission_model_or_None, case_attribute_sampler).
 
     "orgmodel" (the team default since 1.7 landed) gates permissions on the
-    case type, so cases need a CaseAttributeSampler; "observed" is the
-    log-mined resource x activity matrix; "hardcoded" is the original
-    top-20 map (ResourceComponent's built-in default when passed None).
+    case type; "observed" is the log-mined resource x activity matrix;
+    "hardcoded" is the original top-20 map (ResourceComponent's built-in
+    default when passed None). Case attributes are sampled in every mode so
+    changing permissions cannot silently change the case data.
     """
-    if kind == "orgmodel":
-        perms = perm_models.OrgModelPermissions.from_json(ORGMODEL_PATH)
-        perms.self_check()
-        case_attrs = CaseAttributeSampler.from_json(CASE_ATTRIBUTES_PATH, seed=seed)
-        return perms, case_attrs
-    if kind == "observed":
-        return perm_models.StaticPermissions.from_json(OBSERVED_PERMS_PATH), None
-    if kind == "hardcoded":
-        return None, None
-    raise ValueError(f"unknown permissions kind {kind!r} "
-                     "(known: orgmodel, observed, hardcoded)")
+    return load_permission_context(kind, seed)
 
 
 def scenario_excluded_resources(scenario: str, seed: int, resource_pool) -> Optional[Set[str]]:
@@ -325,6 +329,8 @@ def build_resource_component(
     policy: str, seed: int, calendar, excluded: Optional[Set[str]],
     permission_model=None, lifecycle_mode: str = "legacy", lifecycle_params=None,
     capacity: Optional[int] = None,
+    drl_model_path: Optional[str] = None,
+    branching_mode: str = "probs",
 ) -> ResourceComponent:
     if capacity is None:
         capacity = capacity_for_mode(lifecycle_mode)
@@ -358,6 +364,7 @@ def build_resource_component(
     pull = {"pullspt": "spt", "pulllaf": "laf"}.get(policy)
     krm_delta = parse_krm_policy(policy)
     parksong = (policy == "parksong")
+    drl = (policy == "drl")
     needs_duration_model = pull == "spt" or parksong or krm_delta is not None
 
     return ResourceComponent(
@@ -371,12 +378,15 @@ def build_resource_component(
         pull=pull,
         parksong=parksong,
         krm_delta=krm_delta,
+        drl=drl,
+        drl_model_path=drl_model_path,
         duration_model_path=(
             str(ACTIVE_MODEL_PATH if lifecycle_mode == "active" else LEGACY_MODEL_PATH)
             if needs_duration_model else None),
         excluded_resources=excluded,
         lifecycle_mode=lifecycle_mode,
         lifecycle_params=lifecycle_params,
+        branching_mode=branching_mode,
     )
 
 
@@ -476,6 +486,7 @@ def run_once(
     excluded_override: Optional[Set[str]] = None,
     roster_seed: Optional[int] = DEFAULT_ROSTER_SEED,
     capacity: Optional[int] = None,
+    drl_model_path: Optional[str] = None,
 ) -> tuple[pd.DataFrame, dict]:
     """Build and run one (policy, seed, scenario) simulation.
 
@@ -509,6 +520,10 @@ def run_once(
         raise ValueError(
             "processing_time_mode must be distribution|ml_model|ml_probabilistic, "
             f"got {processing_time_mode!r}")
+    if process_model == "basic" and branching_mode != "probs":
+        raise ValueError(
+            f"branching_mode={branching_mode!r} requires process_model='advanced'; "
+            "use branching_mode='probs' with the basic process")
 
     duration = days * 86400
 
@@ -528,6 +543,8 @@ def run_once(
                      else sorted(RESOURCE_PERMISSIONS))
     excluded = (excluded_override if excluded_override is not None
                 else scenario_excluded_resources(scenario, seed, resource_pool))
+    excluded = set(excluded or ())
+    active_resource_pool = set(resource_pool) - excluded
 
     lifecycle_params = (
         LifecycleParameters.from_file(ACTIVE_INPUTS_PATH)
@@ -541,8 +558,11 @@ def run_once(
                                          permission_model=perms,
                                          lifecycle_mode=lifecycle_mode,
                                          lifecycle_params=lifecycle_params,
-                                         capacity=effective_capacity)
+                                         capacity=effective_capacity,
+                                         drl_model_path=drl_model_path,
+                                         branching_mode=branching_mode)
     recorder = _ArrivalRecorder()
+    completion_recorder = _CompletionRecorder()
     tracker = CaseCompletionTracker()
 
     proc_kwargs = dict(
@@ -561,6 +581,7 @@ def run_once(
     engine.register(resources)
     engine.register(process)
     engine.register(recorder)
+    engine.register(completion_recorder)
     engine.register(tracker)
 
     arrivals.bootstrap(engine)
@@ -574,20 +595,30 @@ def run_once(
         cid: START_DATETIME + timedelta(seconds=t)
         for cid, t in recorder.timestamps.items()
     }
+    completion_times = {
+        cid: START_DATETIME + timedelta(seconds=t)
+        for cid, t in completion_recorder.timestamps.items()
+    }
     availability_seconds = availability_seconds_per_resource(
-        calendar, START_DATETIME, days, resource_pool,
+        calendar, START_DATETIME, days, active_resource_pool,
     )
     availability_intervals = availability_intervals_per_resource(
-        calendar, START_DATETIME, days, resource_pool,
+        calendar, START_DATETIME, days, active_resource_pool,
     )
+    system_resources = set(getattr(calendar, "system", set()))
+    human_resources = active_resource_pool - system_resources
 
     meta = {
         "arrival_times": arrival_times,
+        "completion_times": completion_times,
         "completed_case_ids": tracker.completed_case_ids,
         "availability_seconds": availability_seconds,
         "availability_intervals": availability_intervals,
         "engine_stats": dict(engine.stats),
         "resource_stats": resources.stats(),
+        "resource_subset": human_resources,
+        "evaluation_window": (
+            START_DATETIME, START_DATETIME + timedelta(days=days)),
         "lifecycle_mode": lifecycle_mode,
         "processing_time_mode": processing_time_mode,
         "configuration": {
@@ -604,30 +635,64 @@ def run_once(
             "roster_seed": effective_roster_seed,
             "capacity": effective_capacity,
             "arrival_model": "mdn" if USE_MDN_ARRIVALS else "parametric",
-            "excluded_resources": sorted(excluded or ()),
-            "resource_pool_size": len(resource_pool),
+            "drl_model_path": str(drl_model_path) if policy == "drl" else None,
+            "excluded_resources": sorted(excluded),
+            "resource_pool_size": len(active_resource_pool),
+            "human_resource_count": len(human_resources),
+            "automated_resources": sorted(active_resource_pool & system_resources),
         },
     }
     return df, meta
 
 
-def apply_warmup(df: pd.DataFrame, meta: dict, warmup_days: float) -> tuple[pd.DataFrame, dict]:
-    """Exclude every case that ARRIVED before the warm-up cutoff.
+def _clip_availability_intervals(
+    intervals: Dict[str, list[tuple[datetime, datetime]]],
+    start: datetime,
+    end: datetime,
+) -> Dict[str, list[tuple[datetime, datetime]]]:
+    """Clip realized resource calendars to an evaluation time window."""
+    return {
+        resource: [
+            (max(span_start, start), min(span_end, end))
+            for span_start, span_end in spans
+            if min(span_end, end) > max(span_start, start)
+        ]
+        for resource, spans in intervals.items()
+    }
 
-    Case-based, not time-based: a case straddling the cutoff (arrived
-    before, still running after) is dropped entirely rather than having
-    only its early activities trimmed. Simpler and defensible for
-    per-instance metrics (cycle time, occupation) -- the simplification a
-    reader should know about, documented here and in the report.
+
+def apply_warmup(df: pd.DataFrame, meta: dict, warmup_days: float) -> tuple[pd.DataFrame, dict]:
+    """Prepare consistent case- and resource-based post-warm-up views.
+
+    Cycle-time and milestone metrics keep only cases that *arrive* after the
+    cutoff. Resource metrics instead use the original event log and clip busy
+    sessions plus availability to the post-cutoff time window. Thus work done
+    after the cutoff for an older case still counts toward occupation/fairness,
+    without admitting that older case into the cycle-time sample.
     """
-    if warmup_days <= 0 or df.empty:
+    if warmup_days <= 0:
         return df, meta
     cutoff = START_DATETIME + timedelta(days=warmup_days)
+    _, horizon_end = meta["evaluation_window"]
+    if cutoff >= horizon_end:
+        raise ValueError("--warmup-days must be smaller than --days")
     keep = {cid for cid, t in meta["arrival_times"].items() if t >= cutoff}
-    df2 = df[df["case:concept:name"].isin(keep)]
+    df2 = (
+        df[df["case:concept:name"].isin(keep)]
+        if "case:concept:name" in df.columns else df.copy()
+    )
     meta2 = dict(meta)
     meta2["arrival_times"] = {c: t for c, t in meta["arrival_times"].items() if c in keep}
     meta2["completed_case_ids"] = {c for c in meta["completed_case_ids"] if c in keep}
+    clipped = _clip_availability_intervals(
+        meta["availability_intervals"], cutoff, horizon_end)
+    meta2["availability_intervals"] = clipped
+    meta2["availability_seconds"] = {
+        resource: sum((end - start).total_seconds() for start, end in spans)
+        for resource, spans in clipped.items()
+    }
+    meta2["evaluation_window"] = (cutoff, horizon_end)
+    meta2["configuration"] = dict(meta["configuration"], warmup_days=warmup_days)
     return df2, meta2
 
 
@@ -635,58 +700,40 @@ def apply_warmup(df: pd.DataFrame, meta: dict, warmup_days: float) -> tuple[pd.D
 # WIP diagnostic (for choosing --warmup-days)
 # ---------------------------------------------------------------------
 
-def report_wip(days: int, lifecycle_mode: str = "legacy") -> None:
+def report_wip(
+    days: int,
+    *,
+    scenario: str,
+    process_model: str,
+    branching_mode: str,
+    permissions: str,
+    lifecycle_mode: str,
+    processing_time_mode: str,
+    roster_seed: Optional[int],
+    capacity: Optional[int],
+) -> None:
     """Print open-case count (arrived, not yet reached CASE_COMPLETE) per
     day for one pilot run (policy=random, seed=1) -- eyeball where it
     plateaus and pass that as --warmup-days. Cheap substitute for a full
     Welch's-method scan.
 
-    Needs true per-case CASE_COMPLETE timestamps, not just "last completed
-    activity" from the event log: a case's most recent completed activity
-    can be old while the case is still queueing for its next one, which
-    would undercount WIP if used as the "done" signal. Runs its own
-    engine (not run_once()) so it can register _CompletionRecorder too.
+    It deliberately calls ``run_once`` so the arrival, process, permission,
+    roster, capacity, lifecycle and processing-time settings are identical to
+    the experiment for which the warm-up is being selected.
     """
-    duration = days * 86400
-    calendar = YearlyAvailability.from_json(AVAILABILITY_MODEL_PATH)
-    perms, case_attrs = load_permission_model("orgmodel", seed=1)
-    lifecycle_params = (
-        LifecycleParameters.from_file(ACTIVE_INPUTS_PATH)
-        if lifecycle_mode == "active" else None
+    _, meta = run_once(
+        "random", 1, days, scenario, True, process_model, branching_mode,
+        lifecycle_mode=lifecycle_mode,
+        processing_time_mode=processing_time_mode,
+        permissions=permissions,
+        roster_seed=roster_seed,
+        capacity=capacity,
     )
-    engine = SimulationEngine(
-        sim_duration=duration, start_datetime=START_DATETIME, verbose=False,
-        lifecycle_mode=lifecycle_mode)
-    arrivals = ArrivalComponent(seed=1)
-    resources = build_resource_component("random", 1, calendar, None,
-                                         permission_model=perms,
-                                         lifecycle_mode=lifecycle_mode,
-                                         lifecycle_params=lifecycle_params)
-    arrival_rec = _ArrivalRecorder()
-    complete_rec = _CompletionRecorder()
-    process = ProcessComponent(
-        seed=1, mode="distribution", start_datetime=START_DATETIME,
-        resource_component=resources, crn=True, case_attributes=case_attrs,
-        lifecycle_mode=lifecycle_mode, lifecycle_params=lifecycle_params,
-    )
-    engine.register(arrivals)
-    engine.register(resources)
-    engine.register(process)
-    engine.register(arrival_rec)
-    engine.register(complete_rec)
-    arrivals.bootstrap(engine)
-    engine.run()
-
-    if not arrival_rec.timestamps:
+    if not meta["arrival_times"]:
         print("No arrivals recorded -- nothing to report.")
         return
-
-    arrivals_s = pd.Series({
-        c: START_DATETIME + timedelta(seconds=t) for c, t in arrival_rec.timestamps.items()
-    })
-    completes_s = pd.Series({
-        c: START_DATETIME + timedelta(seconds=t) for c, t in complete_rec.timestamps.items()
-    })
+    arrivals_s = pd.Series(meta["arrival_times"])
+    completes_s = pd.Series(meta["completion_times"])
 
     print(f"{'day':>4}  {'open_cases (arrived, not yet CASE_COMPLETE by day end)':>55}")
     for day in range(days):
@@ -702,11 +749,21 @@ def report_wip(days: int, lifecycle_mode: str = "legacy") -> None:
 # Aggregation: CI + paired tests
 # ---------------------------------------------------------------------
 
-METRICS = ["avg_cycle_time_s", "p95_cycle_time_s", "avg_resource_occupation", "resource_fairness"]
+METRICS = [
+    "avg_cycle_time_s", "p95_cycle_time_s", "n_cases_completed",
+    "avg_resource_occupation", "resource_fairness",
+    "time_to_first_offer_s", "time_to_decision_s", "handover_rate",
+    "resource_activity_switch_rate", "rolling_workload_balance",
+    "still_queued_at_end", "mean_wait_seconds",
+]
 
 
-def flatten_result(policy: str, seed: int, scenario: str, m: dict, engine_stats: dict) -> dict:
-    return {
+def flatten_result(policy: str, seed: int, scenario: str, m: dict, meta: dict) -> dict:
+    """Flatten metrics, diagnostics and effective configuration into one row."""
+    engine_stats = meta["engine_stats"]
+    resource_stats = meta["resource_stats"]
+    custom = m["custom_metrics"]
+    row = {
         "policy": policy,
         "seed": seed,
         "scenario": scenario,
@@ -715,9 +772,31 @@ def flatten_result(policy: str, seed: int, scenario: str, m: dict, engine_stats:
         "n_cases_completed": m["cycle_time"]["n_cases"],
         "avg_resource_occupation": m["occupation"]["avg_resource_occupation"],
         "resource_fairness": m["fairness"]["resource_fairness"],
+        "weighted_resource_fairness": m["fairness"].get(
+            "weighted_resource_fairness"),
+        "time_to_first_offer_s": custom["time_to_first_offer"]["mean_s"],
+        "time_to_decision_s": custom["time_to_decision"]["mean_s"],
+        "handover_rate": custom["handover_rate"]["handover_rate"],
+        "resource_activity_switch_rate": custom[
+            "resource_activity_switch_rate"]["activity_switch_rate"],
+        "rolling_workload_balance": custom[
+            "rolling_workload_balance"]["mean_window_std"],
         "cases_started": engine_stats.get("cases_started"),
         "cases_completed_total": engine_stats.get("cases_completed"),
+        "still_queued_at_end": resource_stats.get("still_queued_at_end"),
+        "mean_wait_seconds": resource_stats.get("mean_wait_seconds"),
+        "drl_assignments": resource_stats.get("drl_assignments"),
+        "drl_postponements": resource_stats.get("drl_postponements"),
+        "busy_seconds_outside_availability": m["occupation"].get(
+            "busy_seconds_outside_availability"),
+        "n_resources_evaluated": m["occupation"].get("n_resources_evaluated"),
     }
+    diagnostics = meta.get("diagnostics", {})
+    row.update({f"diagnostic_{key}": value for key, value in diagnostics.items()})
+    for key, value in meta["configuration"].items():
+        row[f"config_{key}"] = (
+            json.dumps(value, sort_keys=True) if isinstance(value, (list, dict)) else value)
+    return row
 
 
 def _ci95(values: np.ndarray) -> tuple[float, float]:
@@ -809,9 +888,9 @@ def parse_args():
     p.add_argument("--warmup-days", type=float, default=0.0,
                    help="Exclude cases arriving before this cutoff (see --report-wip).")
     p.add_argument("--scenario", default="normal", choices=sorted(KNOWN_SCENARIOS))
-    p.add_argument("--process-model", default="basic", choices=["basic", "advanced"],
-                   help="'basic' avoids the pm4py dependency and runs faster; "
-                        "use 'advanced' for report-quality numbers.")
+    p.add_argument("--process-model", default="advanced", choices=["basic", "advanced"],
+                   help="Advanced is the report-quality default. Basic is a faster "
+                        "diagnostic and requires --branching-mode probs.")
     p.add_argument("--branching-mode", default="visit", choices=["probs", "visit", "rules"],
                    help="--process-model advanced only.")
     p.add_argument("--permissions", default="orgmodel",
@@ -852,6 +931,12 @@ def parse_args():
                         f"feature, so N parallel items each finish as fast as "
                         f"one: N multiplies throughput for free.")
     p.add_argument("--out", default=str(OUT_DEFAULT))
+    p.add_argument(
+        "--drl-model", default=None, metavar="PATH",
+        help="Frozen MaskablePPO .zip model used by policy 'drl'. Train it "
+             "with scripts/train_drl.py. The optional requirements-drl.txt "
+             "stack is needed only when this policy is selected.",
+    )
     p.add_argument("--report-wip", action="store_true",
                    help="Print a WIP-over-time diagnostic and exit (ignores --policies/--seeds).")
     return p.parse_args()
@@ -860,16 +945,33 @@ def parse_args():
 def main():
     args = parse_args()
 
-    if args.report_wip:
-        report_wip(args.days, args.lifecycle_mode)
-        return
-
     if args.roster_seed is not None and args.no_roster:
         print("--roster-seed and --no-roster are mutually exclusive.", file=sys.stderr)
         sys.exit(1)
     # Explicit N wins; --no-roster disables; otherwise the default is ON.
     roster_seed = None if args.no_roster else (
         args.roster_seed if args.roster_seed is not None else DEFAULT_ROSTER_SEED)
+
+    if args.process_model == "basic" and args.branching_mode != "probs":
+        print("--process-model basic requires --branching-mode probs.", file=sys.stderr)
+        sys.exit(1)
+    if args.warmup_days < 0 or args.warmup_days >= args.days:
+        print("--warmup-days must satisfy 0 <= warmup-days < days.", file=sys.stderr)
+        sys.exit(1)
+
+    if args.report_wip:
+        report_wip(
+            args.days,
+            scenario=args.scenario,
+            process_model=args.process_model,
+            branching_mode=args.branching_mode,
+            permissions=args.permissions,
+            lifecycle_mode=args.lifecycle_mode,
+            processing_time_mode=args.processing_time_mode,
+            roster_seed=roster_seed,
+            capacity=args.capacity,
+        )
+        return
 
     policies = [x.strip() for x in args.policies.split(",") if x.strip()]
     unknown = [p for p in policies if not is_known_policy(p)]
@@ -878,10 +980,57 @@ def main():
               f"(known: {sorted(KNOWN_POLICIES)}, or 'kbatchN' e.g. kbatch5)",
               file=sys.stderr)
         sys.exit(1)
+    if "drl" in policies and not args.drl_model:
+        print("Policy 'drl' requires --drl-model PATH (train one with "
+              "scripts/train_drl.py).", file=sys.stderr)
+        sys.exit(1)
 
     seeds = list(range(1, args.seeds + 1))
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    configuration = {
+        "schema_version": 2,
+        "policies": policies,
+        "seeds": seeds,
+        "days": args.days,
+        "warmup_days": args.warmup_days,
+        "scenario": args.scenario,
+        "process_model": args.process_model,
+        "branching_mode": args.branching_mode,
+        "permissions": args.permissions,
+        "lifecycle_mode": args.lifecycle_mode,
+        "processing_time_mode": args.processing_time_mode,
+        "crn": args.crn,
+        "roster_seed": roster_seed,
+        "capacity": args.capacity if args.capacity is not None else capacity_for_mode(
+            args.lifecycle_mode),
+        "arrival_model": "mdn" if USE_MDN_ARRIVALS else "parametric",
+        "drl_model": str(Path(args.drl_model).resolve()) if args.drl_model else None,
+        "provenance_sha256": evaluation_provenance_hashes(),
+    }
+    if args.drl_model:
+        model_path = Path(args.drl_model)
+        if not model_path.exists() and model_path.suffix != ".zip":
+            model_path = model_path.with_suffix(".zip")
+        if model_path.exists():
+            configuration["drl_model_sha256"] = hashlib.sha256(
+                model_path.read_bytes()).hexdigest()
+    configuration_path = out_dir / "configuration.json"
+    if configuration_path.exists():
+        existing = json.loads(configuration_path.read_text(encoding="utf-8"))
+        if existing != configuration:
+            print(
+                f"{configuration_path} describes a different experiment. "
+                "Use a new --out directory to avoid overwriting incomparable results.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    else:
+        configuration_path.write_text(
+            json.dumps(configuration, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
     rows = []
     for policy in policies:
@@ -894,8 +1043,12 @@ def main():
                 permissions=args.permissions,
                 roster_seed=roster_seed,
                 capacity=args.capacity,
+                drl_model_path=args.drl_model,
             )
+            resource_df = df
             df, meta = apply_warmup(df, meta, args.warmup_days)
+            meta["configuration"] = dict(
+                meta["configuration"], warmup_days=args.warmup_days)
             if df.empty:
                 print(f"WARNING: policy={policy} seed={seed}: empty log after "
                       f"warm-up filter, skipping this run.")
@@ -906,13 +1059,24 @@ def main():
                     df,
                     arrival_times=meta["arrival_times"],
                     availability_seconds=meta["availability_seconds"],
+                    availability_intervals=meta["availability_intervals"],
+                    fairness_weights=meta["availability_seconds"],
                     completed_case_ids=meta["completed_case_ids"],
+                    resource_subset=meta["resource_subset"],
+                    resource_df=resource_df,
+                    evaluation_window=meta["evaluation_window"],
+                )
+                meta["diagnostics"] = validate_resource_diagnostics(
+                    resource_df,
+                    meta["resource_stats"],
+                    m["occupation"]["per_resource"],
+                    meta["configuration"]["capacity"],
                 )
             except Exception as e:  # noqa: BLE001 — resilience over precision here
                 print(f"WARNING: policy={policy} seed={seed}: evaluate() failed "
                       f"({type(e).__name__}: {e}), skipping this run.", file=sys.stderr)
                 continue
-            rows.append(flatten_result(policy, seed, args.scenario, m, meta["engine_stats"]))
+            rows.append(flatten_result(policy, seed, args.scenario, m, meta))
             ct = m["cycle_time"]
             print(f"  [{policy:>7} seed={seed:>2}] "
                   f"cycle_time={ct['avg_cycle_time_s']/86400:.2f}d "

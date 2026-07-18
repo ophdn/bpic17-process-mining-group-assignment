@@ -161,6 +161,7 @@ def average_cycle_time(
 def resource_busy_seconds(
     df: pd.DataFrame,
     availability_intervals: Optional[Mapping[str, Iterable[tuple]]] = None,
+    evaluation_window: Optional[tuple[pd.Timestamp, pd.Timestamp]] = None,
 ) -> pd.Series:
     """Total busy seconds per resource (sum of paired running sessions).
     Legacy logs have one start→complete session per instance; active logs also
@@ -176,16 +177,22 @@ def resource_busy_seconds(
     """
     inst = paired_instances(df)
     inst = inst[inst["resource"].notna() & (inst["resource"] != "")]
-    if availability_intervals is None:
+    if availability_intervals is None and evaluation_window is None:
         busy = (inst["complete"] - inst["start"]).dt.total_seconds()
     else:
         def overlap_seconds(row):
+            if availability_intervals is None:
+                intervals = (evaluation_window,)
+            else:
+                intervals = availability_intervals.get(row["resource"], ())
             total = 0.0
-            for available_start, available_end in availability_intervals.get(
-                row["resource"], ()
-            ):
+            for available_start, available_end in intervals:
                 overlap_start = max(row["start"], pd.Timestamp(available_start))
                 overlap_end = min(row["complete"], pd.Timestamp(available_end))
+                if evaluation_window is not None:
+                    window_start, window_end = map(pd.Timestamp, evaluation_window)
+                    overlap_start = max(overlap_start, window_start)
+                    overlap_end = min(overlap_end, window_end)
                 if overlap_end > overlap_start:
                     total += (overlap_end - overlap_start).total_seconds()
             return total
@@ -199,6 +206,7 @@ def average_resource_occupation(
     resource_subset: Optional[Iterable[str]] = None,
     *,
     availability_intervals: Optional[Mapping[str, Iterable[tuple]]] = None,
+    evaluation_window: Optional[tuple[pd.Timestamp, pd.Timestamp]] = None,
 ) -> dict:
     """Mean share the resources are working during their availabilities.
 
@@ -213,8 +221,12 @@ def average_resource_occupation(
     e.g. User_1) has a huge availability denominator and a tiny occupation
     ratio, which distorts a staffing metric it is not really part of.
     """
-    raw_busy = resource_busy_seconds(df)
-    busy = resource_busy_seconds(df, availability_intervals)
+    # ``raw_busy`` is clipped to the evaluated horizon but not to shifts, so
+    # the difference to ``busy`` is genuine overtime.  Without this global
+    # clip a warm-up period would be misreported as time outside availability.
+    raw_busy = resource_busy_seconds(df, evaluation_window=evaluation_window)
+    busy = resource_busy_seconds(
+        df, availability_intervals, evaluation_window=evaluation_window)
     if availability_seconds is not None:
         avail = pd.Series(dict(availability_seconds), dtype=float)
         basis = "availability_windows"
@@ -395,7 +407,10 @@ def handover_rate(df: pd.DataFrame) -> dict:
     }
 
 
-def resource_activity_switch_rate(df: pd.DataFrame) -> dict:
+def resource_activity_switch_rate(
+    df: pd.DataFrame,
+    evaluation_window: Optional[tuple[pd.Timestamp, pd.Timestamp]] = None,
+) -> dict:
     """Share of consecutive sessions handled by a resource whose activity changes.
 
     This directly evaluates Piled Execution's mechanism: keeping a resource on
@@ -405,6 +420,9 @@ def resource_activity_switch_rate(df: pd.DataFrame) -> dict:
     """
     inst = paired_instances(df).sort_values(["resource", "start", "complete"])
     inst = inst[inst["resource"].notna() & (inst["resource"] != "")]
+    if evaluation_window is not None:
+        window_start, window_end = map(pd.Timestamp, evaluation_window)
+        inst = inst[(inst["complete"] > window_start) & (inst["start"] < window_end)]
 
     same_resource = inst["resource"] == inst["resource"].shift(1)
     changed_activity = inst["activity"] != inst["activity"].shift(1)
@@ -421,6 +439,7 @@ def resource_activity_switch_rate(df: pd.DataFrame) -> dict:
 def rolling_workload_balance(
     df: pd.DataFrame, window: str = "1D",
     resource_subset: Optional[Iterable[str]] = None,
+    evaluation_window: Optional[tuple[pd.Timestamp, pd.Timestamp]] = None,
 ) -> dict:
     """Std of per-resource occupation WITHIN each rolling window, averaged
     across windows -- catches "fair on average, unfair in bursts", which
@@ -439,6 +458,11 @@ def rolling_workload_balance(
     """
     inst = paired_instances(df)
     inst = inst[inst["resource"].notna() & (inst["resource"] != "")]
+    if evaluation_window is not None:
+        window_start, window_end = map(pd.Timestamp, evaluation_window)
+        inst = inst[(inst["complete"] > window_start) & (inst["start"] < window_end)].copy()
+        inst["start"] = inst["start"].clip(lower=window_start)
+        inst["complete"] = inst["complete"].clip(upper=window_end)
     if resource_subset is not None:
         inst = inst[inst["resource"].isin(set(resource_subset))]
     if inst.empty:
@@ -478,6 +502,8 @@ def evaluate(
     completed_case_ids=None,
     resource_subset: Optional[Iterable[str]] = None,
     availability_intervals: Optional[Mapping[str, Iterable[tuple]]] = None,
+    resource_df: Optional[pd.DataFrame] = None,
+    evaluation_window: Optional[tuple[pd.Timestamp, pd.Timestamp]] = None,
 ) -> dict:
     """All three slide-21 metrics on one simulated event log.
 
@@ -501,11 +527,13 @@ def evaluate(
     if completed_case_ids is not None:
         df_completed = df[df["case:concept:name"].isin(set(completed_case_ids))]
 
+    resource_events = df if resource_df is None else resource_df
     occ = average_resource_occupation(
-        df,
+        resource_events,
         availability_seconds,
         resource_subset,
         availability_intervals=availability_intervals,
+        evaluation_window=evaluation_window,
     )
     return {
         "cycle_time": average_cycle_time(df_completed, arrival_times),
@@ -515,9 +543,11 @@ def evaluate(
             "time_to_first_offer": time_to_first_offer(df, arrival_times),
             "time_to_decision": time_to_decision(df, arrival_times),
             "handover_rate": handover_rate(df),
-            "resource_activity_switch_rate": resource_activity_switch_rate(df),
+            "resource_activity_switch_rate": resource_activity_switch_rate(
+                resource_events, evaluation_window=evaluation_window),
             "rolling_workload_balance": rolling_workload_balance(
-                df, resource_subset=resource_subset),
+                resource_events, resource_subset=resource_subset,
+                evaluation_window=evaluation_window),
         },
         "case_filter": {
             "n_cases_in_log": int(n_total),

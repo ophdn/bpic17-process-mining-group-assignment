@@ -88,6 +88,10 @@ class PermissionModel(Protocol):
         """Every resource the model knows about."""
         ...
 
+    def activities(self) -> List[str]:
+        """Every activity named by the model (for fixed policy spaces)."""
+        ...
+
 
 # ──────────────────────────────────────────────────────────────────────────
 # Static: resource -> activities
@@ -123,6 +127,9 @@ class StaticPermissions:
 
     def resources(self) -> List[str]:
         return list(self._perms)
+
+    def activities(self) -> List[str]:
+        return list(self._by_activity)
 
     def activities_of(self, resource: str) -> Set[str]:
         return self._perms.get(resource, set())
@@ -227,6 +234,9 @@ class OrgModelPermissions:
 
     def resources(self) -> List[str]:
         return list(self._resources)
+
+    def activities(self) -> List[str]:
+        return list(self._index)
 
     # -- introspection --
 
