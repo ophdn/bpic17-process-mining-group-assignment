@@ -1,25 +1,25 @@
 {
-  "n_cases": 2177,
+  "n_cases": 4794,
   "branching": {
     "per_activity_tvd": {
-      "A_Accepted": 0.05,
-      "A_Cancelled": 0.0259,
+      "A_Accepted": 0.042,
+      "A_Cancelled": 0.125,
       "A_Complete": null,
-      "A_Concept": 0.7154,
-      "A_Create Application": 0.2544,
-      "A_Denied": 0.0035,
+      "A_Concept": 0.7062,
+      "A_Create Application": 0.2239,
+      "A_Denied": 0.0022,
       "A_Incomplete": null,
-      "A_Pending": 0.5171,
-      "A_Submitted": 0.8298,
+      "A_Pending": null,
+      "A_Submitted": 0.8296,
       "A_Validating": null,
-      "O_Accepted": 0.0,
-      "O_Cancelled": 0.5814,
+      "O_Accepted": null,
+      "O_Cancelled": 0.6087,
       "O_Create Offer": 0.0,
-      "O_Created": 0.0311,
-      "O_Refused": 0.1797,
-      "O_Returned": 0.7248,
-      "O_Sent (mail and online)": 0.4132,
-      "O_Sent (online only)": 0.6106,
+      "O_Created": 0.1166,
+      "O_Refused": 0.4052,
+      "O_Returned": null,
+      "O_Sent (mail and online)": 0.4302,
+      "O_Sent (online only)": null,
       "W_Assess potential fraud": null,
       "W_Call after offers": null,
       "W_Call incomplete files": null,
@@ -29,97 +29,136 @@
       "W_Shortened completion ": null,
       "W_Validate application": null
     },
-    "mean_tvd": 0.408,
-    "activities_missing_in_run": [
+    "mean_tvd": 0.4223,
+    "activities_absent_in_run": [
       "A_Complete",
       "A_Incomplete",
+      "A_Pending",
       "A_Validating",
+      "O_Accepted",
+      "O_Returned"
+    ],
+    "activities_always_terminal_in_run": [
+      "W_Call incomplete files",
+      "W_Validate application"
+    ],
+    "activities_not_in_bpmn": [
+      "O_Sent (online only)",
       "W_Assess potential fraud",
       "W_Call after offers",
-      "W_Call incomplete files",
       "W_Personal Loan collection",
-      "W_Shortened completion ",
-      "W_Validate application"
-    ]
+      "W_Shortened completion "
+    ],
+    "excluded_target_mass": {
+      "A_Accepted": 0.0003,
+      "A_Cancelled": 0.0011,
+      "A_Concept": 0.0011,
+      "A_Denied": 0.0013,
+      "A_Submitted": 0.0009,
+      "O_Cancelled": 0.0162,
+      "O_Created": 0.0447,
+      "O_Refused": 0.0412,
+      "O_Sent (mail and online)": 0.0001,
+      "W_Complete application": 0.0004
+    }
   },
   "processing_times": {
     "per_activity": {
-      "W_Assess potential fraud": null,
+      "W_Assess potential fraud": {
+        "sim_mean_s": 201326.1,
+        "ref_mean_s": 333226.34,
+        "sim_std_s": 331196.2,
+        "ref_std_s": 749126.94,
+        "rel_err_mean": 0.3958
+      },
       "W_Call after offers": {
-        "sim_mean_s": 22328.7,
+        "sim_mean_s": 32267.0,
         "ref_mean_s": 148086.33,
-        "sim_std_s": 121386.5,
+        "sim_std_s": 151121.6,
         "ref_std_s": 645666.93,
-        "rel_err_mean": 0.8492
+        "rel_err_mean": 0.7821
       },
       "W_Call incomplete files": {
-        "sim_mean_s": 260883.5,
+        "sim_mean_s": 201359.0,
         "ref_mean_s": 626302.53,
-        "sim_std_s": 406504.9,
+        "sim_std_s": 298508.4,
         "ref_std_s": 1207241.74,
-        "rel_err_mean": 0.5835
+        "rel_err_mean": 0.6785
       },
       "W_Complete application": {
-        "sim_mean_s": 17134.2,
+        "sim_mean_s": 22271.5,
         "ref_mean_s": 34554.48,
-        "sim_std_s": 61968.4,
+        "sim_std_s": 101037.2,
         "ref_std_s": 113121.32,
-        "rel_err_mean": 0.5041
+        "rel_err_mean": 0.3555
       },
       "W_Handle leads": {
-        "sim_mean_s": 447.2,
+        "sim_mean_s": 450.1,
         "ref_mean_s": 1325.35,
-        "sim_std_s": 1356.3,
+        "sim_std_s": 1442.5,
         "ref_std_s": 7933.1,
-        "rel_err_mean": 0.6626
+        "rel_err_mean": 0.6604
       },
       "W_Validate application": {
-        "sim_mean_s": 323591.2,
+        "sim_mean_s": 325603.8,
         "ref_mean_s": 339420.66,
-        "sim_std_s": 497232.8,
+        "sim_std_s": 430641.9,
         "ref_std_s": 565850.68,
-        "rel_err_mean": 0.0466
+        "rel_err_mean": 0.0407
       }
     },
-    "mean_rel_err": 0.5292
+    "mean_rel_err": 0.4855,
+    "target": "elapsed_start_complete_seconds"
   },
   "arrival_rate": {
-    "sim_mean_interarrival_s": 1188.57,
+    "sim_mean_interarrival_s": 1070.77,
     "ref_mean_interarrival_s": 1002.23,
-    "rel_err": 0.1859
+    "rel_err": 0.0684,
+    "sim_daily_arrivals_mean": 80.64,
+    "ref_daily_arrivals_mean": 86.09,
+    "daily_arrivals_rel_err": 0.0633
   },
+  "arrival_profile": null,
   "variants": {
     "ref_top20_variants_reproduced": 0,
-    "ref_top20_traffic_coverage_pct": 0
+    "ref_top20_traffic_coverage_pct": 0,
+    "ref_top20_variants_reproduced_ignoring_absent_activities": 0,
+    "ref_top20_traffic_coverage_pct_ignoring_absent_activities": 0.0,
+    "activities_ignored_for_variant_match": []
   },
   "case_stats": {
-    "sim_case_length_mean": 12.32,
+    "sim_case_length_mean": 16.11,
     "ref_case_length_mean": 15.09,
-    "case_length_rel_err": 0.1835,
-    "sim_case_duration_mean_s": 99906.0,
+    "case_length_rel_err": 0.0677,
+    "sim_case_duration_mean_s": 27520.5,
     "ref_case_duration_mean_s": 1887879.72,
-    "case_duration_rel_err": 0.9471
+    "case_duration_rel_err": 0.9854
   },
   "control_flow": {
     "fitness": {
       "perc_fit_traces": 0.0,
-      "average_trace_fitness": 0.6414661107932237,
-      "log_fitness": 0.6823642301875232,
+      "average_trace_fitness": 0.23971596072685467,
+      "log_fitness": 0.2417267734750853,
       "percentage_of_fitting_traces": 0.0
     },
-    "precision": 0.7231983702571938
+    "precision": 0.6783319924912845
   },
   "run_stats": {
-    "cases_started": 2318,
-    "cases_completed": 2177,
-    "completion_rate": 0.9392,
-    "sim_duration_days": 30,
-    "seed": 42
+    "cases_started": 4842,
+    "cases_completed": 4794,
+    "completion_rate": 0.9901,
+    "sim_duration_days": 60.0,
+    "seed": 42,
+    "lifecycle_mode": "legacy"
   },
   "config": {
     "process_model": "basic",
     "bpmn": "bpic17_process.bpmn",
     "branching_mode": "probs",
-    "processing_time_mode": "distribution"
+    "terminal_outcomes": "n/a",
+    "permissions": "orgmodel",
+    "processing_time_mode": "distribution",
+    "lifecycle_mode": "legacy",
+    "reference": "simulation_inputs.json"
   }
 }

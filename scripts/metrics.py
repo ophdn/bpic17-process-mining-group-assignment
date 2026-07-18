@@ -108,37 +108,102 @@ def control_flow_precision(df_complete: pd.DataFrame, net, im, fm) -> float:
 # 2. Branching probabilities
 # ---------------------------------------------------------------------
 
-def branching_divergence(df_complete: pd.DataFrame, reference_branching: Dict[str, Dict[str, float]]) -> dict:
+def branching_divergence(
+    df_complete: pd.DataFrame,
+    reference_branching: Dict[str, Dict[str, float]],
+    modeled_activities: Optional[set] = None,
+) -> dict:
     """
     For each activity with outgoing edges in the reference, compute the
     empirical next-activity distribution in *df_complete* (complete-only,
     see to_completed_events) and the total variation distance (half the L1
     distance between the two probability vectors, range [0, 1], 0 =
     identical) to the reference distribution.
+
+    Both distributions are conditioned on "this occurrence had a within-case
+    successor" (extract_log_info.extract_branching uses the identical
+    shift(-1)+dropna convention for the reference), so an activity that is
+    *always* the last event of its case has an undefined conditional
+    distribution -- not a TVD of 0 or 1, and not "never occurred". Concretely:
+    under enforce_terminal_outcomes (petri_process.py), A_Pending/A_Denied/
+    A_Cancelled always end the case immediately, so they can never have a
+    recorded successor even though they fire on every completed case. That
+    is reported separately (activities_always_terminal_in_run) from
+    activities that genuinely never occurred at all in this run
+    (activities_absent_in_run) -- e.g. a path the branching probabilities
+    never select.
+
+    *modeled_activities*: labels of every transition the process model (the
+    Petri net converted from the BPMN) actually has. Some real activities in
+    reference_branching aren't modeled at all (a BPMN coverage gap, not a
+    branching-probability problem) -- e.g. O_Sent (online only) is 6.4% of
+    real cases but isn't a task in bpic17_process.bpmn. Without this
+    parameter those activities: (a) always show up as "absent" even though
+    no branching-probability fix could ever reach them, and (b) silently
+    inflate the TVD of *other*, modeled activities whenever the real log
+    sends some probability mass to them as a next-activity target that the
+    model can never produce. When given, source activities not in
+    modeled_activities are reported separately
+    (activities_not_in_bpmn, TVD left None -- not a calibration question),
+    and for every other activity's target distribution, targets absent
+    from modeled_activities are dropped from *both* sides and the
+    reference redistribution is renormalised over just the modeled targets,
+    so TVD measures branching calibration given what the model can actually
+    produce. The excluded probability mass is reported per activity
+    (pct_mass_on_unmodeled_targets) rather than silently discarded.
     """
     df2 = df_complete.sort_values(["case:concept:name", "time:timestamp"]).copy()
+    total_counts = df2["concept:name"].value_counts()
     df2["next_activity"] = df2.groupby("case:concept:name")["concept:name"].shift(-1)
     df2 = df2.dropna(subset=["next_activity"])
 
     per_activity = {}
+    activities_absent = []
+    activities_always_terminal = []
+    activities_not_in_bpmn = []
+    excluded_target_mass = {}
     for act, ref_dist in reference_branching.items():
+        if modeled_activities is not None and act not in modeled_activities:
+            per_activity[act] = None
+            activities_not_in_bpmn.append(act)
+            continue
+        if int(total_counts.get(act, 0)) == 0:
+            per_activity[act] = None
+            activities_absent.append(act)
+            continue
         grp = df2[df2["concept:name"] == act]
         if len(grp) == 0:
-            per_activity[act] = None  # activity never occurred in this run
+            per_activity[act] = None
+            activities_always_terminal.append(act)
             continue
         sim_counts = grp["next_activity"].value_counts()
         sim_dist = (sim_counts / sim_counts.sum()).to_dict()
+
+        if modeled_activities is not None:
+            excluded_mass = round(
+                sum(p for t, p in ref_dist.items() if t not in modeled_activities), 4)
+            if excluded_mass:
+                excluded_target_mass[act] = excluded_mass
+            ref_dist = {t: p for t, p in ref_dist.items() if t in modeled_activities}
+            renorm = sum(ref_dist.values())
+            if renorm:
+                ref_dist = {t: p / renorm for t, p in ref_dist.items()}
 
         all_targets = set(ref_dist) | set(sim_dist)
         tvd = 0.5 * sum(abs(ref_dist.get(t, 0.0) - sim_dist.get(t, 0.0)) for t in all_targets)
         per_activity[act] = round(tvd, 4)
 
     observed = [v for v in per_activity.values() if v is not None]
-    return {
+    result = {
         "per_activity_tvd": per_activity,
         "mean_tvd": round(sum(observed) / len(observed), 4) if observed else None,
-        "activities_missing_in_run": [a for a, v in per_activity.items() if v is None],
+        "activities_absent_in_run": activities_absent,
+        "activities_always_terminal_in_run": activities_always_terminal,
     }
+    if modeled_activities is not None:
+        result["activities_not_in_bpmn"] = activities_not_in_bpmn
+        result["excluded_target_mass"] = excluded_target_mass
+    return result
 
 
 # ---------------------------------------------------------------------
@@ -341,15 +406,52 @@ def variant_overlap(df_complete: pd.DataFrame, reference_top20: list) -> dict:
     """
     Coverage: share of the reference top-20 traffic (by pct) that is
     also a variant somewhere in the simulated log (order-exact match).
+
+    Also reports a second, lenient coverage number that first strips any
+    step whose activity never occurs anywhere in *df_complete* (the same
+    "never fired in this run" condition as branching_divergence's
+    activities_absent_in_run -- e.g. W_Validate application, which is
+    reachable in the model but whose retry loop rarely lets a case finish
+    within the simulation horizon, see docs/ROADMAP.md) from each reference
+    trace before matching. A real variant that is an exact control-flow
+    match except for such a step is a structural horizon/loop-exit gap,
+    not a branching miss, and would otherwise count as a total non-match.
+    Activities missing from the *model* entirely (not in the BPMN at all)
+    are a different, already-tracked gap -- they still occur in
+    sim_activities' complement but are not distinguished here since they
+    can never appear in df_complete either way.
     """
     sim_traces = set(" → ".join(t) for t in _traces(df_complete))
+    sim_activities = set(df_complete["concept:name"].unique())
     ref_variants = {v["trace"]: v["pct"] for v in reference_top20}
 
     covered_pct = sum(pct for trace, pct in ref_variants.items() if trace in sim_traces)
     n_covered = sum(1 for trace in ref_variants if trace in sim_traces)
+
+    covered_pct_adj = 0.0
+    n_covered_adj = 0
+    ignored_activities = set()
+    for trace, pct in ref_variants.items():
+        if trace in sim_traces:
+            covered_pct_adj += pct
+            n_covered_adj += 1
+            continue
+        steps = trace.split(" → ")
+        dropped = [s for s in steps if s not in sim_activities]
+        if not dropped:
+            continue
+        reduced_trace = " → ".join(s for s in steps if s in sim_activities)
+        if reduced_trace in sim_traces:
+            covered_pct_adj += pct
+            n_covered_adj += 1
+            ignored_activities.update(dropped)
+
     return {
         "ref_top20_variants_reproduced": n_covered,
         "ref_top20_traffic_coverage_pct": round(covered_pct, 2),
+        "ref_top20_variants_reproduced_ignoring_absent_activities": n_covered_adj,
+        "ref_top20_traffic_coverage_pct_ignoring_absent_activities": round(covered_pct_adj, 2),
+        "activities_ignored_for_variant_match": sorted(ignored_activities),
     }
 
 
@@ -407,9 +509,13 @@ def evaluate(
     df_complete = to_completed_events(df)
     if df_all is None:
         df_all = df
+    modeled_activities = (
+        {t.label for t in net.transitions if t.label} if net is not None else None
+    )
     metrics = {
         "n_cases": df["case:concept:name"].nunique(),
-        "branching": branching_divergence(df_complete, reference["branching_probs"]),
+        "branching": branching_divergence(
+            df_complete, reference["branching_probs"], modeled_activities),
         "processing_times": processing_time_errors(df, reference["processing_times"]),
         "arrival_rate": arrival_rate_error(df_all, reference["arrival_rate"]),
         "arrival_profile": arrival_profile_error(df_all, reference["arrival_rate"]),
@@ -437,8 +543,17 @@ def print_report(label: str, metrics: dict) -> None:
         print(f"  control-flow precision:      {metrics['control_flow']['precision']:.4f}")
     b = metrics["branching"]
     print(f"  branching prob. mean TVD:    {b['mean_tvd']} (0 = identical, lower is better)")
-    if b["activities_missing_in_run"]:
-        print(f"    activities never reached:  {b['activities_missing_in_run']}")
+    if b.get("activities_not_in_bpmn"):
+        print(f"    activities not in BPMN model (structural gap, not branching): "
+              f"{b['activities_not_in_bpmn']}")
+    if b["activities_absent_in_run"]:
+        print(f"    activities never reached:  {b['activities_absent_in_run']}")
+    if b["activities_always_terminal_in_run"]:
+        print(f"    activities always case-final (no successor, TVD undefined): "
+              f"{b['activities_always_terminal_in_run']}")
+    if b.get("excluded_target_mass"):
+        print(f"    real-branch mass excluded (target not in BPMN model), per source "
+              f"activity: {b['excluded_target_mass']}")
     p = metrics["processing_times"]
     print(f"  processing time mean rel.err: {p['mean_rel_err']} ({p.get('target')})")
     if "lifecycle" in metrics:
@@ -457,6 +572,11 @@ def print_report(label: str, metrics: dict) -> None:
     v = metrics["variants"]
     print(f"  top-20 real variants reproduced: {v['ref_top20_variants_reproduced']}/20 "
           f"(covers {v['ref_top20_traffic_coverage_pct']}% of real traffic)")
+    if v.get("activities_ignored_for_variant_match"):
+        print(f"    ...ignoring steps never simulated in this run: "
+              f"{v['ref_top20_variants_reproduced_ignoring_absent_activities']}/20 "
+              f"(covers {v['ref_top20_traffic_coverage_pct_ignoring_absent_activities']}%); "
+              f"ignored activities: {v['activities_ignored_for_variant_match']}")
     c = metrics["case_stats"]
     print(f"  case length rel.err:         {c['case_length_rel_err']}  "
           f"(sim={c['sim_case_length_mean']} vs ref={c['ref_case_length_mean']})")

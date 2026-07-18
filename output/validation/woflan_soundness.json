@@ -1,0 +1,13 @@
+{
+  "bpmn": "bpic17_process.bpmn",
+  "net_size": "54p/71t",
+  "is_sound": true,
+  "dead_tasks": [],
+  "diagnostic_messages": [
+    "Input is ok.",
+    "Petri Net is a workflow net.",
+    "Every place is covered by s-components.",
+    "There are no dead tasks.",
+    "All tasks are live."
+  ]
+}

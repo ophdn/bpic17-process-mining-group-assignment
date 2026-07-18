@@ -129,6 +129,460 @@ ist seit dem Pull vom 11.07. da — offen ist nur noch die KPI-Validierung
   > 50 % des realen Traffics).
 - Designentscheidung: probs vs. rules vs. historien-abhängig — nach KPI-Delta.
 
+**A1-Update (18.07.): Regression durch BPMN-Gateway-Änderung — Ursache gefunden, gefixt**
+- Versuch, den O_Returned-Abschnitt "realistischer" zu modellieren: zwei
+  Gateways dort von `parallelGateway` (AND) auf `inclusiveGateway` (OR)
+  geändert. Ergebnis war schlechter als vorher, Änderung wieder verworfen
+  (BPMN zurück auf den committeten AND-Stand, `git checkout`). Gleichzeitig
+  war unbemerkt eine zweite Änderung im Arbeitsverzeichnis: die
+  Outcome-Terminierungsregel aus A1 (Punkt 3 oben, `TERMINAL_OUTCOMES` in
+  `petri_process.py`) war entfernt worden — beide Änderungen zusammen
+  reproduzierten den ursprünglich gemeldeten Bad-Case (Completion 24 %,
+  Precision 0,22, Case-Länge-Fehler 0,75, `final_marking`-End-Reason **0/556**).
+- Systematische Ablation (`scripts/compare_process_models.py`, jetzt mit
+  `--terminal-outcomes {on,off}`-Flag und vollem `end_reasons`-Log inkl.
+  `terminal_outcome`), sechs Konfigurationen, identischer Harness (Seed 42,
+  30 Tage, capacity=3):
+
+  | Run | BPMN-Gateway | terminal_outcomes | branching-mode | Completion | Precision | TVD | Top-20 |
+  |---|---|---|---|---:|---:|---:|---:|
+  | baseline_reproduce | AND (parallel) | on | visit | 17,95 % | 0,615 | 0,091 | 10/20 |
+  | bpmn_inclusive | OR (inclusive) | on | visit | 24,2 % | **0,275** | **0,255** | **0/20** |
+  | terminal_off | AND | **off** | visit | **6,82 %** | 0,587 | 0,256 | 7/20 |
+  | mode_probs | AND | on | probs | 16,26 % | 0,598 | 0,093 | 10/20 |
+  | mode_rules | AND | on | rules | 19,41 % | 0,495 | 0,153 | 10/20 |
+  | worst_case_repro | OR | off | rules | 24,0 % | 0,221 | 0,150 | 6/20 |
+
+  (worst_case_repro reproduziert den ursprünglich gemeldeten Bad-Case fast
+  exakt und schließt damit den Kreis.)
+- **Befund 1 (Hauptursache):** Der Gateway-Wechsel (`bpmn_inclusive` vs.
+  `baseline_reproduce`) allein zerstört Precision (0,615→0,275), TVD
+  (0,091→0,255) und Top-20-Abdeckung (10/20→0/20), obwohl Completion leicht
+  steigt. Grund: `scripts/mine_dp_probs.py` mined die
+  Decision-Point-/`__END__`-Wahrscheinlichkeiten per Replay **gegen genau
+  dieses Netz** — ändert man die Gateway-Struktur, passt die Kalibrierung
+  nicht mehr. Sichtbar an `allow_end_without_dp`: 0/952 (AND) vs. 20328/22019
+  = **92 %** (OR) — mit OR-Gateway hat die Mehrheit der neu entstehenden
+  "Ende erlaubt"-Momente keine gemined Daten mehr. ⇒ **BPMN bleibt beim
+  AND-Gateway (Signavio-Original).**
+- **Befund 2 (bestätigt A1 Punkt 3):** `terminal_off` allein (AND-Gateway,
+  sonst identisch zu baseline) halbiert-drittelt die Completion nochmal
+  (17,95 %→6,82 %) — die Outcome-Terminierungsregel ist weiterhin
+  tragend. ⇒ **`enforce_terminal_outcomes=True` bleibt Default** (jetzt als
+  benannter, testbarer Parameter statt stillschweigend im Code entfernt —
+  siehe `tests/test_process_model_petri.py`).
+- **Befund 3 (branching-mode):** Unter AND-Gateway liegen `probs` und
+  `visit` bei TVD praktisch gleichauf (0,093 vs. 0,091); `rules` ist
+  schwächer (TVD 0,153, Precision 0,495). `visit` bleibt Default.
+- **Offener Punkt, nicht weiter verfolgt (Zeitdruck vor Abgabe):** Keiner der
+  sechs Läufe erreicht `final_marking > 0` — auch `baseline_reproduce`
+  (AND + terminal_outcomes on + visit, die Konfiguration, die A1 oben als
+  "71 % Completion" dokumentiert) landet nur bei 17,95 % Completion, alle
+  Abschlüsse über die `terminal_outcome`-Regel. Die A1-71%-Zahl wurde
+  vermutlich unter etwas anderen Bedingungen gemessen (anderes Artefakt-
+  /Datenrefresh von `dp_branching_probs.json`/`simulation_inputs.json`
+  zwischen 14.07. und heute); die *relativen* Vergleiche innerhalb dieser
+  Ablation (identischer Harness für alle 6 Läufe) bleiben davon unberührt
+  und tragen die Schlussfolgerungen oben. Für den Report: aktuelle
+  Advanced-Zahlen (Completion ~18 %, Case-Dauer-Fehler ~0,60) ehrlich als
+  Ist-Stand nennen, nicht die alte 71%-Zahl zitieren.
+
+**A1-Update (18.07., Teil 2): Simulationshorizont 30 → 60 Tage (echte Perzentile statt Rundzahl)**
+- Ausgangsproblem: der harte 30-Tage-Horizont war eine willkürliche Rundzahl
+  (kein Kommentar/Doku begründet sie), aber die reale mittlere Case-Dauer
+  liegt bei 21,85 Tagen mit schwerem rechten Ausläufer — ein 30-Tage-Fenster
+  zensiert damit systematisch gerade die langsamen (aber realen) Cases weg
+  und macht die Completion-Rate/Case-Dauer-Fehler teils zum Artefakt der
+  Fensterbreite statt des Modells (vgl. `scripts/drain_analysis.py`,
+  bereits vorher im Team bekannt: Completion 71 %→99,2 % bei Drain bis
+  Tag 180).
+- Reale Case-Dauer-Perzentile neu berechnet (`data/BPIChallenge2017.xes.gz`,
+  Events auf `lifecycle='complete'` gefiltert wie in
+  `extract_log_info.filter_to_complete`, Case-Dauer = letzter − erster
+  Zeitstempel pro Case): p50 = 19,06 d, p70 = 30,81 d, **p80 = 31,94 d**,
+  p90 = 35,00 d, **p99 = 59,15 d**. Gegen Zensierung am Log-Ende geprüft
+  (Perzentile bleiben stabil, ob Cases mit <30/45/60/90 Tagen Restlaufzeit
+  vor Log-Ende ausgeschlossen werden oder nicht) — kein Messartefakt.
+- Gewählt: **p99 ≈ 60 Tage** (glatt gerundet) statt p80 (~32 Tage, kaum
+  länger als die alten 30 Tage und hätte am Zensierungsproblem fast nichts
+  geändert). Neuer Default in `simulation/main.py::SIM_DURATION_SECONDS`
+  und `scripts/compare_process_models.py::SIM_DURATION_SECONDS`.
+- **Achtung, kein Drain:** Ankünfte laufen weiterhin über den ganzen
+  Horizont (kein separates Ankunfts-Cutoff + Nachlaufzeit wie in
+  `drain_analysis.py`), d. h. Zensierung ist damit *reduziert*, nicht
+  eliminiert — ein Case, der an Tag 59 ankommt, hat immer noch fast keine
+  Zeit.
+- **Ergebnis (Basic vs. Advanced, sonst identische Config wie oben:
+  AND-Gateway, `terminal_outcomes=on`, `branching-mode visit`):**
+
+  | KPI | Advanced @30d | Advanced @60d | Basic @30d | Basic @60d |
+  |---|---:|---:|---:|---:|
+  | Cases gestartet / abgeschlossen | 2318 / 416 | 4842 / 822 | 2318 / 2252 | 4842 / 4012 |
+  | Completion-Rate | 17,95 % | 16,98 % | 97,15 % | 82,86 % |
+  | Case-Dauer rel. Fehler | 0,600 | **0,103** | 0,985 | 0,907 |
+  | Case-Länge rel. Fehler | 0,231 | 0,243 | 0,058 | 0,054 |
+  | Precision | 0,615 | 0,682 | 0,679 | 0,680 |
+  | Branching TVD | 0,091 | 0,092 | 0,480 | 0,476 |
+
+  Case-Dauer-Fehler des Advanced-Modells fällt von 0,60 auf **0,10** — die
+  bei weitem größte Einzelverbesserung seit Beginn der Ablation, und zeigt
+  konkret (nicht nur beim Team-internen Drain-Experiment), dass der
+  Case-Dauer-Fehler zu einem großen Teil Zensierungsartefakt war, kein
+  Modellfehler. Completion-Rate ändert sich kaum (mehr Zeit hilft wenig,
+  wenn — s. A1-Befund oben — die meisten Cases sowieso nie das echte
+  Final-Marking erreichen, sondern über die Terminal-Outcome-Regel enden,
+  die nicht vom Horizont abhängt).
+- **Nebeneffekt, ehrlich ausweisen:** Basics Completion-Rate sinkt (97 %→
+  83 %), weil die Case-Zahl mit dem Horizont mitskaliert (2318→4842 bei
+  gleicher Ankunftsrate) während die Ressourcenkapazität fix bleibt
+  (`capacity_per_resource=3` in `compare_process_models.py`) — mehr
+  gleichzeitig laufende Cases erhöhen die Warteschlangen-Last. Das ist ein
+  erwarteter Kapazitäts-/Horizont-Interaktionseffekt, keine Regression.
+- Nicht angefasst: die historische Ablationstabelle oben (A1-Update, Teil 1)
+  wurde unter dem alten 30-Tage-Horizont gemessen — die dort isolierten
+  Effekte (Gateway-Typ, Terminal-Regel, Branching-Mode) sind Horizont-
+  unabhängig und bleiben gültig, nur die absoluten Case-Dauer-Zahlen dort
+  sind durch das inzwischen behobene Zensierungsproblem verzerrt.
+
+**A1-Update (18.07., Teil 3): Warum 10 Aktivitäten im Advanced-Log nie auftauchen**
+- Betroffene Aktivitäten (`activities_missing_in_run` in advanced.json):
+  `A_Cancelled`, `A_Denied`, `A_Pending`, `O_Cancelled`, `O_Refused`,
+  `O_Sent (online only)`, `W_Assess potential fraud`, `W_Call after offers`,
+  `W_Personal Loan collection`, `W_Shortened completion `. Drei
+  unterschiedliche Ursachen, empirisch verifiziert (Petri-Net-BFS +
+  `dp_branching_probs.json` + reale Aktivitätshäufigkeiten aus
+  `simulation_inputs.json`), keine davon Zufall:
+  1. **Fehlen im Modell (5/10):** `O_Sent (online only)`,
+     `W_Assess potential fraud`, `W_Call after offers`,
+     `W_Personal Loan collection`, `W_Shortened completion ` existieren als
+     Transition **gar nicht** in `bpic17_process.bpmn` (geprüft: die
+     konvertierte Petri-Netz-Transitionsliste enthält nur 21 sichtbare
+     Labels, diese 5 fehlen komplett) — kein Branching-/Wahrscheinlichkeits-
+     problem, sondern eine Modellabdeckungslücke. Real sind vier davon auch
+     selten (W_Personal Loan collection 0,01 % der Cases, W_Shortened
+     completion 0,24 %, W_Assess potential fraud 0,90 %, W_Call after
+     offers 1,09 %) — plausibel im Signavio-Modell/bei der Discovery
+     weggelassen. **Aber `O_Sent (online only)` ist real 6,43 % der Cases**
+     (2026 Vorkommen) — keine Ausreißer-Seltenheit, sondern schlicht im
+     Modell vergessen.
+  2. **Metrik-Artefakt, keine echte Abwesenheit (3/10):** `A_Cancelled`,
+     `A_Denied`, `A_Pending` feuern nachweislich (820/146/678 Events im
+     60-Tage-Advanced-Lauf, exakt Summe = 822 = alle `terminal_outcome`-
+     Enden). `metrics.branching_divergence` (`scripts/metrics.py:120-127`)
+     bildet aber `next_activity` per `shift(-1)` und verwirft Zeilen ohne
+     Nachfolger — und da `enforce_terminal_outcomes` den Case exakt bei
+     diesen drei Aktivitäten sofort beendet, haben sie **nie** einen
+     Nachfolger im selben Case. Die Meldung "activity never occurred in
+     this run" ist für diese drei schlicht falsch/irreführend; sie
+     bedeutet nur "hatte keinen aufgezeichneten Nachfolger".
+  3. **Strukturell durch `enforce_terminal_outcomes` blockiert (2/10):**
+     `O_Cancelled` und `O_Refused` feuern tatsächlich **null Mal** in 4842
+     gestarteten Cases — real aber 66,3 % bzw. 14,9 % der Cases (!). Petri-
+     Net-BFS zeigt: `O_Cancelled` ist an **genau einer** erreichbaren
+     Markierung aktiviert, und dort ist es die einzig legale Aktivität
+     (deterministisch) — laut `dp_branching_probs.json` wird diese
+     Markierung nur über `A_Cancelled` erreicht. Reale Bigram-Daten
+     (`simulation_inputs.json`): `A_Cancelled → O_Cancelled` p=0,9959,
+     `A_Denied → O_Refused` p=0,9965 — im echten Log ist die O_-Aktivität
+     praktisch immer die unmittelbare administrative Bestätigung nach der
+     A_-Entscheidung (bereits im Code-Kommentar zu `TERMINAL_OUTCOMES`
+     angedeutet: "the trace ends right after (bar minor wrap-up events)").
+     Weil `enforce_terminal_outcomes` den Case aber **sofort** bei
+     `A_Cancelled`/`A_Denied` beendet (vor jedem `_advance_to_next_visible`-
+     Aufruf), kommt die Simulation nie bis zu diesem "minor wrap-up"-
+     Schritt. Für `O_Refused` gibt es laut BFS auch andere, von `A_Denied`
+     unabhängige Zugangswege (4 Frontier-Kombinationen inkl.
+     `A_Validating`), die aber im 60-Tage-Lauf nie getroffen wurden — dafür
+     reicht die Datenlage nicht für eine abschließende Aussage, ob das
+     Zufall (seltener Pfad) oder ein weiterer struktureller Engpass ist.
+- **Einordnung:** Das ist der gleiche Trade-off wie beim Fitness-Verlust in
+  A1 — `enforce_terminal_outcomes` kauft Completion/Realismus auf
+  Case-Ebene (das Ergebnis der Kreditentscheidung ist korrekt simuliert)
+  gegen den Verlust der administrativen Nachlauf-Aktivitäten O_Cancelled/
+  O_Refused, die real fast immer, aber strukturell erst *nach* dem Punkt
+  auftreten, an dem die Simulation den Case für beendet erklärt. Keine
+  Regression, keine Aktion für die Abgabe morgen — aber ein ehrlicher
+  Punkt für die "Limitations"-Sektion des Reports, und ein potenzieller
+  Hebel für später: `O_Cancelled`/`O_Refused` explizit als unmittelbare
+  Folgeaktivität von `A_Cancelled`/`A_Denied` feuern lassen, bevor der Case
+  endet (statt sie komplett auszulassen).
+
+**A1-Update (18.07., Teil 4): TVD bereinigt um Modell-Abdeckungslücken**
+- Motivation: die 5 nicht im BPMN modellierten Aktivitäten
+  (`O_Sent (online only)`, `W_Assess potential fraud`, `W_Call after
+  offers`, `W_Personal Loan collection`, `W_Shortened completion `)
+  verzerrten die Branching-TVD nicht nur durch ihren eigenen (informativen,
+  aber harmlosen) "absent"-Eintrag, sondern **still auch die TVD anderer,
+  im Modell vorhandener Aktivitäten** — immer wenn das reale Log diesen
+  fehlenden Aktivitäten Wahrscheinlichkeitsmasse als Nachfolge-Ziel gibt
+  (z. B. real `O_Created → O_Sent (online only)`: 4,47 %), kann die
+  Simulation diese Masse nie erreichen — eine Modell-Abdeckungslücke, keine
+  Kalibrierungsschwäche der Branching-Wahrscheinlichkeiten.
+- Fix (`scripts/metrics.py::branching_divergence`, neuer Parameter
+  `modeled_activities`, befüllt aus den Petri-Netz-Transitionslabels in
+  `evaluate()`): Quell-Aktivitäten, die selbst nicht im Modell sind, werden
+  jetzt separat als `activities_not_in_bpmn` geführt (TVD bleibt `None`,
+  da keine Branching-Wahrscheinlichkeit sie je erreichen könnte). Für alle
+  anderen Aktivitäten werden Nicht-Modell-Ziele aus der Referenzverteilung
+  entfernt und die verbleibende Masse renormalisiert, bevor die TVD
+  berechnet wird — die ausgeschlossene Masse wird zusätzlich pro Aktivität
+  unter `excluded_target_mass` reported, nicht stillschweigend verworfen.
+  Getestet in `tests/test_branching_divergence.py` (5 Tests).
+- Effekt (60-Tage-Lauf, sonst identische Config): Advanced-TVD **0,0922 →
+  0,0892**, Basic-TVD 0,480 → 0,428 (Basic nutzt dieselbe Referenz). Die
+  "activities never reached"-Liste schrumpft von 8 auf die tatsächlich
+  aussagekräftigen 3: `O_Cancelled`, `O_Refused`, `W_Validate application`
+  — genau die Fälle, die im Modell existieren, aber von der Simulation nie
+  erreicht werden (s. Teil 3 oben für die Ursachenanalyse dieser drei).
+  Kein Effekt auf Teil II (`scripts/metrics.py` wird nur von
+  `compare_process_models.py`/`drain_analysis.py`/`eval_lifecycle.py`
+  importiert, keines davon aus dem Teil-II-Pfad
+  `scripts/run_experiments.py`/`scripts/opt_metrics.py` — geprüft per
+  Import-Grep).
+
+**A1-Update (18.07., Teil 5): O_Cancelled/O_Refused als erzwungener Folgeschritt — umgesetzt**
+- Umsetzung des in Teil 3 vorgeschlagenen Hebels: `FORCED_TERMINAL_FOLLOWUP =
+  {"A_Cancelled": "O_Cancelled", "A_Denied": "O_Refused"}`
+  (`simulation/components/petri_process.py`). Wenn `enforce_terminal_outcomes`
+  eine dieser beiden Aktivitäten force-beendet, wird zuerst deterministisch
+  die gemappte Folgeaktivität auf dem Petrinetz gefeuert (`_fire_activity`,
+  einzig legale Transition an dieser Markierung, s. Teil 3) und direkt in den
+  Logger geschrieben (nicht über die Event-Queue re-scheduled — sonst würde
+  `on_activity_complete` erneut greifen und die Aktivität wie eine normale
+  Verzweigung behandeln, statt sie zu erzwingen). `A_Pending` bleibt
+  unverändert sofort terminierend (kein einzelner deterministischer
+  Folgeschritt vorhanden, s. Teil 3).
+- Vor der Umsetzung empirisch verifiziert (synthetische Trace-Ergänzung +
+  `pm4py.fitness_token_based_replay` auf dem *bestehenden* simulierten Log,
+  ohne den Simulator zu ändern): Anhängen von O_Cancelled/O_Refused an die
+  483 von 822 Cases, die mit A_Cancelled/A_Denied endeten, hob
+  `perc_fit_traces` bereits im Test von 35,4 % auf 93,2 % — das war die
+  Entscheidungsgrundlage, den Umbau trotz Zeitdrucks vor der Abgabe zu
+  wagen.
+- **Gemessener Effekt (60-Tage-Lauf, identische Config, echte
+  End-to-End-Simulation, nicht nur der synthetische Test):**
+
+  | KPI | vorher | nachher |
+  |---|---:|---:|
+  | Fully-fitting traces | 35,4 % | **93,2 %** |
+  | Ø Trace-Fitness | 0,962 | **0,996** |
+  | Precision | 0,682 | 0,684 |
+  | Branching TVD | 0,089 | **0,079** |
+  | Top-20-Varianten | 10/20 (16,4 %) | **17/20 (39,0 %)** |
+  | Case-Länge rel. Fehler | 0,243 | **0,204** |
+  | Case-Dauer rel. Fehler | 0,103 | 0,103 (unverändert) |
+  | Completion-Rate | 0,170 | 0,170 (unverändert) |
+
+  Verbesserung auf praktisch jeder Achse, die die Kontrollfluss-Treue misst
+  (Fitness, TVD, Varianten, sogar Case-Länge als Nebeneffekt), bei exakt
+  gleicher Completion-Rate und Case-Dauer — kein Trade-off gefunden.
+  `activities_always_terminal_in_run` verschiebt sich korrekt von
+  `A_Cancelled, A_Denied, A_Pending` zu `A_Pending, O_Cancelled, O_Refused`
+  (die neuen Endpunkte). "Never reached" schrumpft von 3 auf nur noch
+  `W_Validate application`.
+- Getestet: `tests/test_process_model_petri.py::
+  test_terminal_outcome_fires_forced_followup_before_ending` (neuer
+  Fixture-Aufbau, prüft Marking-Update, direktes Logging ohne Re-Entry in
+  `on_activity_complete`, und dass der Case weiterhin über `terminal_outcome`
+  endet). Alle 112 Tests grün.
+- **Bewusst nicht angefasst:** `A_Pending` (kein einzelner deterministischer
+  Folgeschritt, s. Teil 3 — Risiko einer erneuten Nicht-Terminierung wie vor
+  A1); Completion-Rate (unverändert 17 %, da dieser Fix nur die
+  *Trace-Qualität* der bestehenden Completions verbessert, nicht *wie viele*
+  Cases abschließen — das bleibt der offene, größere Befund aus A1).
+
+**A1-Update (18.07., Teil 6): Completion-Rate systematisch untersucht — drei Ursachen, nicht eine**
+- Frage: ist 17 % Completion (60-Tage-Horizont) ein Simulationsfehler, oder
+  zeigt das reale Log unter derselben Messmethode auch so wenig?
+- **Referenzwert 1 — reales Log, identische Fenster-Methodik** (Cases, die
+  innerhalb eines festen Zeitfensters ab Log-Start ankommen; Completion =
+  letztes Event vor Fensterende, NICHT case-relative Perzentile):
+  30-Tage-Fenster → **36,95 %** (793/2146), 60-Tage-Fenster → **63,29 %**
+  (2927/4625). ⇒ Selbst der reale Prozess sieht unter dieser (zensierenden)
+  Messung unvollständig aus — das ist also *kein* Beweis, dass unsere 17 %
+  in Ordnung sind, aber ein Beleg, dass ein gewisser Anteil der Lücke
+  Messmethodik ist, nicht Modellfehler.
+- **Referenzwert 2 — Drain-Analyse unter aktueller Config** (Ankünfte 30 Tage,
+  Engine läuft bis Tag 180, `scripts/drain_analysis.py`, jetzt inkl. A1-Fix
+  Teile 1–5): Completion **71,8 %** (1666/2319) — weit über den 17 % beim
+  harten Horizont, aber auch weit unter den ~100 %, die das reale Log bei
+  unbegrenzter Zeit erreicht (jeder Case feuert irgendwann einen Outcome).
+  ⇒ Zensierung erklärt den *größten* Teil der Lücke (17 %→72 % nur durch
+  mehr Zeit), aber nicht alles: **~28 % der Cases werden selbst mit
+  180 Tagen nie fertig.**
+- **Ursache 1 der Rest-Lücke getestet und verworfen: Ressourcenkapazität.**
+  `compare_process_models.py`/`drain_analysis.py` nutzen standardmäßig
+  `DEFAULT_PERMISSIONS` (17 Ressourcen, `capacity_per_resource=3`) statt des
+  vollen OrdinoR-Orgmodells (144 Ressourcen, `models/permissions_orgmodel.json`)
+  — acht mal mehr Kapazität. Mit Orgmodell-Permissions: Completion nur
+  71,8 %→**74,1 %** (1719/2319), mittlere Wartezeit sinkt zwar deutlich
+  (426 649 s → 86 404 s), aber die Completion-Rate bewegt sich kaum. ⇒ Die
+  fehlenden Ressourcen im Validierungs-Harness sind ein kleiner, aber nicht
+  der entscheidende Faktor.
+- **Ursache 2 der Rest-Lücke gefunden: zu grobe Besuchs-Buckets im
+  gemineden Branching.** Mit mehr Ressourcen (schnellerer Durchlauf pro
+  Aktivität) steigt die mittlere Event-Zahl unfertiger Cases von 50 auf
+  **172** (max. 266) — weit unter dem Loop-Guard (400) — und **alle** 600
+  unfertigen Cases hängen zuletzt in genau derselben Warteschleife fest:
+  `W_Validate application` / `A_Validating` / `A_Incomplete`. Das deckt sich
+  mit einer bereits früher notierten, nie behobenen Beobachtung (Kehrseite
+  der Drain-Analyse, s. `docs/report_notes_1.4_1.5.md`): die
+  Besuchs-Buckets in `branching_probs_by_visit`/`dp_branching_probs.json`
+  gehen nur bis "5+" und die Exit-Wahrscheinlichkeit ist ab dort stationär
+  (steigt nicht weiter mit mehr Schleifendurchläufen wie im echten Log) —
+  ein kleiner Teil der Cases "würfelt" dadurch sehr lange erfolglos weiter,
+  ohne dass mehr Ressourcen oder mehr Zeit allein das beheben. Fix wäre ein
+  Re-Mining mit feineren Buckets (z. B. bis "8+"), keine Code-Änderung —
+  zeitlich zu riskant für die Abgabe morgen, daher nicht umgesetzt.
+- **Formale Petrinetz-Konformität geprüft:** intern per Konstruktion
+  garantiert — `_fire_activity` feuert ausschließlich Transitionen aus
+  `semantics.enabled_transitions(...)`, eine illegale Markierung kann so
+  nicht entstehen (`_assert_marking_legal` ist ein zusätzliches Sicherheitsnetz
+  für den komplexeren aktiven-Lifecycle-Terminalpfad, nicht die einzige
+  Absicherung). Die verbleibenden 6,8 % nicht voll passenden Traces (56 von
+  822, nach Teil 5) sind jetzt exakt attribuiert
+  (`pm4py.conformance_diagnostics_token_based_replay`, per Trace geprüft):
+  48 enden in `A_Pending` (bewusst nicht gefixt, s. Teil 5), 8 in
+  `O_Refused` (dessen Folge-Markierung ist nicht immer tau-nah an `fm`,
+  s. Teil 3 — der Fix aus Teil 5 hilft hier nur teilweise).
+- **Fazit:** Completion-Rate 17 % ist real zu niedrig, aber die Lücke ist
+  jetzt drei sauber getrennten Ursachen zugeordnet: (1) Horizont-Zensierung
+  (größter Anteil, auch im echten Log vorhanden, kein Modellfehler), (2)
+  Validierungs-Harness mit künstlich kleinem Ressourcenpool (unter Drain
+  klein, unter dem harten 60-Tage-Horizont aber groß — s. Teil 7), (3) zu
+  grobe Besuchs-Buckets im gemineden Branching (Rest-Ursache für die ~28 %
+  Nicht-Completion selbst bei unbegrenzter Zeit). Für den Report: alle drei
+  benennen, nur (3) ist ein "echter" Modell-Fix-Kandidat, und der ist als
+  Re-Mining-Aufgabe zu groß für heute Nacht.
+
+**A1-Update (18.07., Teil 7): Orgmodel-Permissions als Harness-Default — Completion-Rate 17 %→45 %, neuer Trade-off entdeckt**
+- Umsetzung: `compare_process_models.py` fiel bisher, ohne `--permissions`,
+  auf `DEFAULT_PERMISSIONS` zurück (17 Ressourcen, die alte Top-20-Map) statt
+  auf das volle OrdinoR-Orgmodell (144 Ressourcen,
+  `models/permissions_orgmodel.json`), das `simulation/main.py` selbst als
+  Default nutzt. Neuer Parameter `--permissions {orgmodel,observed,hardcoded}`,
+  Default jetzt `orgmodel` (mit `CaseAttributeSampler`, da das Orgmodell auf
+  Case-Typ gaten kann — identisch zu main.py's Verdrahtung).
+- **Ergebnis unter dem echten 60-Tage-Vergleichslauf (nicht Drain!):**
+
+  | KPI | 17 Ressourcen (alt) | 144 Ressourcen (orgmodel, neu) |
+  |---|---:|---:|
+  | Completion-Rate | 17,0 % | **44,7 %** |
+  | Precision | 0,682 | **0,764** |
+  | Fully-fitting traces | 93,2 % | 94,0 % |
+  | Branching TVD | 0,079 | 0,098 |
+  | Top-20-Varianten | 17/20 | 17/20 |
+  | Case-Länge rel. Fehler | 0,204 | **0,195** |
+  | Case-Dauer rel. Fehler | 0,103 | **0,784** |
+
+  Completion-Rate springt deutlich stärker als die Drain-Analyse in Teil 6
+  vermuten ließ (dort nur 71,8 %→74,1 % bei 180 Tagen Puffer) — der Grund:
+  unter einem harten 60-Tage-Horizont konkurriert Warteschlangen-Zeit direkt
+  mit der Frist, während bei 180 Tagen Drain fast alles ohnehin genug Zeit
+  hatte. Mehr Ressourcen wirken also gerade *unter realistischem
+  Zeitdruck* am stärksten.
+- **Neu entdeckter Trade-off:** Case-Dauer-Fehler verschlechtert sich massiv
+  (0,103→0,784, sim-Dauer fällt auf ~4,7 Tage vs. real 21,8 Tage). Grund:
+  der kleine 17-Ressourcen-Pool erzeugte künstliche Warteschlangen, die
+  zufällig eine Case-Dauer nahe dem realen Mittel erzeugten — nicht weil das
+  Modell echte Wartezeiten abbildet, sondern weil Ressourcen-Knappheit
+  *zufällig* in eine ähnliche Größenordnung wie die reale Wartezeit fiel.
+  Mit realistischer Ressourcenkapazität verschwindet dieser Zufalls-Effekt,
+  und die eigentliche, bereits in A2 dokumentierte Lücke wird sichtbar:
+  es gibt keine echte Kunden-Wartezeit-/Servicezeit-Trennung im Modell. Das
+  ist also keine Regression durch den heutigen Fix, sondern das Aufdecken
+  eines vorher durch einen Kompensationsfehler maskierten, größeren, bereits
+  bekannten Problems (A2).
+- **Kein Effekt auf den Rest der Analyse:** `end_reasons` bleibt dominiert
+  von `terminal_outcome` (2162/2166), `loop_guard` feuert nur 1x in 60 Tagen
+  (bei 144 Ressourcen laufen Cases schneller durch = mehr Schleifendurchläufe
+  pro Zeiteinheit, aber der kurze Horizont lässt die meisten stecken
+  gebliebenen Cases den Loop-Guard noch nicht erreichen) — das in Teil 6
+  gefundene Schleifenproblem (A_Validating/A_Incomplete/W_Validate
+  application) bleibt die wahrscheinlich relevanteste Rest-Ursache für die
+  verbleibende Lücke zu ~63 % (reales Log, gleiche Fenster-Methodik).
+
+**A1-Update (18.07., Teil 8): Top-20-Varianten-Metrik um "nie simulierte
+Aktivität" bereinigt + O_Cancelled-Mehrfachangebots-Lücke (Rang 17) als
+Future Work**
+- Anlass: 3 der Top-20-Realvarianten werden vom Advanced-Lauf nicht
+  reproduziert (`ref_top20_variants_reproduced: 17/20`, 39,0 %
+  Traffic-Coverage). Manuell nachgestellt (identischer Seed/Config wie
+  `advanced.json`): Rang 14 (1,26 %), 17 (1,06 %), 19 (0,73 %).
+- **Rang 14 & 19** enthalten `W_Validate application` als letzten/
+  vorletzten Schritt. Unter dem alten 17-Ressourcen-Harness (Teil 4/6)
+  feuerte diese Aktivität in 0/822 completed cases — vollständig
+  strukturell abwesend. Fix in `scripts/metrics.py::variant_overlap`: ein
+  zweiter, nachsichtigerer Coverage-Wert entfernt aus jeder
+  Top-20-Referenzvariante zunächst jeden Schritt, dessen Aktivität im
+  gesamten Lauf kein einziges Mal feuert (identische Bedingung wie
+  `activities_absent_in_run` in `branching_divergence`), und prüft den
+  reduzierten Trace erneut gegen die Sim-Varianten. Neue Felder:
+  `ref_top20_variants_reproduced_ignoring_absent_activities`,
+  `..._traffic_coverage_pct_ignoring_absent_activities`,
+  `activities_ignored_for_variant_match` — additiv, alte Felder bleiben
+  unverändert (gleiche Transparenz-Konvention wie
+  `excluded_target_mass`/`activities_not_in_bpmn`). Getestet: unter der
+  alten 17-Ressourcen-Config reproduziert die bereinigte Zahl 19/20
+  (40,99 %) statt 17/20.
+- **Aber:** unter dem seit Teil 7 aktuellen Orgmodell-Default
+  (144 Ressourcen) feuert `W_Validate application` nicht mehr 0×, sondern
+  1× in 2166 completed cases — die Aktivität ist also nicht mehr
+  strukturell abwesend, nur noch extrem selten an der richtigen Stelle im
+  Trace. Die neuen Felder zeigen dafür korrekt
+  `activities_ignored_for_variant_match: []` (0 gestrichen) — kein Fehler,
+  sondern eine ehrliche Verschiebung der Ursache von "kann nie passieren"
+  zu "passiert praktisch nie in exakt dieser Reihenfolge".
+- **Rang 17** (`...O_Create Offer → O_Created → O_Create Offer → O_Created
+  → O_Sent → O_Sent → ... → A_Cancelled → O_Cancelled → O_Cancelled`, zwei
+  Angebote, beide storniert): Multi-Angebot-Cases reproduziert die Sim an
+  sich häufig (127/822 bzw. 482/2166 completed cases mit ≥2×
+  `O_Create Offer`), aber **0 von 822 bzw. 0 von 2166** completed cases
+  feuern `O_Cancelled` zweimal — unabhängig vom Ressourcenmodell, also
+  strukturell, nicht zufallsbedingt.
+  - Ursache: `FORCED_TERMINAL_FOLLOWUP`
+    (`simulation/components/petri_process.py:304-317`, Teil 5) feuert bei
+    `A_Cancelled` immer genau **einen** `O_Cancelled`-Folgeevent,
+    unabhängig davon, wie viele Angebote (`O_Create Offer`/`O_Sent`-Zyklen)
+    der Case durchlaufen hat. Grund: das Petri-Netz simuliert BPIC-17 als
+    **ein** Marking/Token pro Case (linearer Pfad), während das reale Log
+    pro Angebot eine eigene, unabhängige Sub-Prozess-Instanz führt (jedes
+    Angebot bekommt sein eigenes `O_Cancelled`/`O_Accepted`/`O_Refused`).
+  - **Naiver Fix geprüft und verworfen:** ein einfaches "rufe
+    `_fire_activity(case_id, "O_Cancelled")` N-mal in einer Schleife auf"
+    funktioniert nicht — per BFS/Marking-Check verifiziert: `O_Cancelled`s
+    einzige Eingangs-Stelle hat genau eine ausgehende Kante (zu
+    `O_Cancelled` selbst), und das ganze Netz führt nur **ein** Token pro
+    Case (linearer Pfad, kein Parallel-/Multi-Instance-Konstrukt für
+    Angebote). Das Token, das den Case zweimal durch `O_Create Offer`
+    zyklen ließ, ist dasselbe Token — es verdoppelt sich nie. Beim ersten
+    `A_Cancelled`-Folgefire ist die Stelle leer; ein zweiter Aufruf findet
+    die Transition nicht mehr aktiviert (`enabled_transitions` liefert sie
+    nicht) und wäre ein stiller No-op, kein zweites Log-Event.
+  - **Zwei verbleibende Optionen, beide größer als ursprünglich gedacht:**
+    (1) das zusätzliche `O_Cancelled` direkt per `engine.logger.log(...)`
+    ohne echte Transitions-Feuerung ins Log schreiben — verletzt aber genau
+    die Konstruktions-Garantie, die das Projekt an anderer Stelle explizit
+    als Stärke dokumentiert (jedes geloggte Event ist eine legal aktivierte
+    Petri-Transition, s. Teil 6, `_assert_marking_legal`); nicht ohne
+    ausdrückliches Go umzusetzen, weil es diese Garantie für genau diese
+    Fälle stillschweigend bricht. (2) Angebote als echte
+    Multi-Instance-Tokens modellieren (pro `O_Create Offer`-Feuerung ein
+    eigenes Sub-Marking/Token statt eines geteilten Case-Tokens), sodass
+    zwei offene Angebote unabhängig `O_Cancelled`/`O_Accepted`/`O_Refused`
+    erreichen können — die einzige konformitäts-ehrliche Lösung, aber ein
+    struktureller Umbau des Petri-Komponenten-State-Trackings, kein
+    lokaler Patch.
+  - **Bekannte Grenze selbst der echten Lösung (2):** behebt nur das
+    Muster "alle Angebote gemeinsam storniert" (Rang 17s Form), sofern
+    implementiert. Der eigentliche strukturelle Fall — ein Angebot wird
+    angenommen, während ein anderes im selben Case storniert wird —
+    bräuchte ohnehin die gleiche Multi-Instance-Token-Umstellung.
+  - **Nicht umgesetzt**, da (a) Nutzen auf 1,06 % Traffic-Anteil begrenzt,
+    (b) die einzige konformitäts-ehrliche Lösung ein größerer strukturel-
+    ler Umbau ist, kein Patch, (c) Zeitrisiko vor der Abgabe. Für später
+    vorgemerkt.
+
 **A2. Echte Ressourcen-Contention + Warte-/Servicezeit-Trennung (1.3 Adv. II)**
 - Schritte:
   1. `resource.py`-Bug fixen; `process.py` so umbauen, dass eine Aktivität

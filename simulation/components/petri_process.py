@@ -108,7 +108,30 @@ END_LABEL = "__END__"
 # measured effect: cases fired "O_Accepted, A_Pending" and then cycled the
 # validation loop for 50+ further events. Domain-level termination rule:
 # once the outcome is decided, the case is over.
+#
+# Gated by `enforce_terminal_outcomes` (default True): the comparison KPIs
+# replay completed traces against this exact net, so ending a case before the
+# final marking makes every such trace non-fitting even if each fired step
+# was locally legal — trading completion rate for control-flow precision.
+# Kept as an ablation toggle (see docs/ROADMAP.md) rather than removed.
 TERMINAL_OUTCOMES = {"A_Pending", "A_Denied", "A_Cancelled"}
+
+# Two of the three outcomes have a single, deterministic real-world follow-up
+# that fires almost immediately after in the real log (A_Cancelled ->
+# O_Cancelled p=0.9959, A_Denied -> O_Refused p=0.9965, simulation_inputs.json
+# branching_probs) and is the ONLY legal Petri transition at the marking
+# reached right after they fire (verified via BFS over the converted net --
+# docs/ROADMAP.md, A1-Update Teil 3). A_Pending has no such single successor
+# (its continuation is genuinely branchy, back into the validation loop) so
+# it keeps ending immediately. Firing the follow-up before ending: measured
+# to raise percentage_of_fitting_traces from 35.4% to 93.2% on a like-for-like
+# run (docs/ROADMAP.md, A1-Update Teil 5) since the logged trace now reaches
+# (or gets tau-close to) the net's real final marking instead of stopping one
+# step short of it.
+FORCED_TERMINAL_FOLLOWUP = {
+    "A_Cancelled": "O_Cancelled",
+    "A_Denied": "O_Refused",
+}
 
 
 class PetriNetProcessComponent(ProcessComponent):
@@ -124,6 +147,7 @@ class PetriNetProcessComponent(ProcessComponent):
         bpmn_path: str,
         branching_mode: str = "probs",
         decision_rules_path: Optional[str] = None,
+        enforce_terminal_outcomes: bool = True,
         **kwargs,
     ):
         """
@@ -132,6 +156,9 @@ class PetriNetProcessComponent(ProcessComponent):
         branching_mode : {"probs", "rules"}. "rules" (Section 1.5 Advanced I)
             requires decision_rules_path (joblib artifact from
             train_decision_rules.py, lazy-loaded on first use).
+        enforce_terminal_outcomes : whether firing an activity in
+            TERMINAL_OUTCOMES force-ends the case (see comment above that
+            constant). Ablation toggle, default True.
 
         Everything else (seed, mode, model_path, start_datetime,
         resource_component, crn, ...) is forwarded to ProcessComponent rather
@@ -151,22 +178,25 @@ class PetriNetProcessComponent(ProcessComponent):
         self._fm_reach_cache: Dict[tuple, bool] = {}
 
         self.branching_mode = branching_mode
+        self.enforce_terminal_outcomes = enforce_terminal_outcomes
 
-        # Visit-conditioned branching tables ("visit" mode; "rules" mode also
-        # uses them as its fallback layer when a decision point has no model).
+        # The replay-mined decision-point table also carries the END choice,
+        # which is part of Petri-net completion rather than a branching-mode-
+        # specific heuristic. Load it for every mode when present; "visit" and
+        # "rules" additionally consume the visit-conditioned activity table.
         self._branching_by_visit: Dict[str, dict] = {}
         self._dp_probs: Dict[str, dict] = {}
         self._dp_visit_counts: Dict[str, Dict[str, int]] = {}
+        try:
+            with open(DP_PROBS_PATH, encoding="utf-8") as f:
+                self._dp_probs = json.load(f).get("dp_probs", {})
+        except FileNotFoundError:
+            pass
         if branching_mode in ("visit", "rules"):
             try:
                 with open(INPUTS_PATH, encoding="utf-8") as f:
                     self._branching_by_visit = json.load(f).get(
                         "branching_probs_by_visit", {})
-            except FileNotFoundError:
-                pass
-            try:
-                with open(DP_PROBS_PATH, encoding="utf-8") as f:
-                    self._dp_probs = json.load(f).get("dp_probs", {})
             except FileNotFoundError:
                 pass
             if branching_mode == "visit" and not (
@@ -185,6 +215,21 @@ class PetriNetProcessComponent(ProcessComponent):
         #             credit_score, offered_amount, number_of_terms,
         #             monthly_cost, first_withdrawal_amount}
         self._case_attrs: Dict[str, dict] = {}
+        self._advance_reasons: Dict[str, str] = {}
+        self._debug = {
+            "allow_end_opportunities": 0,
+            "allow_end_without_dp": 0,
+            "end_label_choices": 0,
+            "end_reasons": {
+                "final_marking": 0,
+                "end_label": 0,
+                "terminal_outcome": 0,
+                "loop_guard": 0,
+                "dead_marking": 0,
+                "terminal_continuation_end": 0,
+                "terminal_allow_end_fallback": 0,
+            },
+        }
 
     # ------------------------------------------------------------------
     # Event handlers
@@ -253,13 +298,33 @@ class PetriNetProcessComponent(ProcessComponent):
 
         marking = self._markings.get(case_id)
         reached_final = marking is not None and marking == self.fm
-        if reached_final or self._should_terminate(case_id, activity, counts):
-            self._end_case(engine, case_id)
+        if reached_final:
+            self._end_case(engine, case_id, reason="final_marking")
+            return
+        if self.enforce_terminal_outcomes and activity in TERMINAL_OUTCOMES:
+            followup = FORCED_TERMINAL_FOLLOWUP.get(activity)
+            if followup is not None and self._fire_activity(case_id, followup):
+                # Logged directly (not scheduled) so it does not re-enter
+                # on_activity_complete and get routed like a normal activity --
+                # this is a forced, deterministic single hop, not a new choice.
+                engine.logger.log(SimEvent(
+                    timestamp=engine.now + 1,
+                    event_type=EventType.ACTIVITY_COMPLETE,
+                    case_id=case_id,
+                    activity=followup,
+                ))
+            self._end_case(engine, case_id, reason="terminal_outcome")
+            return
+        if self._should_terminate(case_id, activity, counts):
+            self._end_case(engine, case_id, reason="loop_guard")
             return
 
         next_activity = self._advance_to_next_visible(case_id, current_activity=activity)
         if next_activity is None:
-            self._end_case(engine, case_id)
+            self._end_case(
+                engine, case_id,
+                reason=self._advance_reasons.pop(case_id, "dead_marking"),
+            )
             return
 
         self._fire_start(engine, case_id, next_activity)
@@ -324,7 +389,7 @@ class PetriNetProcessComponent(ProcessComponent):
                     picked = nxt
                     break
             if picked == "__CASE_END__":
-                self._end_case(engine, case_id)
+                self._end_case(engine, case_id, reason="terminal_continuation_end")
                 return
             self._markings[case_id] = frontier[picked]
             self._assert_marking_legal(case_id)
@@ -340,7 +405,7 @@ class PetriNetProcessComponent(ProcessComponent):
             self._assert_marking_legal(case_id)
             self._fire_start(engine, case_id, next_activity)
         elif allow_end:
-            self._end_case(engine, case_id)
+            self._end_case(engine, case_id, reason="terminal_allow_end_fallback")
         else:
             # A non-final dead marking is kept as an incomplete case.  Emitting
             # CASE_COMPLETE here would violate the Petri legality contract.
@@ -350,25 +415,24 @@ class PetriNetProcessComponent(ProcessComponent):
 
     def _should_terminate(self, case_id: str, activity: str, counts: Dict[str, int]) -> bool:
         """
-        Override the Basic heuristic: TERMINAL_ACTIVITIES (process.py) marks
-        a case done as soon as one specific activity fires, which doesn't
-        hold here — the net may still need concurrent branches to
-        synchronise (AND-join) before reaching its final marking, which is
-        checked separately in on_activity_complete. Only the loop-guards
-        remain, as a safety net against pathological/infinite loops.
+        Override the Basic heuristic: visible activities alone never decide
+        case completion here. The Petri net does: on_activity_complete first
+        checks marking==fm / tau-reachable END, and only these loop-guards
+        remain as a safety net against pathological/infinite loops.
         """
-        if activity in TERMINAL_OUTCOMES:
-            return True
         if counts.get(activity, 0) >= MAX_ACTIVITY_REPEATS:
             return True
         if sum(counts.values()) > MAX_TOTAL_ACTIVITIES:
             return True
         return False
 
-    def _end_case(self, engine, case_id: str) -> None:
+    def _end_case(self, engine, case_id: str, reason: str) -> None:
+        reasons = self._debug["end_reasons"]
+        reasons[reason] = reasons.get(reason, 0) + 1
         self._markings.pop(case_id, None)
         self._dp_visit_counts.pop(case_id, None)
         self._case_attrs.pop(case_id, None)
+        self._advance_reasons.pop(case_id, None)
         self._clear_case_state(case_id)
         engine.schedule(SimEvent(
             timestamp=engine.now,
@@ -376,6 +440,14 @@ class PetriNetProcessComponent(ProcessComponent):
             event_type=EventType.CASE_COMPLETE,
             case_id=case_id,
         ))
+
+    def debug_stats(self) -> dict:
+        return {
+            "allow_end_opportunities": self._debug["allow_end_opportunities"],
+            "allow_end_without_dp": self._debug["allow_end_without_dp"],
+            "end_label_choices": self._debug["end_label_choices"],
+            "end_reasons": dict(self._debug["end_reasons"]),
+        }
 
     def _payload(self, case_id: str) -> dict:
         """Single source of truth for case attributes (merge_1.7_plan.md, A).
@@ -463,6 +535,7 @@ class PetriNetProcessComponent(ProcessComponent):
         marking = self._markings[case_id]
         frontier = self._visible_frontier(marking)
         if not frontier:
+            self._advance_reasons[case_id] = "dead_marking"
             return None
 
         labels = sorted(frontier.keys())
@@ -470,7 +543,9 @@ class PetriNetProcessComponent(ProcessComponent):
         chosen = self._weighted_choice(case_id, current_activity, labels,
                                        allow_end=allow_end)
         if chosen == END_LABEL:
+            self._advance_reasons[case_id] = "end_label"
             return None  # caller ends the case (final marking is tau-reachable)
+        self._advance_reasons.pop(case_id, None)
         self._markings[case_id] = frontier[chosen]
         return chosen
 
@@ -576,9 +651,15 @@ class PetriNetProcessComponent(ProcessComponent):
 
         dp_dist = self._dp_conditioned_probs(case_id, labels)
 
+        if allow_end:
+            self._debug["allow_end_opportunities"] += 1
+            if not dp_dist:
+                self._debug["allow_end_without_dp"] += 1
+
         if allow_end and dp_dist:
             p_end = dp_dist.get(END_LABEL, 0.0)
             if p_end and rng.random() < p_end:
+                self._debug["end_label_choices"] += 1
                 return END_LABEL
 
         if self.branching_mode == "rules" and len(labels) > 1:

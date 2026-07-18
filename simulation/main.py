@@ -39,7 +39,19 @@ from simulation.components.case_attributes import CaseAttributeSampler
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
-SIM_DURATION_DAYS    = 30
+# Simulation horizon: the 99th percentile of real case duration, not an
+# arbitrary "30 days". Computed from data/BPIChallenge2017.xes.gz (events
+# filtered to lifecycle='complete' per extract_log_info.filter_to_complete,
+# per-case duration = last_ts - first_ts): p99 = 5,110,843.8s ~= 59.15 days,
+# rounded to a clean 60 days -- i.e. 99% of real cases finish within this
+# horizon of their own arrival (vs. only 80% at the p80 figure, ~31.94 days).
+# Stable across log-boundary right-censoring checks at the p80 level (stayed
+# 31.9-32.3 days whether cases with <30d or <90d of runway before the log's
+# end are excluded or not) -- see docs/ROADMAP.md.
+# NOTE: arrivals still span the whole horizon (no separate arrival cutoff +
+# drain period), so this alone does not eliminate horizon censoring -- see
+# docs/ROADMAP.md's drain-analysis note (scripts/drain_analysis.py).
+SIM_DURATION_DAYS = 60
 SIM_DURATION_SECONDS = SIM_DURATION_DAYS * 24 * 3600
 
 # BPIC-17 starts 2016-01-01; anchor t=0 to the same date
@@ -134,6 +146,7 @@ def main(
     permissions: str = "orgmodel",
     branching_mode: str = "probs",
     decision_rules_path: str | None = None,
+    enforce_terminal_outcomes: bool = True,
     piled_execution: bool = False,
     k_batching: int | None = None,
     lifecycle_mode: str = "legacy",
@@ -231,6 +244,7 @@ def main(
             bpmn_path=bpmn_path or str(DEFAULT_BPMN_PATH),
             branching_mode=branching_mode,
             decision_rules_path=decision_rules_path or str(DEFAULT_DECISION_RULES_PATH),
+            enforce_terminal_outcomes=enforce_terminal_outcomes,
             **process_kwargs,
         )
     else:
@@ -270,7 +284,8 @@ def main(
     for k, v in engine.stats.items():
         print(f"  {k}: {v}")
     print(f"  events_logged: {engine.logger.num_events}")
-    print(f"\n  Expected from BPIC-17 in 30 days: ~2580 cases (~86/day)")
+    print(f"\n  Expected from BPIC-17 in {SIM_DURATION_DAYS:.1f} days: "
+          f"~{SIM_DURATION_DAYS * 86.09:.0f} cases (~86.09/day)")
 
     rstats = resources.stats()
     print("\n--- Resource pool (Sections 1.6-1.8) ---")
@@ -347,6 +362,13 @@ if __name__ == "__main__":
         help="Path to the trained joblib artifact (--branching-mode rules only).",
     )
     parser.add_argument(
+        "--no-terminal-outcomes", action="store_true", default=False,
+        help="Ablation toggle (--process-model advanced only): disable the "
+             "domain-level rule that force-ends a case as soon as "
+             "A_Pending/A_Denied/A_Cancelled fires. Default off (i.e. the "
+             "rule is ON), matching the A1 fix in docs/ROADMAP.md.",
+    )
+    parser.add_argument(
         "--piled-execution", action="store_true", default=False,
         help="Enable Piled Execution (R-PE, Pattern 38): the deferred "
              "drain prefers a waiting task of the SAME activity type the "
@@ -419,6 +441,7 @@ if __name__ == "__main__":
         permissions=args.permissions,
         branching_mode=branching_mode,
         decision_rules_path=args.decision_rules_path,
+        enforce_terminal_outcomes=not args.no_terminal_outcomes,
         piled_execution=args.piled_execution,
         k_batching=args.k_batching,
         lifecycle_mode=args.lifecycle_mode,

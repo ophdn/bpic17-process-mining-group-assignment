@@ -116,6 +116,7 @@ class _ScriptedPetri(PetriNetProcessComponent, _ScriptedProcess):
         self._markings = {}
         self._fm_reach_cache = {}
         self.branching_mode = "probs"
+        self.enforce_terminal_outcomes = False
         self._branching_by_visit = {}
         self._dp_probs = {}
         self._dp_visit_counts = {}
@@ -125,6 +126,21 @@ class _ScriptedPetri(PetriNetProcessComponent, _ScriptedProcess):
         self._decision_feature_names = None
         self._decision_unknown = "__UNKNOWN__"
         self._case_attrs = {}
+        self._advance_reasons = {}
+        self._debug = {
+            "allow_end_opportunities": 0,
+            "allow_end_without_dp": 0,
+            "end_label_choices": 0,
+            "end_reasons": {
+                "final_marking": 0,
+                "end_label": 0,
+                "terminal_outcome": 0,
+                "loop_guard": 0,
+                "dead_marking": 0,
+                "terminal_continuation_end": 0,
+                "terminal_allow_end_fallback": 0,
+            },
+        }
 
 
 def _params(*, continuation=None) -> LifecycleParameters:

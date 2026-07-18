@@ -49,15 +49,33 @@ from simulation.components.process import ProcessComponent
 from simulation.components.petri_process import PetriNetProcessComponent
 from simulation.components.resource import ResourceComponent
 from simulation.components.lifecycle_params import LifecycleParameters
+from simulation.components.case_attributes import CaseAttributeSampler
+from simulation.components import permissions as perm_models
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BPMN_PATH = REPO_ROOT / "simulation" / "models" / "bpic17_process.bpmn"
 LEGACY_REFERENCE_PATH = REPO_ROOT / "simulation_inputs.json"
 ACTIVE_REFERENCE_PATH = REPO_ROOT / "simulation_inputs_active.json"
 DEFAULT_OUT = REPO_ROOT / "output" / "validation" / "process_model_comparison"
-SIM_DURATION_SECONDS = 30 * 24 * 3600
+# 99th percentile of real case duration (data/BPIChallenge2017.xes.gz, events
+# filtered to lifecycle='complete', per-case duration = last_ts - first_ts):
+# 5,110,843.8s ~= 59.15 days, rounded to a clean 60 days -- replaces the
+# previous arbitrary 30-day horizon. See simulation/main.py's
+# SIM_DURATION_SECONDS comment and docs/ROADMAP.md for the derivation and
+# the horizon-censoring caveat (arrivals still span the whole window; this
+# does not by itself eliminate censoring).
+SIM_DURATION_SECONDS = 60 * 24 * 3600
 START_DATETIME = datetime(2016, 1, 1)
 SEED = 42
+# Section 1.7 permission models -- "orgmodel" (144 resources, OrdinoR-mined
+# groups/capabilities) is simulation/main.py's own default and the intended
+# Advanced config; "hardcoded" is the original top-20 map (17 resources) this
+# harness silently fell back to when no --permissions was passed, which
+# starved completion under sustained load (see docs/ROADMAP.md, A1-Update
+# Teil 6) without meaningfully changing the branching/control-flow findings.
+ORGMODEL_PATH = REPO_ROOT / "models" / "permissions_orgmodel.json"
+OBSERVED_PERMS_PATH = REPO_ROOT / "models" / "permissions_observed.json"
+CASE_ATTRIBUTES_PATH = REPO_ROOT / "models" / "case_attributes.json"
 
 
 class _CaseCompletionTracker:
@@ -81,11 +99,20 @@ _CaseCompletionTracker.HANDLES = {
 
 def run_sim(use_advanced: bool, bpmn_path: Path = BPMN_PATH,
             branching_mode: str = "probs",
-            lifecycle_mode: str = "legacy") -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+            lifecycle_mode: str = "legacy",
+            enforce_terminal_outcomes: bool = True,
+            permissions: str = "orgmodel") -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     """Returns (completed-cases DataFrame, unfiltered DataFrame, run stats
     incl. completion rate). The unfiltered frame is needed for
     metrics.arrival_rate_error, which must not be restricted to completed
-    cases (see that function's docstring for why)."""
+    cases (see that function's docstring for why).
+
+    *permissions*: {"orgmodel", "observed", "hardcoded"} -- see
+    simulation/main.py --permissions. Default "orgmodel" (144 resources)
+    matches main.py's own default and the intended Advanced config;
+    "hardcoded" is the original 17-resource top-20 map this harness silently
+    used before this parameter existed (docs/ROADMAP.md, A1-Update Teil 6).
+    """
     lifecycle_params = (
         LifecycleParameters.from_file(ACTIVE_REFERENCE_PATH)
         if lifecycle_mode == "active" else None
@@ -94,16 +121,31 @@ def run_sim(use_advanced: bool, bpmn_path: Path = BPMN_PATH,
         sim_duration=SIM_DURATION_SECONDS, start_datetime=START_DATETIME,
         lifecycle_mode=lifecycle_mode)
     arrivals = ArrivalComponent(seed=SEED)
-    resources = ResourceComponent(capacity_per_resource=3, seed=SEED)
+
+    perms = None
+    case_attrs = None
+    if permissions == "orgmodel":
+        perms = perm_models.OrgModelPermissions.from_json(ORGMODEL_PATH)
+        perms.self_check()
+        case_attrs = CaseAttributeSampler.from_json(CASE_ATTRIBUTES_PATH, seed=SEED)
+    elif permissions == "observed":
+        perms = perm_models.StaticPermissions.from_json(OBSERVED_PERMS_PATH)
+    elif permissions != "hardcoded":
+        raise ValueError(
+            f"permissions must be 'orgmodel', 'observed' or 'hardcoded', got {permissions!r}")
+
+    resources = ResourceComponent(capacity_per_resource=3, seed=SEED, permissions=perms)
     tracker = _CaseCompletionTracker()
 
     kwargs = dict(
         seed=SEED, resource_component=resources, start_datetime=START_DATETIME,
-        lifecycle_mode=lifecycle_mode, lifecycle_params=lifecycle_params)
+        lifecycle_mode=lifecycle_mode, lifecycle_params=lifecycle_params,
+        case_attributes=case_attrs)
     if use_advanced:
         process = PetriNetProcessComponent(
             bpmn_path=str(bpmn_path), branching_mode=branching_mode,
             decision_rules_path=str(REPO_ROOT / "simulation" / "models" / "decision_rules.joblib"),
+            enforce_terminal_outcomes=enforce_terminal_outcomes,
             **kwargs)
     else:
         process = ProcessComponent(**kwargs)
@@ -127,10 +169,12 @@ def run_sim(use_advanced: bool, bpmn_path: Path = BPMN_PATH,
         "completion_rate": round(
             engine.stats.get("cases_completed", 0)
             / max(engine.stats.get("cases_started", 1), 1), 4),
-        "sim_duration_days": SIM_DURATION_SECONDS // 86400,
+        "sim_duration_days": round(SIM_DURATION_SECONDS / 86400, 2),
         "seed": SEED,
         "lifecycle_mode": lifecycle_mode,
     }
+    if use_advanced:
+        stats["petri_debug"] = process.debug_stats()
     return df, df_all, stats
 
 
@@ -141,10 +185,12 @@ def main():
                              "measure control-flow fitness/precision against.")
     parser.add_argument("--configs", default="basic,advanced",
                         help="Comma-separated subset of: basic,advanced")
-    parser.add_argument("--branching-mode", default="probs",
+    parser.add_argument("--branching-mode", default="visit",
                         choices=["probs", "visit", "rules"],
                         help="Branching strategy for the advanced config "
-                             "(see simulation/main.py --branching-mode).")
+                             "(see simulation/main.py --branching-mode). "
+                             "Default 'visit' matches the A1 fix / simulation/"
+                             "main.py's default for --process-model advanced.")
     parser.add_argument("--tag", default="",
                         help="Suffix for the JSON filenames, e.g. 'im02'.")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT,
@@ -155,6 +201,17 @@ def main():
     parser.add_argument("--reference", type=Path, default=None,
                         help="Override the reference JSON. Defaults to simulation_inputs.json "
                              "for legacy and simulation_inputs_active.json for active.")
+    parser.add_argument("--terminal-outcomes", default="on", choices=["on", "off"],
+                        help="Ablation toggle (advanced config only): 'on' (default) "
+                             "force-ends a case as soon as A_Pending/A_Denied/A_Cancelled "
+                             "fires; 'off' relies solely on final_marking/__END__/loop_guard.")
+    parser.add_argument("--permissions", default="orgmodel",
+                        choices=["orgmodel", "observed", "hardcoded"],
+                        help="Section 1.7 resource permission model (see simulation/"
+                             "main.py --permissions). Default 'orgmodel' (144 resources, "
+                             "OrdinoR-mined) matches main.py's own default; 'hardcoded' "
+                             "is the original 17-resource top-20 map this harness used "
+                             "before this flag existed.")
     args = parser.parse_args()
 
     configs = [c.strip() for c in args.configs.split(",") if c.strip()]
@@ -172,13 +229,17 @@ def main():
     for label in configs:
         df, df_all, run_stats = run_sim(label == "advanced", bpmn_path=args.bpmn,
                                         branching_mode=args.branching_mode,
-                                        lifecycle_mode=args.lifecycle_mode)
+                                        lifecycle_mode=args.lifecycle_mode,
+                                        enforce_terminal_outcomes=args.terminal_outcomes == "on",
+                                        permissions=args.permissions)
         results[label] = metrics.evaluate(df, reference, net, im, fm, df_all=df_all)
         results[label]["run_stats"] = run_stats
         results[label]["config"] = {
             "process_model": label,
             "bpmn": str(args.bpmn.name),
             "branching_mode": args.branching_mode if label == "advanced" else "probs",
+            "terminal_outcomes": args.terminal_outcomes if label == "advanced" else "n/a",
+            "permissions": args.permissions,
             "processing_time_mode": "distribution",
             "lifecycle_mode": args.lifecycle_mode,
             "reference": str(reference_path.name),
@@ -186,6 +247,19 @@ def main():
         metrics.print_report(label, results[label])
         print(f"  completion rate:             {run_stats['completion_rate']} "
               f"({run_stats['cases_completed']}/{run_stats['cases_started']} cases)")
+        petri_debug = run_stats.get("petri_debug")
+        if petri_debug:
+            reasons = petri_debug["end_reasons"]
+            print("  Petri end reasons:"
+                  f" final_marking={reasons.get('final_marking', 0)},"
+                  f" __END__={reasons.get('end_label', 0)},"
+                  f" terminal_outcome={reasons.get('terminal_outcome', 0)},"
+                  f" loop_guard={reasons.get('loop_guard', 0)}")
+            print("  Petri end diagnostics:"
+                  f" allow_end={petri_debug['allow_end_opportunities']},"
+                  f" allow_end_without_dp={petri_debug['allow_end_without_dp']},"
+                  f" terminal_continuation_end={reasons.get('terminal_continuation_end', 0)},"
+                  f" dead_marking={reasons.get('dead_marking', 0)}")
 
         fname = f"{label}{'_' + args.tag if args.tag else ''}.json"
         with open(args.out / fname, "w", encoding="utf-8") as f:
@@ -208,6 +282,9 @@ def main():
         print(f"{'top-20 real variants reproduced /20':38} "
               f"{b['variants']['ref_top20_variants_reproduced']:>12} "
               f"{a['variants']['ref_top20_variants_reproduced']:>12}")
+        print(f"{'  ...ignoring never-simulated steps /20':38} "
+              f"{b['variants']['ref_top20_variants_reproduced_ignoring_absent_activities']:>12} "
+              f"{a['variants']['ref_top20_variants_reproduced_ignoring_absent_activities']:>12}")
         print(f"{'case length rel.err':38} "
               f"{b['case_stats']['case_length_rel_err']:>12} {a['case_stats']['case_length_rel_err']:>12}")
         print(f"{'case duration rel.err':38} "
