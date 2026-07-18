@@ -1,9 +1,68 @@
 # Report-Notizen: 1.4 Prozessmodell & 1.5 Branching Decisions (Sophie)
 
-Alle Zahlen: Seed 42, 30-Tage-Horizont, KPIs gegen `simulation_inputs.json`
-(echtes BPIC-17-Log), Methodik = Second-Pass-Validierung nach Rozinat et al.
-(siehe `docs/paper_insights_discovering_simulation_models.md`). Jede Zahl
-ist aus einer JSON-Datei in `output/` reproduzierbar (Datei-Index unten).
+Alle Zahlen (sofern nicht anders markiert): Seed 42, **60-Tage-Horizont**,
+KPIs gegen `simulation_inputs.json` (echtes BPIC-17-Log), Methodik =
+Second-Pass-Validierung nach Rozinat et al. (siehe
+`docs/paper_insights_discovering_simulation_models.md`). Jede Zahl ist aus
+einer JSON-Datei in `output/` reproduzierbar (Datei-Index unten).
+
+> **Update 18.07. (Abend) — vor der Abgabe unbedingt lesen:** Seit der
+> ursprünglichen Fassung dieses Dokuments (Stand ~15.-16.07.) haben sich
+> vier Dinge geändert, die praktisch alle Zahlen unten in Abschnitt 3
+> verschieben. Die *Methodik/Kausalketten* (D1-D5, Abschnitt 4 Challenges)
+> bleiben inhaltlich gültig; nur die **absoluten Zahlen der alten
+> Ablationstabelle in Abschnitt 3 sind überholt** — für den Report bitte
+> die aktuelle Zahlen aus der Tabelle direkt unten verwenden, nicht die
+> alte Tabelle. Volle Herleitung: `docs/ROADMAP.md`, Einträge
+> "A1-Update (18.07., Teil 1-8)".
+> 1. **Horizont 30 → 60 Tage:** kein Rundwert mehr, sondern das p99 der
+>    realen Case-Dauer (5 110 843,8 s ≈ 59,15 Tage, real
+>    `data/BPIChallenge2017.xes.gz`), gerundet auf 60. Ergebnis: Case-Dauer-
+>    Fehler des Advanced-Modells 0,60 → 0,10 (großer Teil des alten Fehlers
+>    war Horizont-Zensierung, kein Modellfehler — bestätigt durch die
+>    Drain-Analyse unten, die *unter dem alten 30-Tage-Setup* gemessen
+>    wurde und daher nicht mehr direkt vergleichbar ist).
+> 2. **`O_Cancelled`/`O_Refused` als erzwungener Folgeschritt:**
+>    `A_Cancelled`/`A_Denied` feuern jetzt deterministisch die reale
+>    Bestätigungsaktivität (`O_Cancelled`/`O_Refused`, p≈0,996/0,997 im
+>    Bigram) bevor der Case endet, statt direkt abzubrechen. Fully-fitting
+>    traces: 35,4 % → **93,2 %**; Top-20-Varianten: 10/20 → **17/20**.
+> 3. **Orgmodel-Permissions statt Hardcoded-17-Ressourcen-Map als
+>    Vergleichs-Harness-Default:** `compare_process_models.py` nutzte
+>    unbemerkt nur 17 statt der vorgesehenen 144 Ressourcen (OrdinoR-
+>    Orgmodell, §1.7). Completion-Rate 17 % → 45 % allein dadurch — zeigt
+>    aber auch einen neuen, ehrlich zu benennenden Trade-off: Case-Dauer-
+>    Fehler verschlechtert sich 0,10 → 0,78, weil der kleine Ressourcenpool
+>    zuvor *zufällig* realistische Wartezeiten simulierte (Ressourcen-
+>    Knappheit statt echter Kunden-Wartezeit — eine bereits bekannte A2-
+>    Lücke, jetzt sichtbar statt maskiert).
+> 4. **Per-Aktivität Loop-Guard-Override:** `A_Validating`/`A_Incomplete`/
+>    `W_Validate application` waren strukturell (fast) geschlossene
+>    Schleifen ohne reale Exit-Wahrscheinlichkeit — Cases zirkulierten bis
+>    zu 266 Mal (real: nie mehr als 8). Engerer, datenbelegter Cap (10)
+>    nur für diese drei behoben; Completion 45 % → **51 %**.
+>
+> **Aktuelle Basic/Advanced/Real-Zahlen (18.07. Abend, s. auch
+> `output/validation/process_model_comparison/{basic,advanced,real_log}.json`):**
+>
+> | KPI | Basic | Advanced | Real Log |
+> |---|---:|---:|---:|
+> | Fully-fitting traces | 0,00 % | 93,81 % | 68,84 % |
+> | Ø Trace-Fitness | 0,240 | 0,996 | 0,976 |
+> | Precision | 0,678 | 0,721 | 0,519 |
+> | Branching TVD | 0,422 | 0,107 | ~0 (Referenz stammt aus diesem Log) |
+> | Top-20-Varianten | 0/20 | 17/20 | 20/20 (trivial) |
+> | Case-Länge rel. Fehler | 0,068 | 0,118 | ~0 |
+> | Case-Dauer rel. Fehler | 0,985 | 0,714 | ~0 |
+> | Completion-Rate (60-Tage-Fenster) | 0,990 | 0,507 | **0,633** (gleiche Fenster-Methodik; ~100 % ohne Fensterbegrenzung) |
+>
+> **Wichtig für den Report:** Real-Log-Fitness gegen das eigene Signavio-
+> Netz ist nur 68,8 %, nicht 100 % — das relativiert, was "Advanced 93,8 %"
+> bedeutet (das Modell selbst erreicht, an echten Daten gemessen, keine
+> 100 %). Precision des realen Logs ist mit 0,519 sogar *niedriger* als
+> Basic/Advanced — kein Widerspruch, sondern Folge der viel größeren
+> Verhaltensvielfalt von 31 509 realen Cases gegenüber wenigen Tausend
+> simulierten.
 
 ---
 
@@ -138,8 +197,19 @@ END-Entscheidung und Terminal-Regel.
   zensierten Langläufer drehen zu viele Schleifenrunden. Ursache: Ab dem
   „5+"-Bucket ist die Exit-Wahrscheinlichkeit stationär → der Tail der
   Längenverteilung ist schwerer als real. TVD unzensiert 0,15 (zensiert
-  0,11). Limitation dokumentieren; möglicher Hebel: feinere Besuchs-Buckets
-  (z. B. bis 8+) beim DP-Mining.
+  0,11).
+  > **Update 18.07.:** der hier vorgeschlagene Hebel („feinere Besuchs-
+  > Buckets bis 8+") wurde geprüft und verworfen — Bayesian Shrinkage von
+  > `P(__END__)` Richtung eines gepoolten globalen Werts (real nur 2,86 %)
+  > zeigte sich als Netto-Verschlechterung, weil der kritische
+  > Entscheidungspunkt (`A_Incomplete`/`A_Validating`/`W_Validate
+  > application`, alle drei Optionen selbst Schleifen-Aktivitäten) bereits
+  > ~1887 reale Beobachtungen mit praktisch 0 % Enden hat — kein
+  > Kleinstichproben-Rauschen, sondern ein robuster, aber strukturell
+  > geschlossener Fall. Stattdessen umgesetzt: ein enger, datenbelegter
+  > Loop-Guard-Cap (10 Wiederholungen, real max. 7-8) nur für diese drei
+  > Aktivitäten. Details, Sweep-Tabelle und Verwerfungsbegründung:
+  > `docs/ROADMAP.md`, A1-Update Teil 8.
 
 ## 4. Challenges (Report-Subsection „Challenges")
 
@@ -160,18 +230,31 @@ END-Entscheidung und Terminal-Regel.
   (Verfügbarkeiten) — außerhalb 1.4/1.5.
 - DP-Tabellen aus den 57,7 % exakt passenden Cases gemined (Selektionsbias
   möglich).
-- 1.5 Advanced II (History-Features in den DP-Klassifikatoren) wäre mit der
-  vorhandenen Replay-Infrastruktur ein kleiner Schritt — bewusst nicht
-  umgesetzt, da Advanced I erfüllt ist (Entweder-Oder im Assignment).
+- **Korrektur 18.07.:** die vorherige Zeile hier war überholt/falsch.
+  1.5 Advanced II (History-konditioniertes Prediction-Model pro Decision
+  Point, Trainingsdaten per Log-Replay auf dem Prozessmodell identifiziert
+  — exakt der Assignment-Wortlaut) ist **umgesetzt und aktiv**: das ist
+  genau `mine_dp_probs.py`/`dp_branching_probs.json`
+  (`--branching-mode visit`, aktueller Default in `simulation/main.py` UND
+  `compare_process_models.py`). Advanced I (Decision-Tree-Klassifikator auf
+  Spawn-/Offer-Attributen, `--branching-mode rules`) ist parallel dazu
+  ebenfalls voll implementiert und getestet, aber nicht Default (Ablation
+  zeigt: `visit` gewinnt bei TVD/Precision). Beide Stufen sind also
+  vorhanden und im Code auswählbar — kein offener Punkt, sondern bereits
+  erfüllt; im Report als "beide Advanced-Stufen implementiert, visit als
+  gewählter Default" darstellen, nicht als Lücke.
 
 ## 6. Datei-Index (alle Zahlen reproduzierbar)
 
 | Datei | Inhalt |
 |---|---|
-| `output/validation/process_model_comparison/{basic,advanced}.json` | D1 |
+| `output/validation/process_model_comparison/{basic,advanced,real_log}.json` | D1 + Update-18.07.-Tabelle (real_log neu: `scripts/eval_real_log.py`) |
 | `output/validation/bpmn_source_comparison/real_log_replay_im02.json`, `advanced_im02.json` | D2 |
-| `output/validation/branching_probs_vs_rules/advanced_{probs,probs_terminal,visit_bigram,visit,rules}.json` | D3/D4/D5-Ablation (5 Stufen) |
+| `output/validation/branching_probs_vs_rules/advanced_{probs,probs_terminal,visit_bigram,visit,rules}.json` | D3/D4/D5-Ablation (5 Stufen, **vor** Update 18.07. — Richtung gültig, absolute Zahlen überholt) |
+| `output/validation/process_model_comparison/ablation/` | 18.07.: BPMN-Gateway/Terminal-Outcomes/Branching-Mode isoliert (A1-Update Teil 1-3) |
+| `output/validation/horizon_censoring/drain.json` | Zensierungsnachweis — **Achtung:** unter altem 30-Tage-Setup gemessen, s. Update-Hinweis oben |
 | `output/models/decision_rules_metrics.json` | D5 (16 DP-Modelle, temporaler Split) |
-| `simulation/models/dp_branching_probs.json` | gemint: P(Label bzw. END | DP, Besuch) |
+| `simulation/models/dp_branching_probs.json` | gemint: P(Label bzw. END | DP, Besuch); Shrinkage geprüft & verworfen, s. Update oben |
 | `simulation_inputs.json` → `branching_probs_by_visit` | Besuchs-Buckets 1/2/3+ |
-| Repro-Kommandos | `scripts/compare_process_models.py --configs advanced --branching-mode {probs,visit,rules}`; `scripts/mine_dp_probs.py --log data/BPIChallenge2017.xes.gz`; `scripts/discover_process_model.py --log …` |
+| `docs/ROADMAP.md`, "A1-Update (18.07., Teil 1-8)" | volle Herleitung aller Änderungen seit dieser Notiz |
+| Repro-Kommandos | `scripts/compare_process_models.py --configs advanced --branching-mode {probs,visit,rules} --permissions orgmodel`; `scripts/mine_dp_probs.py --log data/BPIChallenge2017.xes.gz`; `scripts/eval_real_log.py`; `scripts/discover_process_model.py --log …` |
