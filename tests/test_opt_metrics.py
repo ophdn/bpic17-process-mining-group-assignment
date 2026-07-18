@@ -74,6 +74,66 @@ class EvaluationMetricTests(unittest.TestCase):
         self.assertAlmostEqual(result["mean_window_std"], 0.25)
         self.assertEqual(result["n_windows"], 1)
 
+    def test_activity_type_exposure_separates_work_and_atomic_busy_time(self):
+        df = _legacy_log([
+            ("c1", "A_Create Application", "r1", 0, 10),
+            ("c2", "O_Create Offer", "r1", 20, 5),
+            ("c3", "W_Complete application", "r2", 0, 7),
+        ])
+
+        result = opt_metrics.activity_type_exposure(df)
+
+        self.assertEqual(result["event_rows"], 6)
+        self.assertEqual(result["w_event_rows"], 2)
+        self.assertEqual(result["ao_event_rows"], 4)
+        self.assertAlmostEqual(result["w_event_share"], 1 / 3)
+        self.assertAlmostEqual(result["ao_busy_share"], 15 / 22)
+        self.assertAlmostEqual(result["w_busy_share"], 7 / 22)
+        self.assertEqual(result["busy_time_basis"], "all_active_time")
+
+    def test_lifecycle_diagnostics_exposes_guard_and_rare_routes(self):
+        base = pd.Timestamp("2016-01-04T09:00:00")
+        rows = [
+            ("w1", "W_Complete application", "start", 0),
+            ("w1", "W_Complete application", "suspend", 1),
+            ("w1", "W_Complete application", "resume", 2),
+            ("w1", "W_Complete application", "complete", 3),
+            ("w2", "W_Shortened completion ", "start", 0),
+            ("w2", "W_Shortened completion ", "withdraw", 1),
+        ]
+        df = pd.DataFrame([
+            {
+                "case:concept:name": wid,
+                "concept:name": activity,
+                "org:resource": "r1" if transition in {"start", "resume"} else None,
+                "lifecycle:transition": transition,
+                "time:timestamp": base + pd.to_timedelta(seconds, unit="s"),
+                "work_item_id": wid,
+            }
+            for wid, activity, transition, seconds in rows
+        ])
+
+        result = opt_metrics.lifecycle_diagnostics(
+            df,
+            engine_stats={
+                "max_session_guard_reached": 1,
+                "max_session_guard_forced_completions": 1,
+                "max_session_guard_by_activity": {"W_Complete application": 1},
+            },
+            max_sessions=2,
+        )
+
+        self.assertTrue(result["active_lifecycle_schema"])
+        self.assertEqual(result["work_items"], 2)
+        self.assertEqual(result["median_sessions_per_work_item"], 1.5)
+        self.assertEqual(result["max_sessions_per_work_item"], 2)
+        self.assertEqual(result["max_session_guard_reached_in_log"], 1)
+        self.assertEqual(result["max_session_guard_forced_completions"], 1)
+        self.assertEqual(result["withdrawals_by_activity"], {"W_Shortened completion ": 1})
+        self.assertEqual(
+            result["rare_work_items_routed"]["W_Shortened completion "], 1
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
