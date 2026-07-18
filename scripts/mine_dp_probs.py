@@ -24,6 +24,28 @@ records, for every decision point (= sorted tuple of enabled visible
 labels) and every per-case visit number of that decision point, which
 label the real case actually took.
 
+Deviation handling (repair-based replay): only ~57.7% of real cases
+replay end-to-end on this net without ever stepping outside its legal
+frontier. Earlier versions of this script abandoned the rest of a case's
+trace on its first deviation, which starves every decision point
+reachable only *after* that point -- worst for higher visit buckets of
+loop decision points, and total for the __END__ signal, which was then
+only ever recorded for cases that never deviated at all (a measured
+selection bias, see docs/report_notes_1.4_1.5.md Sec. 5). This version
+repairs instead of abandoning: when the next real activity isn't
+reachable from the current marking by any tau combination, the matching
+transition is forced to fire anyway, topping up its under-marked input
+places with the missing tokens it needs -- the standard token-based-
+replay "missing token" convention (pm4py's own conformance checker uses
+the same idea; docs/report_notes_1.4_1.5.md's D2 already relies on
+token-replay being more lenient than prefix-replay: 68.8% vs. 57.7%). The
+deviating step itself is never recorded as a decision-point choice -- it
+was never a legal option there, so counting it would corrupt that
+decision point's distribution -- but every decision point before *and
+after* it now gets this case's data, and the repaired trace still
+reaches a real end-of-trace marking, so __END__ can be recorded for
+(almost) every case instead of only the perfectly-fitting ones.
+
 Output: simulation/models/dp_branching_probs.json
     {"buckets": ["1", ..., "5+"],
      "dp_probs": {"<label> | <label> | ...": {"1": {label: p, ...},
@@ -48,6 +70,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from pm4py.objects.petri_net import semantics  # noqa: E402
 from pm4py.objects.petri_net.obj import Marking  # noqa: E402
 
 from extract_log_info import load_log, filter_to_complete  # noqa: E402
@@ -64,6 +87,84 @@ def bucket_of(k: int) -> str:
     return str(k) if k < DP_VISIT_BUCKET_MAX else f"{DP_VISIT_BUCKET_MAX}+"
 
 
+def _label_transition_map(net) -> dict:
+    """label -> transitions sharing it, sorted by name for a deterministic
+    repair tie-break (mirrors the sort key _fire_activity/_visible_frontier
+    already use elsewhere in the codebase for the same reason).
+
+    Unlike PetriNetProcessComponent._fire_activity, which only ever looks
+    among transitions already *enabled* at the current marking, repair must
+    find a candidate by label regardless of whether it is enabled right
+    now -- that's the whole point of repairing it.
+    """
+    mapping: dict = defaultdict(list)
+    for t in net.transitions:
+        if t.label is not None:
+            mapping[t.label].append(t)
+    for label in mapping:
+        mapping[label].sort(key=lambda t: t.name)
+    return mapping
+
+
+def _repair_and_fire(net, marking, label_map: dict, label: str):
+    """Force *label* to fire from *marking* even though it isn't reachable
+    by any tau combination, by inserting the missing tokens its cheapest
+    matching transition needs (token-based-replay's "missing token" repair,
+    the same convention pm4py's own conformance checker uses) and then
+    firing it.
+
+    Returns (new_marking, n_missing_tokens), or (None, 0) if the net has no
+    transition labelled *label* at all. This does happen: the Signavio net
+    (D2) has no transition for a handful of rare real activities (e.g.
+    "W_Assess potential fraud", "W_Call after offers") -- a genuine
+    vocabulary gap in the model itself, not a bug in this repair, and
+    previously invisible because any deviation aborted the whole trace
+    before this distinction could be made. The caller counts these
+    separately (n_unrepairable_events) instead of silently lumping them in
+    with ordinary branching deviations.
+
+    The result is clamped to at most one token per place before returning
+    (see the comment above the clamp below) -- without it this measured
+    35s on a single 30-event, 6-repair case (should be <0.1s), because the
+    surplus tokens a repair can leave behind blow up the tau-closure search
+    _visible_frontier/_final_reachable_by_tau do for every later decision
+    point in the same case.
+    """
+    candidates = label_map.get(label)
+    if not candidates:
+        return None, 0
+    best_marking, best_missing = None, None
+    for t in candidates:
+        repaired = Marking(marking)
+        missing = 0
+        for arc in t.in_arcs:
+            need = arc.weight
+            have = repaired.get(arc.source, 0)
+            if have < need:
+                repaired[arc.source] = need
+                missing += need - have
+        if best_missing is None or missing < best_missing:
+            best_marking, best_missing = semantics.execute(t, net, repaired), missing
+
+    # This net models a single case's control state one token at a time --
+    # every place is meant to hold at most one (a live simulation case
+    # never has two tokens in the same place; _final_reachable_by_tau's own
+    # docstring relies on "the net's reachable-marking set is small and
+    # finite"). A repair can violate that by inserting a token into a place
+    # that already holds one left over from earlier in the trace (e.g. an
+    # AND-split branch whose join was skipped by a previous repair) --
+    # invisible to correctness (place still just means "this branch is
+    # pending"), but each surplus token roughly multiplies the number of
+    # tau-combinations _visible_frontier has to enumerate for every
+    # subsequent decision in this case. Clamping back to the net's intended
+    # 1-safe invariant after every repair keeps that search in the small
+    # space it was designed for.
+    for place, count in list(best_marking.items()):
+        if count > 1:
+            best_marking[place] = 1
+    return best_marking, best_missing
+
+
 def mine(df_complete, comp: PetriNetProcessComponent):
     """counts[dp_key][bucket][label] and counts[dp_key]["all"][label].
 
@@ -73,10 +174,17 @@ def mine(df_complete, comp: PetriNetProcessComponent):
     traces end is what lets the simulation escape structural loops such as
     the [O_Cancelled] singleton frontier, where "continue" is the only
     visible label but real cases overwhelmingly stop.
+
+    Deviations are repaired, not abandoned (see module docstring): a case
+    that steps outside the net's legal frontier still gets every decision
+    point before *and after* that point recorded, and still reaches a real
+    end-of-trace marking, so __END__ can be observed for it too.
     """
     counts: dict = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
     replay_key = "__mine__"
-    n_fitting = n_nonfitting = 0
+    label_map = _label_transition_map(comp.net)
+    n_perfect = n_repaired = 0
+    n_repair_events = n_missing_tokens = n_unrepairable_events = 0
 
     def record(dp_visits, frontier, chosen: str) -> None:
         dp_key = " | ".join(sorted(frontier.keys()))
@@ -88,32 +196,54 @@ def mine(df_complete, comp: PetriNetProcessComponent):
         case_df = case_df.sort_values("timestamp")
         comp._markings[replay_key] = Marking(comp.im)
         dp_visits: dict = defaultdict(int)
-        fits = True
+        case_needed_repair = False
 
         for act in case_df["activity"]:
             marking = comp._markings[replay_key]
             frontier = comp._visible_frontier(marking)
-            if act not in frontier:
-                fits = False
-                break
             can_end = comp._final_reachable_by_tau(marking)
-            if len(frontier) + (1 if can_end else 0) > 1:
-                record(dp_visits, frontier, act)
-            comp._markings[replay_key] = frontier[act]
-            comp._fire_activity(replay_key, act)
 
-        if fits:
-            # Trace exhausted: the real case chose to stop here.
-            marking = comp._markings[replay_key]
-            frontier = comp._visible_frontier(marking)
-            if frontier and comp._final_reachable_by_tau(marking):
-                record(dp_visits, frontier, "__END__")
+            if act in frontier:
+                if len(frontier) + (1 if can_end else 0) > 1:
+                    record(dp_visits, frontier, act)
+                comp._markings[replay_key] = frontier[act]
+                comp._fire_activity(replay_key, act)
+                continue
+
+            # Deviation: `act` is not reachable from `marking` by any tau
+            # combination. Not recorded as a decision (it was never a legal
+            # option here), but replay continues via repair instead of
+            # abandoning the rest of the trace.
+            case_needed_repair = True
+            new_marking, missing = _repair_and_fire(comp.net, marking, label_map, act)
+            if new_marking is None:
+                n_unrepairable_events += 1
+                continue  # no transition for this label at all; marking unchanged
+            comp._markings[replay_key] = new_marking
+            n_repair_events += 1
+            n_missing_tokens += missing
+
+        # Trace exhausted (possibly via repair): check whether the real
+        # case's actual stopping point is now a legal end for this marking.
+        marking = comp._markings[replay_key]
+        frontier = comp._visible_frontier(marking)
+        if frontier and comp._final_reachable_by_tau(marking):
+            record(dp_visits, frontier, "__END__")
 
         comp._markings.pop(replay_key, None)
-        n_fitting += fits
-        n_nonfitting += not fits
+        if case_needed_repair:
+            n_repaired += 1
+        else:
+            n_perfect += 1
 
-    return counts, n_fitting, n_nonfitting
+    stats = {
+        "n_perfect": n_perfect,
+        "n_repaired": n_repaired,
+        "n_repair_events": n_repair_events,
+        "n_missing_tokens": n_missing_tokens,
+        "n_unrepairable_events": n_unrepairable_events,
+    }
+    return counts, stats
 
 
 def global_end_rate(counts: dict) -> float:
@@ -215,12 +345,20 @@ def main():
     print(f"[load] {df_complete['case_id'].nunique():,} cases.")
 
     comp = PetriNetProcessComponent(bpmn_path=str(args.bpmn), seed=42)
-    print("[mine] Replaying real log on the Petri net ...")
+    print("[mine] Replaying real log on the Petri net (repairing deviations) ...")
     t0 = time.perf_counter()
-    counts, n_fit, n_nonfit = mine(df_complete, comp)
+    counts, stats = mine(df_complete, comp)
+    n_total = stats["n_perfect"] + stats["n_repaired"]
     print(f"[mine] Done in {time.perf_counter() - t0:.0f}s — "
-          f"{n_fit:,}/{n_fit + n_nonfit:,} cases fit "
-          f"({100 * n_fit / (n_fit + n_nonfit):.1f}%).")
+          f"{stats['n_perfect']:,}/{n_total:,} cases fit without repair "
+          f"({100 * stats['n_perfect'] / n_total:.1f}%); "
+          f"{stats['n_repaired']:,} needed repair and still reached the end "
+          f"({100 * stats['n_repaired'] / n_total:.1f}%) — "
+          f"{stats['n_repair_events']:,} repair events, "
+          f"{stats['n_missing_tokens']:,} missing tokens inserted"
+          + (f", {stats['n_unrepairable_events']:,} unrepairable (no matching "
+             "transition, skipped)" if stats["n_unrepairable_events"] else "")
+          + ".")
 
     dp_probs = to_probs(counts, args.min_samples, args.end_shrinkage_alpha)
     out = {
@@ -229,7 +367,11 @@ def main():
         "min_samples": args.min_samples,
         "end_shrinkage_alpha": args.end_shrinkage_alpha,
         "global_end_rate": round(global_end_rate(counts), 4),
-        "replay_fit_pct": round(100 * n_fit / (n_fit + n_nonfit), 2),
+        "replay_perfect_fit_pct": round(100 * stats["n_perfect"] / n_total, 2),
+        "n_cases_repaired": stats["n_repaired"],
+        "n_repair_events": stats["n_repair_events"],
+        "n_missing_tokens": stats["n_missing_tokens"],
+        "n_unrepairable_events": stats["n_unrepairable_events"],
         "dp_probs": dp_probs,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
