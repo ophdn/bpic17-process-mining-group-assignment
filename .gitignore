@@ -12,6 +12,9 @@ simulation/models/*
 # Final-config ML durations (--lifecycle-mode active) shared with the team so
 # clones don't silently fall back to distribution means; see PROCESSING_TIMES.md.
 !simulation/models/processing_time_model_active.joblib
+# Trained decision-point rules (train_decision_rules.py) drive branching in the
+# simulation engine; shared with the team so clones don't need to retrain.
+!simulation/models/decision_rules.joblib
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
