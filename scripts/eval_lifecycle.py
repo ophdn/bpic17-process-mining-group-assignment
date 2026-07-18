@@ -9,14 +9,21 @@ Example
     .venv/bin/python scripts/eval_lifecycle.py \
         --log output/event_log_active_distribution.csv \
         --completed output/completed_cases_active_distribution.txt \
+        --configuration output/configuration_active_distribution.json \
         --label distribution --out output/validation/lifecycle_active/distribution.json
+
+For report artifacts, prefer ``scripts/run_lifecycle_validation.py``. It runs
+the paired sampler comparison and records the configuration directly from the
+experiment runner, avoiding manually reconstructed provenance.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
+from collections.abc import Mapping
 from collections import defaultdict
 from pathlib import Path
 
@@ -27,12 +34,76 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import metrics  # noqa: E402
+from scripts.run_experiments import evaluation_provenance_hashes  # noqa: E402
 
 
 TERMINALS = {"complete", "ate_abort", "withdraw"}
+LIFECYCLE_VALIDATION_SCHEMA_VERSION = 1
+LIFECYCLE_VALIDATION_EXTRA_PROVENANCE_PATHS = (
+    "scripts/eval_lifecycle.py",
+    "scripts/metrics.py",
+    "scripts/run_lifecycle_validation.py",
+    "simulation/models/processing_time_model_active.joblib",
+    "output/models/processing_time_metrics_active.json",
+)
+REPORT_LIFECYCLE_CONFIGURATION = {
+    "policy": "random",
+    "seed": 1,
+    "horizon_days": 60,
+    "scenario": "normal",
+    "crn": True,
+    "process_model": "advanced",
+    "branching_mode": "visit",
+    "permissions": "orgmodel",
+    "lifecycle_mode": "active",
+    "atomic_duration_scale": 1.0,
+    "roster_seed": 43,
+    "capacity": 1,
+    "arrival_model": "mdn",
+}
+
+
+def lifecycle_validation_provenance_hashes() -> dict[str, str]:
+    """Fingerprint every runtime and fitted input used by the report comparison."""
+    hashes = evaluation_provenance_hashes()
+    hashes.update({
+        relative_path: hashlib.sha256((REPO_ROOT / relative_path).read_bytes()).hexdigest()
+        for relative_path in LIFECYCLE_VALIDATION_EXTRA_PROVENANCE_PATHS
+    })
+    return hashes
+
+
+def validate_lifecycle_validation_artifact(
+    artifact: Mapping,
+    processing_time_mode: str,
+) -> None:
+    """Reject lifecycle evidence that cannot reproduce the report comparison."""
+    configuration = artifact.get("configuration", {})
+    expected = {
+        **REPORT_LIFECYCLE_CONFIGURATION,
+        "processing_time_mode": processing_time_mode,
+        "processing_time_model_path": (
+            None if processing_time_mode == "distribution"
+            else "simulation/models/processing_time_model_active.joblib"
+        ),
+    }
+    problems = []
+    if configuration.get("validation_schema_version") != LIFECYCLE_VALIDATION_SCHEMA_VERSION:
+        problems.append("validation schema is missing or stale")
+    if configuration.get("provenance_sha256") != lifecycle_validation_provenance_hashes():
+        problems.append("code/input provenance does not match")
+    for key, value in expected.items():
+        if configuration.get(key) != value:
+            problems.append(f"{key}={configuration.get(key)!r}, expected {value!r}")
+    if problems:
+        raise ValueError(
+            "Lifecycle validation artifact is incompatible; run "
+            "scripts/run_lifecycle_validation.py. " + "; ".join(problems)
+        )
 
 
 def _summary(values: list[float]) -> dict:
@@ -167,19 +238,26 @@ def lifecycle_evidence(df: pd.DataFrame) -> dict:
     }
 
 
-def evaluate(log_path: Path, completed_path: Path, reference_path: Path) -> dict:
-    df_all = pd.read_csv(log_path)
+def evaluate_dataframe(
+    df_all: pd.DataFrame,
+    completed: set[str],
+    reference_path: Path,
+    run_configuration: Mapping,
+) -> dict:
+    """Evaluate one run and attach a reproducible report-artifact contract."""
+    df_all = df_all.copy()
     # Logger isoformat rows mix values with and without fractional seconds;
     # pandas' strict inferred parser leaves that mixed column as strings.
-    df_all["time:timestamp"] = pd.to_datetime(
-        df_all["time:timestamp"], format="ISO8601")
-    completed = set(completed_path.read_text(encoding="utf-8").splitlines())
+    if not pd.api.types.is_datetime64_any_dtype(df_all["time:timestamp"]):
+        df_all["time:timestamp"] = pd.to_datetime(
+            df_all["time:timestamp"], format="ISO8601")
     df = df_all[df_all["case:concept:name"].astype(str).isin(completed)].copy()
     reference = metrics.load_reference(reference_path)
     return {
         "configuration": {
-            "lifecycle_mode": "active",
-            "log": str(log_path),
+            **dict(run_configuration),
+            "validation_schema_version": LIFECYCLE_VALIDATION_SCHEMA_VERSION,
+            "provenance_sha256": lifecycle_validation_provenance_hashes(),
             "completed_cases": len(completed),
             "logged_rows": int(len(df_all)),
         },
@@ -188,10 +266,27 @@ def evaluate(log_path: Path, completed_path: Path, reference_path: Path) -> dict
     }
 
 
+def evaluate(
+    log_path: Path,
+    completed_path: Path,
+    reference_path: Path,
+    run_configuration: Mapping,
+) -> dict:
+    df_all = pd.read_csv(log_path)
+    completed = set(completed_path.read_text(encoding="utf-8").splitlines())
+    result = evaluate_dataframe(df_all, completed, reference_path, run_configuration)
+    result["configuration"]["log"] = str(log_path)
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--log", required=True, type=Path)
     parser.add_argument("--completed", required=True, type=Path)
+    parser.add_argument(
+        "--configuration", required=True, type=Path,
+        help="JSON object containing the simulator run configuration.",
+    )
     parser.add_argument("--label", default=None)
     parser.add_argument(
         "--reference", type=Path,
@@ -200,7 +295,8 @@ def main() -> None:
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
 
-    result = evaluate(args.log, args.completed, args.reference)
+    run_configuration = json.loads(args.configuration.read_text(encoding="utf-8"))
+    result = evaluate(args.log, args.completed, args.reference, run_configuration)
     if args.label:
         result["configuration"]["label"] = args.label
     args.out.parent.mkdir(parents=True, exist_ok=True)

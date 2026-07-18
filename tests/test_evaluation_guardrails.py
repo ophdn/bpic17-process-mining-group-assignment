@@ -124,6 +124,19 @@ class ResourceDiagnosticTests(unittest.TestCase):
         self.assertEqual(meta["lifecycle_diagnostics"]["max_session_guard_reached"], 0)
         self.assertEqual(meta["activity_type_exposure"]["event_rows"], 0)
 
+    def test_runner_wires_active_processing_time_artifact_for_ml_modes(self):
+        from scripts.run_experiments import run_once
+
+        _, meta = run_once(
+            "random", 1, 0, "normal", True, "basic", "probs",
+            lifecycle_mode="active", processing_time_mode="ml_model",
+            permissions="observed",
+        )
+        self.assertEqual(
+            meta["configuration"]["processing_time_model_path"],
+            "simulation/models/processing_time_model_active.joblib",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

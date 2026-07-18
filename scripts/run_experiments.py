@@ -587,6 +587,9 @@ def run_once(
         LifecycleParameters.from_file(ACTIVE_INPUTS_PATH)
         if lifecycle_mode == "active" else None
     )
+    processing_time_model_path = (
+        ACTIVE_MODEL_PATH if lifecycle_mode == "active" else LEGACY_MODEL_PATH
+    )
     engine = SimulationEngine(
         sim_duration=duration, start_datetime=START_DATETIME, verbose=False,
         lifecycle_mode=lifecycle_mode)
@@ -601,6 +604,10 @@ def run_once(
 
     proc_kwargs = dict(
         seed=seed, mode=processing_time_mode, start_datetime=START_DATETIME,
+        model_path=(
+            str(processing_time_model_path)
+            if processing_time_mode != "distribution" else None
+        ),
         resource_component=resources, crn=crn, case_attributes=case_attrs,
         lifecycle_mode=lifecycle_mode, lifecycle_params=lifecycle_params,
         atomic_duration_scale=atomic_duration_scale,
@@ -667,6 +674,10 @@ def run_once(
             "permissions": permissions,
             "lifecycle_mode": lifecycle_mode,
             "processing_time_mode": processing_time_mode,
+            "processing_time_model_path": (
+                str(processing_time_model_path.relative_to(REPO_ROOT))
+                if processing_time_mode != "distribution" else None
+            ),
             "atomic_duration_scale": float(atomic_duration_scale),
             "roster_seed": effective_roster_seed,
             "capacity": effective_capacity,
