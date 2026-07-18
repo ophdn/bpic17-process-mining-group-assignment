@@ -1,13 +1,14 @@
-# Daniel notebook runbook
+# Notebook execution runbook
 
 This runbook regenerates the processing-time evidence, the 10/30/60-day policy
-studies, and the report hand-off files. Run every command from the repository
-root. The long simulations are intentionally not part of the test suite.
+studies, and their machine-readable outputs. Run every command from the
+repository root. The long simulations are intentionally not part of the test
+suite.
 
 The active processing-time model, fitted lifecycle inputs, and controlled
 lifecycle-validation results are committed. Collaborators who only need the
-current model and report evidence can install the environment in Section 1 and
-continue directly with Section 5; Sections 2--4 are maintainer steps for an
+current model and evaluation evidence can install the environment in Section 1
+and continue directly with Section 5; Sections 2--4 are maintainer steps for an
 intentional regeneration.
 
 ## 1. Prepare and register the Python environment
@@ -55,8 +56,8 @@ ls -lh "$BPIC17_LOG"
 ```
 
 Change `BPIC17_LOG` only when your copy is stored at one of the other supported
-locations. Do not continue with a different log version if the report is meant
-to reproduce the committed study.
+locations. Do not continue with a different log version when reproducing the
+committed artifacts.
 
 ## 3. Regenerate the active processing-time inputs and models
 
@@ -98,7 +99,7 @@ permissions, and a common seed/roster. It writes:
 
 The `03` and `04` notebooks reject these files if their schema, configuration,
 or code/input hashes are stale. The old capacity-3 artifacts cannot silently
-enter the report.
+enter the analysis.
 
 ## 5. Run the notebooks in order
 
@@ -109,7 +110,7 @@ Kernel and Run All**. Run them in this exact order:
 2. `notebooks/03_process_times.ipynb`
 3. `notebooks/04_evaluation.ipynb` — 10-day directional study
 4. `notebooks/04_evaluation_30.ipynb` — 30-day horizon check
-5. `notebooks/04_evaluation_60.ipynb` — report and staffing study
+5. `notebooks/04_evaluation_60.ipynb` — primary evaluation and staffing study
 
 For a terminal-driven run, use the same order:
 
@@ -145,10 +146,10 @@ The 60-day notebook deliberately runs last. Its final cell reads the 10- and
 provenance match the current checkout. Run caches are reused only when the same
 checks pass; manually deleting caches is unnecessary.
 
-## 6. Verify the report hand-off
+## 6. Verify generated outputs
 
 The final cells must print `All provenance and result sanity checks passed.`
-Inspect these machine-readable outputs before changing LaTeX:
+Inspect these machine-readable outputs after execution:
 
 - `output/report_inputs/processing_time_report_values.json`
 - `output/report_inputs/processing_time_sampler_summary.csv`
@@ -157,38 +158,11 @@ Inspect these machine-readable outputs before changing LaTeX:
 - `output/report_inputs/evaluation_horizon_summary.csv`
 - `output/report_inputs/evaluation_60d_report_values.json`
 
-The authoritative evaluation figures are:
+The primary 60-day evaluation figures are:
 
 - `visualization/04_60_policy_tradeoff.pdf`
 - `visualization/04_60_staffing_impact.pdf`
 
 The 10- and 30-day studies are horizon checks; their old staffing files, if
-present locally, are not report inputs. Staffing conclusions come only from the
-60-day notebook.
-
-## 7. Update the report repository
-
-```bash
-cd /Users/danielsich/dev/Ent/6a562e35fea37a0c6eeea788
-git pull
-
-cp ../bpic17-process-mining-group-assignment/visualization/03_lifecycle_time_recomposition.pdf figures/
-cp ../bpic17-process-mining-group-assignment/visualization/03_point_model_feature_importance.pdf figures/
-cp ../bpic17-process-mining-group-assignment/visualization/03_quantile_interval_coverage.pdf figures/
-cp ../bpic17-process-mining-group-assignment/visualization/04_60_policy_tradeoff.pdf figures/
-cp ../bpic17-process-mining-group-assignment/visualization/04_60_staffing_impact.pdf figures/
-```
-
-Use the JSON/CSV hand-offs rather than copying values from notebook screenshots.
-Update these Daniel-owned report files:
-
-- `Input/simulation/processing_times.tex`
-- `Input/optimization/evaluation.tex`
-- `Input/optimization/management_question.tex`
-- `Input/appendix.tex` when the ML diagnostic discussion changes
-
-After editing, compile the LaTeX project and visually check that tables, figure
-labels, confidence intervals, completion shares, selected employees, and the
-stated horizon all match the regenerated hand-offs. Commit the simulation
-repository and report repository separately so the evidence-producing code is
-not mixed with prose-only changes.
+present locally, are not current outputs. Staffing conclusions come only from
+the 60-day notebook.
