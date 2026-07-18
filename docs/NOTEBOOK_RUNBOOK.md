@@ -36,7 +36,6 @@ mkdir -p "$MPLCONFIGDIR"
 ## 2. Verify the checkout and raw log
 
 ```bash
-git switch adj/final
 git status --short --branch
 python -m pytest -q
 ```
@@ -91,7 +90,8 @@ python scripts/run_lifecycle_validation.py
 
 This performs three paired 60-day runs using capacity 1, the advanced Petri
 process, visit-aware branching, active lifecycle, MDN arrivals, OrgModel
-permissions, and a common seed/roster. It writes:
+permissions, a common seed/roster, and automatic zero-time `A_`/`O_` state
+changes. It writes:
 
 - `output/validation/lifecycle_active/distribution.json`
 - `output/validation/lifecycle_active/ml_model.json`
@@ -99,7 +99,9 @@ permissions, and a common seed/roster. It writes:
 
 The `03` and `04` notebooks reject these files if their schema, configuration,
 or code/input hashes are stale. The old capacity-3 artifacts cannot silently
-enter the analysis.
+enter the analysis. Rerun this comparison after changing simulator semantics;
+the evaluation notebooks intentionally reject the previous
+`atomic_duration_scale=1` artifacts.
 
 ## 5. Run the notebooks in order
 
@@ -145,6 +147,13 @@ The 60-day notebook deliberately runs last. Its final cell reads the 10- and
 30-day summaries and rejects them unless their schema, configuration, and full
 provenance match the current checkout. Run caches are reused only when the same
 checks pass; manually deleting caches is unnecessary.
+
+All three evaluation notebooks model `A_` and `O_` records as automatic
+zero-time state changes. Their start and complete rows share a timestamp and
+have no resource assignment. The notebooks assert that these transitions
+consume no busy time; only `W_` activities enter human queues and staffing
+metrics. This is a modeling limitation, not evidence that no organizational
+effort occurred behind the recorded milestones.
 
 ## 6. Verify generated outputs
 
