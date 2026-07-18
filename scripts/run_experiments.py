@@ -65,7 +65,7 @@ from simulation.core.engine import SimulationEngine
 from simulation.core.events import EventType, SimEvent
 from simulation.components.arrival import ArrivalComponent
 from simulation.components.arrival_mdn import MDNArrivalComponent
-from simulation.components.process import ProcessComponent
+from simulation.components.process import MAX_SESSIONS, ProcessComponent
 from simulation.components.petri_process import PetriNetProcessComponent
 from simulation.components.resource import (
     DEFAULT_CAPACITY_ACTIVE, DEFAULT_CAPACITY_LEGACY, DEFAULT_ROSTER_SEED,
@@ -580,6 +580,15 @@ def run_once(
     availability_intervals = availability_intervals_per_resource(
         calendar, START_DATETIME, days, resource_pool,
     )
+    lifecycle_diagnostics = opt_metrics.lifecycle_diagnostics(
+        df,
+        engine_stats=engine.stats,
+        max_sessions=MAX_SESSIONS,
+    )
+    activity_type_exposure = opt_metrics.activity_type_exposure(
+        df,
+        availability_intervals=availability_intervals,
+    )
 
     meta = {
         "arrival_times": arrival_times,
@@ -588,6 +597,8 @@ def run_once(
         "availability_intervals": availability_intervals,
         "engine_stats": dict(engine.stats),
         "resource_stats": resources.stats(),
+        "lifecycle_diagnostics": lifecycle_diagnostics,
+        "activity_type_exposure": activity_type_exposure,
         "lifecycle_mode": lifecycle_mode,
         "processing_time_mode": processing_time_mode,
         "configuration": {

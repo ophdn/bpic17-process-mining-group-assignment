@@ -159,6 +159,30 @@ def activity_type_exposure(
     supplied, busy time is clipped to realized availability just like the
     reported occupation KPI.
     """
+    basis = (
+        "active_overlap_with_availability"
+        if availability_intervals is not None else "all_active_time"
+    )
+    if df.empty or "concept:name" not in df.columns:
+        return {
+            "event_rows": 0,
+            "w_event_rows": 0,
+            "ao_event_rows": 0,
+            "w_event_share": float("nan"),
+            "ao_event_share": float("nan"),
+            "paired_sessions": 0,
+            "w_paired_sessions": 0,
+            "ao_paired_sessions": 0,
+            "w_session_share": float("nan"),
+            "ao_session_share": float("nan"),
+            "busy_seconds": 0.0,
+            "w_busy_seconds": 0.0,
+            "ao_busy_seconds": 0.0,
+            "w_busy_share": float("nan"),
+            "ao_busy_share": float("nan"),
+            "busy_time_basis": basis,
+        }
+
     event_types = _activity_type(df["concept:name"])
     named_events = event_types.isin({"W", "AO"})
     event_counts = event_types[named_events].value_counts()
@@ -193,10 +217,7 @@ def activity_type_exposure(
         "ao_busy_seconds": float(busy_by_type.get("AO", 0.0)),
         "w_busy_share": share(busy_by_type.get("W", 0.0), total_busy),
         "ao_busy_share": share(busy_by_type.get("AO", 0.0), total_busy),
-        "busy_time_basis": (
-            "active_overlap_with_availability"
-            if availability_intervals is not None else "all_active_time"
-        ),
+        "busy_time_basis": basis,
     }
 
 

@@ -93,6 +93,9 @@ class ResourceDiagnosticTests(unittest.TestCase):
         self.assertIn(meta["configuration"]["arrival_model"], {"mdn", "parametric"})
         self.assertEqual(meta["resource_stats"]["unpermitted_activities"], 0)
         self.assertEqual(meta["resource_stats"]["still_queued_at_end"], 0)
+        self.assertFalse(meta["lifecycle_diagnostics"]["active_lifecycle_schema"])
+        self.assertEqual(meta["lifecycle_diagnostics"]["max_session_guard_reached"], 0)
+        self.assertEqual(meta["activity_type_exposure"]["event_rows"], 0)
 
 
 if __name__ == "__main__":
