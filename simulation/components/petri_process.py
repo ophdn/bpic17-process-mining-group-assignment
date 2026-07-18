@@ -79,6 +79,27 @@ RESIDUAL_WEIGHT = 0.01
 MAX_ACTIVITY_REPEATS = 60
 MAX_TOTAL_ACTIVITIES = 400
 
+# Real per-activity max visit counts in the BPIC-17 log: A_Validating=8,
+# A_Incomplete=7, W_Validate application=8 -- essentially never exceeded in
+# reality (checked directly against data/BPIChallenge2017.xes.gz; docs/
+# ROADMAP.md A1-Update Teil 6/8). MAX_ACTIVITY_REPEATS=60 above is sized for
+# the *offer* sub-loop's genuine 20+ real cycles and is far too loose for
+# these three: the mined "5+" visit bucket for the fully-closed decision
+# point {A_Incomplete, A_Validating, W_Validate application} carries ~0
+# probability of ending (docs/ROADMAP.md), so simulated cases wander into
+# visit counts (up to 266 observed) with zero real precedent before the
+# global guard ever fires. Tighter, data-justified cap (real max + margin)
+# for just these three, leaving the offer loop's generous cap untouched.
+# Tuned by sweeping {8, 10, 12, 20} against the full KPI suite (docs/
+# ROADMAP.md, A1-Update Teil 8): 10 gave the best completion rate and case
+# length while staying close to 8's better precision/TVD -- not the extreme
+# on any one axis, the best overall balance.
+MAX_ACTIVITY_REPEATS_OVERRIDE = {
+    "A_Validating": 10,
+    "A_Incomplete": 10,
+    "W_Validate application": 10,
+}
+
 # Visit-conditioned branching table (branching_mode="visit"): produced by
 # extract_log_info.extract_branching_by_visit into simulation_inputs.json.
 INPUTS_PATH = Path(__file__).resolve().parents[2] / "simulation_inputs.json"
@@ -420,7 +441,8 @@ class PetriNetProcessComponent(ProcessComponent):
         checks marking==fm / tau-reachable END, and only these loop-guards
         remain as a safety net against pathological/infinite loops.
         """
-        if counts.get(activity, 0) >= MAX_ACTIVITY_REPEATS:
+        limit = MAX_ACTIVITY_REPEATS_OVERRIDE.get(activity, MAX_ACTIVITY_REPEATS)
+        if counts.get(activity, 0) >= limit:
             return True
         if sum(counts.values()) > MAX_TOTAL_ACTIVITIES:
             return True

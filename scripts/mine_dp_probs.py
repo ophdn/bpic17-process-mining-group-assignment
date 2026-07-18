@@ -116,7 +116,48 @@ def mine(df_complete, comp: PetriNetProcessComponent):
     return counts, n_fitting, n_nonfitting
 
 
-def to_probs(counts: dict, min_samples: int) -> dict:
+def global_end_rate(counts: dict) -> float:
+    """
+    Pooled P(__END__) across every decision point's per-visit buckets
+    (excluding the "all" aggregates, which would double-count each
+    decision).  __END__ is the one label with a meaning shared across every
+    decision point (unlike the other labels, which are decision-point-
+    specific activities) -- so it's the only one for which pooling data
+    from *other* decision points as a prior is principled.  See to_probs's
+    shrinkage: some narrow, fully-closed decision points (every legal
+    label is itself a loop activity) have essentially zero observed
+    __END__ at their sparser buckets, not because ending is truly
+    impossible there, but because so few real cases ever revisit that
+    exact decision point enough times to observe it -- a raw per-bucket
+    frequency of 0 there is a data-sparsity artifact, not evidence that
+    p(__END__) truly is 0 (docs/ROADMAP.md, A1-Update Teil 8).
+    """
+    end_count = total = 0
+    for buckets in counts.values():
+        for bucket, label_counts in buckets.items():
+            if bucket == "all":
+                continue
+            end_count += label_counts.get("__END__", 0)
+            total += sum(label_counts.values())
+    return end_count / total if total else 0.0
+
+
+def to_probs(counts: dict, min_samples: int, end_shrinkage_alpha: float = 0.0) -> dict:
+    """
+    end_shrinkage_alpha > 0 applies Dirichlet-style shrinkage to the
+    END-vs-continue split only, pulling each bucket's raw P(__END__)
+    toward the global pooled rate (global_end_rate) in proportion to how
+    little data backs that specific bucket:
+
+        p_end = (end_count + alpha * global_end_rate) / (total + alpha)
+
+    The relative proportions *among* the continue-choices are left exactly
+    as observed -- those labels are decision-point-specific, so there is no
+    principled global prior to pull them toward; only the END/continue
+    split benefits from pooling across decision points. alpha=0 (default)
+    reproduces the original unsmoothed behaviour exactly.
+    """
+    prior_end = global_end_rate(counts) if end_shrinkage_alpha > 0 else 0.0
     dp_probs = {}
     for dp_key, buckets in counts.items():
         entry = {}
@@ -124,10 +165,27 @@ def to_probs(counts: dict, min_samples: int) -> dict:
             total = sum(label_counts.values())
             if bucket != "all" and total < min_samples:
                 continue
-            entry[bucket] = {
-                label: round(cnt / total, 4)
-                for label, cnt in sorted(label_counts.items(), key=lambda kv: -kv[1])
-            }
+            if end_shrinkage_alpha > 0 and total > 0:
+                end_count = label_counts.get("__END__", 0)
+                p_end = (end_count + end_shrinkage_alpha * prior_end) / (total + end_shrinkage_alpha)
+                continue_total = total - end_count
+                dist = {}
+                if continue_total > 0:
+                    for label, cnt in label_counts.items():
+                        if label == "__END__":
+                            continue
+                        dist[label] = (1 - p_end) * (cnt / continue_total)
+                if p_end > 0:
+                    dist["__END__"] = p_end
+                entry[bucket] = {
+                    label: round(p, 4)
+                    for label, p in sorted(dist.items(), key=lambda kv: -kv[1])
+                }
+            else:
+                entry[bucket] = {
+                    label: round(cnt / total, 4)
+                    for label, cnt in sorted(label_counts.items(), key=lambda kv: -kv[1])
+                }
         if entry:
             dp_probs[dp_key] = entry
     return dp_probs
@@ -138,6 +196,16 @@ def main():
     parser.add_argument("--log", required=True, type=Path)
     parser.add_argument("--bpmn", type=Path, default=DEFAULT_BPMN)
     parser.add_argument("--min-samples", type=int, default=30)
+    parser.add_argument("--end-shrinkage-alpha", type=float, default=0.0,
+                        help="Dirichlet pseudo-count pulling each bucket's P(__END__) "
+                             "toward the global pooled END-rate (see to_probs's "
+                             "docstring). Default 0 (disabled): tried at alpha=20 "
+                             "and measured worse completion/precision/TVD than the "
+                             "unsmoothed baseline (docs/ROADMAP.md, A1-Update Teil 8) "
+                             "-- the real global END-rate (2.86%) is too low, and the "
+                             "main problematic decision point turned out to have a "
+                             "large (~1887), confident sample behind its near-zero "
+                             "rate, not sparse noise. Kept as a tested, opt-in option.")
     parser.add_argument("--output", type=Path, default=OUTPUT_PATH)
     args = parser.parse_args()
 
@@ -154,11 +222,13 @@ def main():
           f"{n_fit:,}/{n_fit + n_nonfit:,} cases fit "
           f"({100 * n_fit / (n_fit + n_nonfit):.1f}%).")
 
-    dp_probs = to_probs(counts, args.min_samples)
+    dp_probs = to_probs(counts, args.min_samples, args.end_shrinkage_alpha)
     out = {
         "bpmn": args.bpmn.name,
         "visit_bucket_max": DP_VISIT_BUCKET_MAX,
         "min_samples": args.min_samples,
+        "end_shrinkage_alpha": args.end_shrinkage_alpha,
+        "global_end_rate": round(global_end_rate(counts), 4),
         "replay_fit_pct": round(100 * n_fit / (n_fit + n_nonfit), 2),
         "dp_probs": dp_probs,
     }

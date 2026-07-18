@@ -583,6 +583,73 @@ Future Work**
     ler Umbau ist, kein Patch, (c) Zeitrisiko vor der Abgabe. Für später
     vorgemerkt.
 
+**A1-Update (18.07., Teil 8): Loop-Guard-Override + Bayesian-Shrinkage-Experiment — eines behalten, eines verworfen**
+- Ausgangspunkt: Teil 6/7 zeigten, dass ~26-28 % der Cases selbst bei
+  unbegrenzter Zeit nie fertig werden, weil sie im Entscheidungspunkt
+  `{A_Incomplete, A_Validating, W_Validate application}` feststecken — alle
+  drei legalen Optionen sind selbst Schleifen-Aktivitäten, und die gemined
+  Daten zeigen an der "5+"-Visit-Bucket praktisch 0 % Chance zu enden.
+- **Checkpoint-Commit `849d768`** vor Beginn dieser zwei Experimente, um
+  sauber zurückrollen zu können (bündelt Teile 1-7).
+- **Experiment 1 — Bayesian Shrinkage** (`scripts/mine_dp_probs.py`,
+  `to_probs()` + neuer `global_end_rate()`): Dirichlet-Glättung, die
+  `P(__END__)` pro Visit-Bucket Richtung eines über ALLE Decision Points
+  gepoolten globalen END-Werts zieht (`--end-shrinkage-alpha`, Default jetzt
+  0 = aus). Begründung: `__END__` hat als einzige Aktivitätsbezeichnung eine
+  über Decision Points hinweg vergleichbare Bedeutung ("Case endet hier"),
+  anders als die übrigen (decision-point-spezifischen) Aktivitätslabels —
+  nur für `__END__` ist ein globaler Prior statistisch gerechtfertigt.
+  - Re-Mining mit `alpha=20` (~549 s Laufzeit): realer globaler END-Rate
+    **2,86 %** — viel niedriger als angenommen. Für den kritischen
+    Entscheidungspunkt bedeutet das: die "5+"-Bucket bewegte sich von exakt
+    0 auf nur **0,03 %** `__END__`. Rückrechnung aus der Glättungsformel
+    zeigt, dass diese Bucket **~1887 reale Beobachtungen** hat (keine
+    Handvoll wie ursprünglich vermutet) — die Nähe zu 0 % ist also ein
+    robuster, gut belegter Befund aus den realen Daten, keine
+    Kleinstichproben-Störung.
+  - **Gemessen (kombiniert mit Loop-Guard-Override, gleicher 60-Tage-Lauf):**
+    Completion **0,478** (schlechter als Loop-Guard allein: 0,498),
+    Precision **0,694** (schlechter als 0,711), TVD **0,114** (schlechter
+    als 0,109). Shrinkage mit dem realen, niedrigen globalen Prior ist eine
+    Netto-Verschlechterung, nicht nur ein kleinerer Gewinn als erhofft.
+  - **Verworfen:** `dp_branching_probs.json` per `git checkout` auf den
+    committeten (ungeglätteten) Stand zurückgesetzt; `--end-shrinkage-alpha`
+    Default auf `0.0` (aus) gesetzt. Code bleibt erhalten, getestet und
+    dokumentiert als geprüfte, aber nicht übernommene Option — kein
+    Blindflug für eine zukünftige Session.
+- **Experiment 2 — Per-Aktivität Loop-Guard-Override** (`petri_process.py`,
+  `MAX_ACTIVITY_REPEATS_OVERRIDE`): `A_Validating`/`A_Incomplete`/
+  `W_Validate application` erhalten einen eigenen, engeren
+  `MAX_ACTIVITY_REPEATS`-Wert statt des globalen 60 (der für die
+  *Angebots*-Schleife mit echten 20+ Durchläufen gedacht ist). Sweep über
+  {8, 10, 12, 20}, jeweils voller KPI-Lauf:
+
+  | Cap | Completion | Precision | TVD | Case-Länge | Case-Dauer |
+  |---|---:|---:|---:|---:|---:|
+  | kein Override | 0,447 | 0,764 | 0,098 | 0,195 | 0,784 |
+  | 20 | 0,464 | 0,714 | 0,114 | 0,145 | 0,736 |
+  | 12 | 0,498 | 0,711 | 0,109 | 0,121 | 0,725 |
+  | **10 (gewählt)** | **0,507** | 0,721 | 0,107 | **0,118** | 0,714 |
+  | 8 | 0,498 | **0,746** | **0,104** | 0,133 | **0,709** |
+
+  **Cap=10 gewählt:** beste Completion-Rate und Case-Länge (die beiden
+  Zielmetriken dieser Untersuchung), bei TVD/Precision nah an Cap=8's
+  besseren Werten — kein Extremwert auf einer Achse, bester
+  Gesamtkompromiss. Trade-off bleibt real (Precision/TVD schlechter als
+  ganz ohne Override), aber deutlich kleiner als bei den lockeren Caps
+  (12/20), die überraschenderweise *nicht* weniger Trade-off boten, nur
+  weniger Completion-Gewinn — vermutlich weil festgefahrene Cases ohnehin
+  nie organisch fertig werden und ein engerer Cap schlicht weniger
+  unrealistische Zusatz-Loop-Events vor dem Abbruch anhäuft.
+- **Fazit:** von zwei parallel verfolgten Hebeln hat sich einer bestätigt
+  (Loop-Guard-Override, jetzt aktiv) und einer nicht (Shrinkage, verworfen,
+  aber sauber dokumentiert und reproduzierbar falls später mit einem
+  anderen Prior erneut versucht werden soll). Completion-Rate bleibt mit
+  ~51 % unter dem Real-Log-Vergleichswert (63,3 % im gleichen 60-Tage-
+  Fenster, Teil 6) — die verbleibende Lücke ist jetzt auf ein einzelnes,
+  gut verstandenes Muster eingegrenzt (dieser eine Decision-Point-Typ),
+  nicht mehr auf ein diffuses "Completion ist niedrig".
+
 **A2. Echte Ressourcen-Contention + Warte-/Servicezeit-Trennung (1.3 Adv. II)**
 - Schritte:
   1. `resource.py`-Bug fixen; `process.py` so umbauen, dass eine Aktivität
