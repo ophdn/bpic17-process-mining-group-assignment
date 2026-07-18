@@ -95,11 +95,25 @@ ACTIVE_MODEL_PATH = REPO_ROOT / "simulation" / "models" / "processing_time_model
 # as repository-relative names so the resulting manifest is stable across
 # machines and can be written directly into notebook provenance.
 EVALUATION_PROVENANCE_PATHS = (
+    "analysis/availability.py",
+    "analysis/permissions.py",
+    "models/case_attributes.json",
+    "models/permissions_orgmodel.json",
     "scripts/opt_metrics.py",
     "scripts/run_experiments.py",
+    "simulation/components/arrival_mdn.py",
+    "simulation/components/arrival_mdn_weights.npz",
+    "simulation/components/petri_process.py",
+    "simulation/components/permissions.py",
     "simulation/components/resource.py",
     "simulation/components/process.py",
+    "simulation/core/engine.py",
+    "simulation/expected_duration.py",
+    "simulation/models/bpic17_process.bpmn",
+    "simulation/models/dp_branching_probs.json",
+    "simulation/policies.py",
     "models/availability_model.json",
+    "simulation_inputs.json",
     "simulation_inputs_active.json",
 )
 

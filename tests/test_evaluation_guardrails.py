@@ -18,10 +18,16 @@ from scripts.run_experiments import (
 class EvaluationProvenanceTests(unittest.TestCase):
     def test_manifest_covers_simulator_and_fitted_inputs(self):
         required = {
+            "models/permissions_orgmodel.json",
+            "simulation/components/arrival_mdn_weights.npz",
+            "simulation/components/petri_process.py",
             "simulation/components/resource.py",
             "simulation/components/process.py",
+            "simulation/models/bpic17_process.bpmn",
+            "simulation/models/dp_branching_probs.json",
             "scripts/run_experiments.py",
             "models/availability_model.json",
+            "simulation_inputs.json",
             "simulation_inputs_active.json",
         }
         self.assertTrue(required.issubset(EVALUATION_PROVENANCE_PATHS))
