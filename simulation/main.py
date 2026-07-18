@@ -10,7 +10,8 @@ Components used:
     Branching at each decision point is either BRANCHING_PROBS (--branching-mode
     probs, default) or a decision-point classifier trained on case/runtime data
     attributes (--branching-mode rules, Section 1.5 Advanced I).
-  - ResourceComponent (Section 1.7+1.8 Basic): permission map + random allocation
+  - ResourceComponent (Sections 1.6--1.8): Advanced calendar availability and
+    OrdinoR permissions by default, with Basic random allocation
   - EventLogger       (Section 1.1 Basic): built-in, outputs CSV
 
 Usage:
@@ -95,6 +96,30 @@ OBSERVED_PERMS_PATH  = REPO_ROOT / "models" / "permissions_observed.json"
 CASE_ATTRIBUTES_PATH = REPO_ROOT / "models" / "case_attributes.json"
 
 RANDOM_SEED = 42   # Fix for reproducibility — required by assignment grading!
+
+
+def load_permission_context(kind: str, seed: int = RANDOM_SEED):
+    """Load permissions and an independent per-case attribute sampler.
+
+    Case attributes describe the simulated case and must not disappear when a
+    permission model that does not consume them is selected.  The OrdinoR
+    model uses ``case_type`` while the observed and hardcoded permission models
+    ignore it, but all three modes receive the same case-attribute stream.
+    """
+    case_attrs = CaseAttributeSampler.from_json(CASE_ATTRIBUTES_PATH, seed=seed)
+    if kind == "orgmodel":
+        perms = perm_models.OrgModelPermissions.from_json(ORGMODEL_PATH)
+        perms.self_check()  # a vocabulary mismatch would permit nothing, silently
+        return perms, case_attrs
+    if kind == "observed":
+        return perm_models.StaticPermissions.from_json(OBSERVED_PERMS_PATH), case_attrs
+    if kind == "hardcoded":
+        # None selects ResourceComponent's original top-20 permission map.
+        return None, case_attrs
+    raise ValueError(
+        f"unknown permissions kind {kind!r} "
+        "(known: orgmodel, observed, hardcoded)"
+    )
 
 
 class CaseCompletionTracker:
@@ -201,16 +226,10 @@ def main(
     #                on the case type and the day of the week.
     #   "observed" — the resource x activity matrix (Basic): permitted iff seen.
     #   "hardcoded"— the original top-20 map, kept as the baseline.
-    perms = None
-    case_attrs = None
-    if permissions == "orgmodel":
-        perms = perm_models.OrgModelPermissions.from_json(ORGMODEL_PATH)
-        perms.self_check()   # a vocabulary mismatch would permit nothing, silently
-        # The org model can gate on case type, so cases need one.
-        case_attrs = CaseAttributeSampler.from_json(
-            CASE_ATTRIBUTES_PATH, seed=RANDOM_SEED)
-    elif permissions == "observed":
-        perms = perm_models.StaticPermissions.from_json(OBSERVED_PERMS_PATH)
+    # Case attributes belong to the case, not to the permission model.  Static
+    # permission modes ignore case_type but must not remove LoanGoal from event
+    # payloads seen by the rest of the simulation.
+    perms, case_attrs = load_permission_context(permissions, RANDOM_SEED)
 
     if USE_MDN_ARRIVALS:
         arrivals = MDNArrivalComponent(seed=RANDOM_SEED, start_datetime=START_DATETIME)
@@ -236,7 +255,7 @@ def main(
         model_path=model_path,
         start_datetime=START_DATETIME,   # anchor for day_of_week / hour_of_day
         resource_component=resources,    # so resources are released on complete
-        case_attributes=case_attrs,      # Section 1.7: case types for the org model
+        case_attributes=case_attrs,      # Section 1.5: attributes for every case
         lifecycle_mode=lifecycle_mode,   # legacy | active (§4.4)
         lifecycle_params=lifecycle_params,
         atomic_duration_scale=atomic_duration_scale,

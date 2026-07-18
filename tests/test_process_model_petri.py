@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from datetime import datetime
 
 from pm4py.objects.petri_net.obj import Marking, PetriNet
@@ -32,6 +33,7 @@ def _component_with_linear_net(enforce_terminal_outcomes: bool = False) -> Petri
     component._fm_reach_cache = {}
     component.branching_mode = "probs"
     component.enforce_terminal_outcomes = enforce_terminal_outcomes
+    component.dp_table = "full"
     component._branching_by_visit = {}
     component._dp_probs = {}
     component._dp_visit_counts = {}
@@ -208,3 +210,58 @@ def test_ending_fires_the_tau_path_so_the_net_reaches_its_final_marking():
     assert stats["end_reasons"]["terminal_outcome"] == 1
     # The silent closing step must not surface as an activity in the log.
     assert [row["concept:name"] for row in engine.logger._rows] == []
+
+
+def _branching_component(dp_table: str) -> PetriNetProcessComponent:
+    """Component whose decision-point table strongly prefers one branch, so a
+    test can tell whether that table was consulted for the branch choice."""
+    component = _component_with_linear_net()
+    component._rng = random.Random(1)
+    component.dp_table = dp_table
+    component._dp_probs = {
+        "A_Pending | A_Validating": {
+            "all": {"A_Pending": 0.99, "A_Validating": 0.01, "__END__": 0.5},
+        },
+    }
+    return component
+
+
+def test_dp_table_end_only_keeps_the_mined_end_but_not_the_mined_branching():
+    """The decision-point table plays two roles: it supplies the END decision
+    (net termination) and it weights the branch choice (Section 1.5 Advanced
+    II). 'end_only' isolates them, which is what lets `rules` be measured as
+    a standalone Advanced I mechanism rather than one riding on mined data.
+    """
+    component = _branching_component("end_only")
+    labels = ["A_Pending", "A_Validating"]
+
+    # END is still evidenced by the mined table.
+    ends = sum(
+        component._weighted_choice(f"c{i}", "A_Pending", labels, allow_end=True)
+        == "__END__"
+        for i in range(200)
+    )
+    assert ends > 0
+
+    # ...but the 0.99/0.01 mined split must NOT drive the branch choice, so
+    # both branches stay reachable through the residual-weight fallback.
+    picks = {
+        component._weighted_choice(f"d{i}", "A_Pending", labels, allow_end=False)
+        for i in range(200)
+    }
+    assert picks == {"A_Pending", "A_Validating"}
+
+
+def test_dp_table_off_never_ends_a_case_on_mined_evidence():
+    """With the mined table off there is no evidence that a case may stop, and
+    END carries no residual weight — ending must stay evidenced, so the case
+    can only terminate through the domain rules."""
+    component = _branching_component("off")
+    component._dp_probs = {}
+    labels = ["A_Pending", "A_Validating"]
+
+    choices = {
+        component._weighted_choice(f"c{i}", "A_Pending", labels, allow_end=True)
+        for i in range(200)
+    }
+    assert "__END__" not in choices

@@ -1,0 +1,40 @@
+{
+  "method": "MaskablePPO",
+  "paper": "Middelhuis et al., Information Systems 128 (2025) 102492",
+  "timesteps": 1024000,
+  "requested_timesteps": 1000000,
+  "episode_days": 3,
+  "seed": 10000,
+  "scenario": "normal",
+  "process_model": "advanced",
+  "branching_mode": "visit",
+  "permissions": "orgmodel",
+  "lifecycle_mode": "active",
+  "processing_time_mode": "distribution",
+  "capacity": null,
+  "roster_seed": 42,
+  "observation_version": 2,
+  "observation_size": 486,
+  "action_count": 3457,
+  "postpone_penalty": 0.001,
+  "validation": {
+    "frequency": 100000,
+    "episodes": 2,
+    "seed": 2000000,
+    "reward_best_model": "models/drl_resource_policy_1m_reward_best.zip",
+    "selected_model": "models/drl_resource_policy_1m.zip",
+    "selection_basis": "held-out throughput; final completed 245.5 cases/run versus 92.3 for the 100k policy"
+  },
+  "hyperparameters": {
+    "network": [
+      128,
+      128
+    ],
+    "n_steps": 25600,
+    "batch_size": 256,
+    "learning_rate": 3e-05,
+    "learning_rate_schedule": "linear",
+    "gamma": 0.999,
+    "clip_range": 0.2
+  }
+}

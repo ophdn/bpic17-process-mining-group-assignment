@@ -50,6 +50,12 @@ def test_predictor_is_deterministic():
         assert a.predict(act) == b.predict(act)
 
 
+def test_visit_predictor_uses_visit_conditioned_distribution():
+    predictor = NextActivityPredictor(branching_mode="visit")
+    assert predictor.predict("A_Validating", visit=1)[0] == "O_Returned"
+    assert predictor.predict("A_Validating", visit=2)[0] == "O_Accepted"
+
+
 # ---------------------------------------------------------------------
 # Construction guards
 # ---------------------------------------------------------------------

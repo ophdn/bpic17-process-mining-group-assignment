@@ -306,15 +306,48 @@ weil es Terminal-Aktivitäten hart abschneidet — das motivierte D4.
 
 ### D2 — Modellquelle: manuelles (Signavio-)BPMN vs. aus dem Log gemint (1.4)
 **Entscheidung:** Signavio-Modell behalten.
-**Evidenz** (`output/validation/bpmn_source_comparison/`): Inductive Miner
-(noise 0.2) fittet das echte Log nur marginal besser (Token-Replay: 73,6 % vs.
-68,8 % voll passend; Ø-Fitness 0,993 vs. 0,976), ist aber in der Simulation
-deutlich unpräziser (Precision 0,49 vs. 0,78, TVD 0,57 vs. 0,24) — und
-terminiert identisch schlecht (je 2 %). **Schlussfolgerung:** Die
-Nicht-Terminierung ist eine Branching-Eigenschaft, keine Modellfrage.
+
+~~**Evidenz** (alt, vor allen 18.07-Fixes): Inductive Miner (noise 0.2)
+fittet das echte Log nur marginal besser (Token-Replay: 73,6 % vs. 68,8 %
+voll passend), ist aber in der Simulation deutlich unpräziser (Precision
+0,49 vs. 0,78, TVD 0,57 vs. 0,24) — und terminiert identisch schlecht
+(je 2 %).~~
+
+**Neu gemessen (18.07., unter aktuellem Code — visit/orgmodel/60 Tage,
+`output/validation/bpmn_source_comparison/advanced_im02.json`):**
+
+| KPI | Signavio | IM-mined (noise 0,2) |
+|---|---:|---:|
+| Fully-fitting traces | 95,47 % | 98,15 % |
+| Ø Trace-Fitness | 0,997 | 0,999 |
+| Precision | **0,748** | 0,543 |
+| Branching TVD | **0,091** | 0,110 |
+| Top-20-Varianten | **17/20** | 11/20 |
+| Case-Länge rel. Fehler | 0,154 | 0,123 |
+| Case-Dauer rel. Fehler | **0,693** | 0,741 |
+| Completion-Rate | 0,507 | **0,727** |
+| Netz formal abgeschlossen | **72,4 %** | **4,8 %** (168/3520) |
+
+Structural-Replay des realen Logs (unverändert von N1/N2 betroffen, reiner
+Token-Replay ohne Branching): 73,6 % (IM02) vs. 68,8 % (Signavio) voll
+passend — marginal besser, wie vorher berichtet.
+
+**Wichtiger Zusatzbefund (jetzt erst sichtbar, weil `closed_at_final_marking`
+neu ist):** Die Completion-Rate-Umkehrung (0,727 vs. 0,507) ist **kein**
+Beleg für ein besseres Modell. Die DP-Tabelle ist gegen die Signavio-
+Decision-Points gemined; beim IM02-Netz haben 5 137 von 5 161
+End-Gelegenheiten (99,5 %) keinen passenden Eintrag
+(`allow_end_without_dp`), Terminierung fällt dort fast vollständig auf die
+Domänenregel zurück. Entsprechend schließen nur 4,8 % der abgeschlossenen
+Cases das Netz formal ab, gegen 72,4 % bei Signavio. **Schlussfolgerung
+unverändert:** Netz und Branching-Tabelle sind eine kalibrierte Einheit,
+nicht unabhängig austauschbar — das war schon vorher die Kernaussage von
+D2, jetzt mit frischer, direkter Evidenz statt nur dem AND→OR-Gateway-Experiment.
+
 (Strenger Präfix-Replay: 57,7 % der 31 509 realen Cases passen exakt aufs
 Signavio-Netz — Grenze der Trainingsdatenbasis für D5, im Report als
-Limitation nennen.)
+Limitation nennen. Seit N1 kein Datenverlust mehr für Decision Points nach
+dem ersten Abweichungspunkt, s. oben.)
 
 ### D3 — Trace-Bigramme vs. Decision-Point-Wahrscheinlichkeiten (1.5)
 **Entscheidung:** Branching-Wahrscheinlichkeiten werden per **Replay an den
@@ -480,7 +513,8 @@ END-Entscheidung und Terminal-Regel.
 | Datei | Inhalt |
 |---|---|
 | `output/validation/process_model_comparison/{basic,advanced,real_log}.json` | D1 + Update-18.07.-Tabelle (real_log neu: `scripts/eval_real_log.py`) |
-| `output/validation/bpmn_source_comparison/real_log_replay_im02.json`, `advanced_im02.json` | D2 |
+| `output/validation/bpmn_source_comparison/real_log_replay_im02.json` | D2, struktureller Replay (unverändert, kein Branching involviert) |
+| `output/validation/bpmn_source_comparison/advanced_im02.json` | D2, **neu erzeugt 18.07.** unter aktuellem Code (vorher: 14.07., vor allen Fixes) |
 | `output/validation/branching_probs_vs_rules/advanced_{probs,probs_terminal,visit_bigram,visit,rules}.json` | D3/D4/D5-Ablation (5 Stufen, **vor** Update 18.07. — Richtung gültig, absolute Zahlen überholt) |
 | `output/validation/process_model_comparison/ablation/` | 18.07.: BPMN-Gateway/Terminal-Outcomes/Branching-Mode isoliert (A1-Update Teil 1-3) |
 | `output/validation/horizon_censoring/drain.json` | Zensierungsnachweis — **Achtung:** unter altem 30-Tage-Setup gemessen, s. Update-Hinweis oben |

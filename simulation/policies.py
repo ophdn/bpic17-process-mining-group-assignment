@@ -33,7 +33,7 @@ Usage
 """
 
 from dataclasses import dataclass
-from typing import Dict, List, Protocol, runtime_checkable
+from typing import Dict, List, Optional, Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -47,6 +47,7 @@ class AllocationState:
     """
     busy: Dict[str, int]
     capacity: int
+    allocations: Optional[Dict[str, int]] = None
 
 
 @runtime_checkable
@@ -107,12 +108,17 @@ class RoundRobinPolicy:
 class ShortestQueuePolicy:
     """R-SHQ (Shortest Queue, Russell et al. Pattern 17).
 
-    Give the work item to the candidate with the least on their plate
-    right now (lowest live busy count). Ties break by candidate-list
-    order, which is deterministic (permission-model resource order) —
-    NOT randomly, so this policy also consumes no RNG draws and leaves
-    every other component's random stream untouched (CRN-safe).
+    Give the work item to the candidate with the least on their plate. Live
+    busy count is primary. Cumulative assignments are the secondary load when
+    candidates have equal live load; this is essential under unit capacity,
+    where the upstream availability filter otherwise presents only resources
+    with ``busy == 0`` and the policy degenerates to "first candidate".
+    Remaining ties use deterministic candidate order (CRN-safe).
     """
 
     def select(self, activity: str, candidates: List[str], state: AllocationState) -> str:
-        return min(candidates, key=lambda r: state.busy.get(r, 0))
+        allocations = state.allocations or {}
+        return min(
+            candidates,
+            key=lambda r: (state.busy.get(r, 0), allocations.get(r, 0)),
+        )

@@ -412,7 +412,7 @@ engine = SimulationEngine(..., start_datetime=datetime(2017, 1, 1))
 | **1.5** Branching Decisions | ✅ Done (Basic: empirical branching probabilities) | `components/process.py` (`BRANCHING_PROBS`) |
 | **1.6** Resource Availabilities | ✅ Done (Basic: fixed capacity per resource; Advanced: fitted shift/holiday/vacation calendar, default via `--availability calendar`) | `components/resource.py`, `analysis/availability.py`, `notebooks/01_resource_availability.ipynb` |
 | **1.7** Resource Permissions | ✅ Done (Basic: observed resource×activity matrix via `--permissions observed`; Advanced: OrdinoR organizational model with case/time context, default via `--permissions orgmodel`) | `components/resource.py`, `components/permissions.py`, `analysis/permissions.py`, `notebooks/02_resource_permissions.ipynb` |
-| **1.8** Resource Allocation | ✅ Done (R-RBA role filter + R-DE queueing; `RandomPolicy` push-selection via the `policies.py` seam; optional Piled Execution `--piled-execution` and k-Batching `--k-batching K`) | `components/resource.py`, `policies.py`, `expected_duration.py` — see [resource_allocation_heuristics.md](docs/manuals/resource_allocation_heuristics.md) |
+| **1.8** Resource Allocation | ✅ Done (R-RBA/R-DE, simple policies, Piled Execution, k-Batching, two assignment policies, and optional masked-PPO DRL) | `components/resource.py`, `policies.py`, `expected_duration.py`, `drl.py` — see [resource_allocation_heuristics.md](docs/manuals/resource_allocation_heuristics.md) and [drl_resource_allocation.md](docs/manuals/drl_resource_allocation.md) |
 
 Every section above still has open Advanced variants beyond what's marked
 done (see the "Upgrade path" note at the top of each component file).
@@ -429,6 +429,35 @@ Each team member can implement their component independently and register it wit
 
 **Why are simulation times in seconds?**
 Seconds are the natural base unit for `datetime` arithmetic in Python. The logger converts them to real datetimes transparently.
+
+---
+
+## Deep Reinforcement Learning allocation (optional D3)
+
+The simulator can be paused at allocation decision epochs and trained as a
+Gymnasium environment. `MaskablePPO` chooses a feasible `(resource, activity)`
+assignment or strategically postpones; contextual permissions, shifts and live
+capacity are enforced by the action mask. The normal simulator does not import
+PyTorch or Gymnasium.
+
+```bash
+uv pip install --python .venv/bin/python -r requirements-drl.txt
+
+PYTHONPATH=. .venv/bin/python scripts/train_drl.py \
+  --timesteps 100000 --days 10 --device auto \
+  --out models/drl_resource_policy
+
+PYTHONPATH=. .venv/bin/python scripts/run_experiments.py \
+  --policies random,drl --drl-model models/drl_resource_policy.zip \
+  --seeds 10 --days 10 --warmup-days 2 \
+  --process-model advanced --branching-mode visit \
+  --permissions orgmodel --lifecycle-mode active \
+  --out output/experiments_drl/
+```
+
+See [the DRL manual](docs/manuals/drl_resource_allocation.md) for the state,
+action, reward, training protocol and the distinction between a smoke model and
+report-quality convergence evidence.
 
 ---
 

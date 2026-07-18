@@ -72,6 +72,16 @@ def test_shortest_queue_tie_breaks_by_candidate_order():
     assert p.select("A", ["r1", "r2"], state) == "r1"
 
 
+def test_shortest_queue_uses_cumulative_load_at_unit_capacity():
+    p = ShortestQueuePolicy()
+    state = AllocationState(
+        busy={"r1": 0, "r2": 0},
+        capacity=1,
+        allocations={"r1": 8, "r2": 3},
+    )
+    assert p.select("A", ["r1", "r2"], state) == "r2"
+
+
 def test_shortest_queue_never_picks_busier_than_minimum():
     p = ShortestQueuePolicy()
     state = AllocationState(busy={"r1": 5, "r2": 0, "r3": 5}, capacity=6)

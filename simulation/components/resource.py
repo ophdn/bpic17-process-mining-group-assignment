@@ -400,11 +400,18 @@ class ResourceComponent:
         pull: Optional[str] = None,
         parksong: bool = False,
         krm_delta: Optional[float] = None,
+        drl: bool = False,
+        drl_model_path: Optional[str] = None,
+        drl_external_control: bool = False,
+        drl_observation_version: Optional[int] = None,
+        drl_action_version: Optional[int] = None,
+        branching_mode: str = "probs",
     ):
         modes = {
             "piled": piled, "batching_k": batching_k is not None,
             "pull": pull is not None, "parksong": parksong,
             "krm_delta": krm_delta is not None,
+            "drl": drl,
         }
         active_modes = [name for name, on in modes.items() if on]
         if len(active_modes) > 1:
@@ -422,6 +429,7 @@ class ResourceComponent:
         self._capacity = capacity_per_resource
         self._rng = random.Random(seed)
         self._piled = piled
+        self._allocation_counts: Dict[str, int] = {}
 
         # Pull-side selection discipline (Russell et al. pull patterns,
         # simulated): when a resource frees up, IT picks which waiting item
@@ -489,9 +497,10 @@ class ResourceComponent:
         # choice; a probability-discounted weight is future work.
         self._parksong = parksong
         self._predictor = None
+        self._case_activity_visits: Dict[str, Dict[str, int]] = {}
         if parksong:
             from ..policies_advanced import NextActivityPredictor
-            self._predictor = NextActivityPredictor()
+            self._predictor = NextActivityPredictor(branching_mode=branching_mode)
         # case_id -> (current activity, its payload) while in service.
         self._active_cases: Dict[str, tuple] = {}
 
@@ -546,6 +555,119 @@ class ResourceComponent:
         # shift-wake mechanism above.
         self._batch_wake_at: Optional[float] = None
 
+        # D3 — Middelhuis et al. (2025), masked PPO.  V2 of the fixed action
+        # space contains only (resource, activity) pairs that the permission
+        # model can ever allow, plus POSTPONE.  Contextual permission, live
+        # capacity, calendar and queue state are still enforced by the action
+        # mask.  Removing globally impossible pairs makes the classification
+        # problem substantially smaller without changing any feasible choice.
+        # V1 (the full Cartesian product) remains available for old models.
+        self._drl = bool(drl)
+        self._drl_external_control = bool(drl_external_control)
+        if self._drl_external_control and not self._drl:
+            raise ValueError("drl_external_control=True requires drl=True")
+        if self._drl and not self._drl_external_control and not drl_model_path:
+            raise ValueError(
+                "drl=True requires drl_model_path for inference, or "
+                "drl_external_control=True for training"
+            )
+        self._drl_resources = sorted(self._permissions.resources())
+        activities_fn = getattr(self._permissions, "activities", None)
+        if callable(activities_fn):
+            activities = activities_fn()
+        else:  # Compatibility with third-party PermissionModel objects.
+            activities = sorted({a for acts in RESOURCE_PERMISSIONS.values() for a in acts})
+        self._drl_activities = sorted(activities)
+        self._drl_resource_index = {r: i for i, r in enumerate(self._drl_resources)}
+        self._drl_activity_index = {a: i for i, a in enumerate(self._drl_activities)}
+        self._drl_compact_action_pairs = [
+            (resource, activity)
+            for resource in self._drl_resources
+            for activity in self._drl_activities
+            if self._permissions.permits(resource, activity)
+        ]
+        self._drl_compact_action_index = {
+            pair: i for i, pair in enumerate(self._drl_compact_action_pairs)
+        }
+        self._drl_decision_pending = False
+        self._drl_model = None
+        self._drl_assignments = 0
+        self._drl_postponements = 0
+        if drl_action_version not in (None, 1, 2):
+            raise ValueError("drl_action_version must be 1, 2, or None")
+        self._drl_action_version = (
+            int(drl_action_version)
+            if drl_action_version is not None
+            else (2 if self._drl_external_control else 0)
+        )
+        if drl_observation_version not in (None, 1, 2, 3):
+            raise ValueError(
+                "drl_observation_version must be 1, 2, 3, or None")
+        # V2 adds the currently executing activity.  V3 adds per-activity case
+        # age and expected duration, two signals that are central to cycle-time
+        # allocation but absent from the preliminary models.
+        self._drl_observation_version = (
+            int(drl_observation_version)
+            if drl_observation_version is not None
+            else (3 if self._drl_external_control else 0)
+        )
+        processing_times = (
+            lifecycle_params.processing_times
+            if lifecycle_mode == "active" and lifecycle_params is not None
+            else None
+        )
+        self._drl_expected_duration = {
+            activity: distribution_mean_seconds(activity, processing_times)
+            for activity in self._drl_activities
+        }
+        self._drl_active_activities: Dict[str, List[str]] = {
+            resource: [] for resource in self._drl_resources
+        }
+        if self._drl and not self._drl_external_control:
+            from ..drl import load_maskable_ppo
+            self._drl_model = load_maskable_ppo(drl_model_path)
+            actual_actions = int(self._drl_model.action_space.n)
+            if self._drl_action_version == 0:
+                matching_actions = [
+                    version for version in (1, 2)
+                    if actual_actions == self._drl_action_count_for(version)
+                ]
+                if not matching_actions:
+                    raise ValueError(
+                        f"DRL model action space has {actual_actions} actions, "
+                        f"expected V1 ({self._drl_action_count_for(1)}) or V2 "
+                        f"({self._drl_action_count_for(2)})"
+                    )
+                # If every pair is permitted, V1 and V2 have the same ordering.
+                self._drl_action_version = max(matching_actions)
+            expected_actions = self._drl_action_count_for(
+                self._drl_action_version)
+            if actual_actions != expected_actions:
+                raise ValueError(
+                    f"DRL model action space has {actual_actions} "
+                    f"actions, but this permission model requires {expected_actions}"
+                )
+            actual_obs = tuple(self._drl_model.observation_space.shape)
+            if self._drl_observation_version == 0:
+                matching = [
+                    version for version in (1, 2, 3)
+                    if actual_obs == (self._drl_observation_size_for(version),)
+                ]
+                if not matching:
+                    raise ValueError(
+                        f"DRL model observation shape is {actual_obs}, expected "
+                        f"V1 ({self._drl_observation_size_for(1)},) or V2 "
+                        f"({self._drl_observation_size_for(2)},) or V3 "
+                        f"({self._drl_observation_size_for(3)},)"
+                    )
+                self._drl_observation_version = matching[0]
+            expected_obs = self.drl_observation_size
+            if actual_obs != (expected_obs,):
+                raise ValueError(
+                    f"DRL model observation shape is {actual_obs}, expected "
+                    f"({expected_obs},)"
+                )
+
     @property
     def permissions(self) -> PermissionModel:
         """The permission model in force (Section 1.7)."""
@@ -568,8 +690,18 @@ class ResourceComponent:
         if token is not None and token.get("state") != "queued":
             return
 
-        if self._pull == "laf" and event.case_id is not None:
+        if (self._pull == "laf" or self._drl) and event.case_id is not None:
             self._case_first_seen.setdefault(event.case_id, event.timestamp)
+
+        if self._drl:
+            if not self._qualified(engine, event):
+                self._unpermitted += 1
+                self._begin(engine, event, None)
+                return
+            self._waiting.append(event)
+            self._drive_drl(engine)
+            self._arm_shift_wake(engine)
+            return
 
         if self._batching_k is not None:
             if not self._qualified(engine, event):
@@ -589,6 +721,19 @@ class ResourceComponent:
                 return
             self._waiting.append(event)
             self._epoch_flush(engine)
+            self._arm_shift_wake(engine)
+            return
+
+        if self._pull is not None:
+            # A pull discipline never assigns the arriving item directly.
+            # It first enters the shared queue, then every currently free
+            # resource chooses its preferred compatible item from that queue.
+            if not self._qualified(engine, event):
+                self._unpermitted += 1
+                self._begin(engine, event, None)
+                return
+            self._waiting.append(event)
+            self._pull_drain(engine)
             self._arm_shift_wake(engine)
             return
 
@@ -626,6 +771,8 @@ class ResourceComponent:
             ):
                 self._waiting.pop(i)
                 token["state"] = "withdrawn"
+                if self._drl:
+                    self._drive_drl(engine)
                 self._arm_shift_wake(engine)
                 self._arm_batch_wake(engine)
                 return
@@ -666,6 +813,37 @@ class ResourceComponent:
             payload=payload,
         ))
 
+    def _pull_best_index(self, engine, resource: str) -> Optional[int]:
+        """Return the queue index this resource prefers under the pull rule."""
+        best_i = None
+        best_key = None
+        for i, waiting in enumerate(self._waiting):
+            ct, when = self._context(engine, waiting)
+            if not self._permissions.permits(
+                    resource, waiting.activity, case_type=ct, when=when):
+                continue
+            if self._pull == "spt":
+                key = self._duration_model.expected_duration(
+                    waiting.activity, resource)
+            else:  # "laf"
+                key = self._case_first_seen.get(
+                    waiting.case_id, waiting.timestamp)
+            if best_key is None or key < best_key:
+                best_key, best_i = key, i
+        return best_i
+
+    def _pull_drain(self, engine, resources=None) -> None:
+        """Let free resources pull preferred items until no match remains."""
+        candidates = list(self._free_resources(engine) if resources is None else resources)
+        for resource in candidates:
+            while (self._busy.get(resource, 0) < self._capacity
+                   and self._is_on_shift(engine, resource)):
+                best_i = self._pull_best_index(engine, resource)
+                if best_i is None:
+                    break
+                waiting = self._waiting.pop(best_i)
+                self._begin(engine, waiting, resource)
+
     def on_resource_available(self, engine, event: SimEvent) -> None:
         """Something freed up capacity. Two callers:
 
@@ -687,6 +865,23 @@ class ResourceComponent:
         free/on-shift capacity to flush a batch", checked once here rather
         than per-release handoff logic.
         """
+        if self._drl:
+            if event.resource is not None:
+                self._busy[event.resource] = max(
+                    0, self._busy.get(event.resource, 0) - 1)
+                active = self._drl_active_activities.get(event.resource, [])
+                if event.payload in active:
+                    active.remove(event.payload)
+                elif active:
+                    # Defensive fallback for a caller that omits the completed
+                    # activity from the release event.
+                    active.pop(0)
+            elif event.payload == _SHIFT_WAKE:
+                self._wake_at = None
+            self._drive_drl(engine)
+            self._arm_shift_wake(engine)
+            return
+
         if self._batching_k is not None:
             if event.resource is not None:
                 self._busy[event.resource] = max(0, self._busy.get(event.resource, 0) - 1)
@@ -758,24 +953,7 @@ class ResourceComponent:
                     # the system's FIFO first-permitted scan below. Strict
                     # "<" keeps the earliest-queued item on ties, so the
                     # rule is deterministic and consumes no RNG.
-                    best_i = None
-                    best_key = None
-                    for i, waiting in enumerate(self._waiting):
-                        ct, when = self._context(engine, waiting)
-                        if not self._permissions.permits(
-                                resource, waiting.activity, case_type=ct, when=when):
-                            continue
-                        if self._pull == "spt":
-                            key = self._duration_model.expected_duration(
-                                waiting.activity, resource)
-                        else:  # "laf"
-                            key = self._case_first_seen.get(
-                                waiting.case_id, waiting.timestamp)
-                        if best_key is None or key < best_key:
-                            best_key, best_i = key, i
-                    if best_i is not None:
-                        waiting = self._waiting.pop(best_i)
-                        self._begin(engine, waiting, resource)
+                    self._pull_drain(engine, [resource])
                     self._arm_shift_wake(engine)
                     return
 
@@ -788,9 +966,275 @@ class ResourceComponent:
                         break
         else:
             self._wake_at = None
-            self._drain(engine)
+            if self._pull is not None:
+                self._pull_drain(engine)
+            else:
+                self._drain(engine)
 
         self._arm_shift_wake(engine)
+
+    # ------------------------------------------------------------------
+    # D3 Deep RL — masked resource/activity assignment + postpone
+    # ------------------------------------------------------------------
+
+    @property
+    def drl_external_control(self) -> bool:
+        return self._drl and self._drl_external_control
+
+    @property
+    def drl_decision_pending(self) -> bool:
+        return self._drl_decision_pending
+
+    @property
+    def drl_action_count(self) -> int:
+        return self._drl_action_count_for(self._drl_action_version)
+
+    def _drl_action_count_for(self, version: int) -> int:
+        if version == 1:
+            return len(self._drl_resources) * len(self._drl_activities) + 1
+        if version == 2:
+            return len(self._drl_compact_action_pairs) + 1
+        raise ValueError(f"unknown DRL action version {version!r}")
+
+    @property
+    def drl_observation_size(self) -> int:
+        return self._drl_observation_size_for(self._drl_observation_version)
+
+    def _drl_observation_size_for(self, version: int) -> int:
+        # Per resource: free-capacity fraction, on-shift flag, and from V2 the
+        # normalized activity currently being executed. Per activity: queue
+        # length and oldest queue wait, plus from V3 oldest case age and mean
+        # expected duration. Globals: queue/WIP proxy, mean busy, and cyclical
+        # hour + weekday (sin/cos pairs).
+        per_resource = 3 if version >= 2 else 2
+        per_activity = 4 if version >= 3 else 2
+        return (per_resource * len(self._drl_resources)
+                + per_activity * len(self._drl_activities) + 6)
+
+    @property
+    def drl_postpone_action(self) -> int:
+        return self.drl_action_count - 1
+
+    def _drl_decode_action(self, action: int) -> tuple[str, str]:
+        if action < 0 or action >= self.drl_postpone_action:
+            raise ValueError(f"not an assignment action: {action}")
+        if self._drl_action_version == 2:
+            return self._drl_compact_action_pairs[action]
+        n_activities = len(self._drl_activities)
+        resource_i, activity_i = divmod(action, n_activities)
+        return self._drl_resources[resource_i], self._drl_activities[activity_i]
+
+    def drl_action_for(self, resource: str, activity: str) -> int:
+        """Return the stable integer action for a resource/activity pair."""
+        try:
+            resource_i = self._drl_resource_index[resource]
+            activity_i = self._drl_activity_index[activity]
+        except KeyError as exc:
+            raise ValueError(f"unknown DRL resource/activity: {exc.args[0]!r}") from exc
+        if self._drl_action_version == 2:
+            try:
+                return self._drl_compact_action_index[(resource, activity)]
+            except KeyError as exc:
+                raise ValueError(
+                    f"globally ineligible DRL pair: ({resource!r}, {activity!r})"
+                ) from exc
+        return resource_i * len(self._drl_activities) + activity_i
+
+    def _drl_request_for(self, engine, resource: str, activity: str) -> Optional[SimEvent]:
+        """Oldest queued instance matching a resource/activity action."""
+        if (resource in self._excluded
+                or self._busy.get(resource, 0) >= self._capacity
+                or not self._is_on_shift(engine, resource)):
+            return None
+        for request in self._waiting:
+            if request.activity != activity:
+                continue
+            ct, when = self._context(engine, request)
+            if self._permissions.permits(
+                    resource, activity, case_type=ct, when=when):
+                return request
+        return None
+
+    def drl_action_mask(self, engine) -> np.ndarray:
+        """Boolean feasibility mask over fixed resource/activity actions."""
+        mask = np.zeros(self.drl_action_count, dtype=bool)
+        if not self._drl:
+            mask[-1] = True
+            return mask
+
+        free = [
+            r for r in self._drl_resources
+            if r not in self._excluded
+            and self._busy.get(r, 0) < self._capacity
+            and self._is_on_shift(engine, r)
+        ]
+        # Iterate waiting items rather than the full resource x activity x
+        # queue cube. Contextual OrdinoR permissions can differ by case, so a
+        # pair is feasible if at least one queued instance admits it.
+        for request in self._waiting:
+            activity_i = self._drl_activity_index.get(request.activity)
+            if activity_i is None:
+                continue
+            ct, when = self._context(engine, request)
+            for resource in free:
+                if self._permissions.permits(
+                        resource, request.activity, case_type=ct, when=when):
+                    if self._drl_action_version == 2:
+                        action = self._drl_compact_action_index.get(
+                            (resource, request.activity))
+                    else:
+                        resource_i = self._drl_resource_index[resource]
+                        action = (
+                            resource_i * len(self._drl_activities) + activity_i)
+                    if action is not None:
+                        mask[action] = True
+        mask[-1] = True  # strategic idling is always available
+        return mask
+
+    def drl_shortest_processing_action(self, engine) -> int:
+        """Return a feasible SPT expert action for imitation warm-starting.
+
+        This deliberately uses the same expected-duration information exposed
+        in observation V3.  Ties are stable by action id, making demonstration
+        generation exactly reproducible for a fixed simulation seed.
+        """
+        mask = self.drl_action_mask(engine)
+        feasible = np.flatnonzero(mask[:-1])
+        if not len(feasible):
+            return self.drl_postpone_action
+        return min(
+            (int(action) for action in feasible),
+            key=lambda action: (
+                self._drl_expected_duration[
+                    self._drl_decode_action(action)[1]
+                ],
+                action,
+            ),
+        )
+
+    def drl_observation(self, engine) -> np.ndarray:
+        """Normalized, fixed-size process state used by MaskablePPO."""
+        values: List[float] = []
+        for resource in self._drl_resources:
+            free_fraction = max(
+                0.0,
+                (self._capacity - self._busy.get(resource, 0)) / self._capacity,
+            )
+            values.extend((min(1.0, free_fraction), float(self._is_on_shift(engine, resource))))
+            if self._drl_observation_version >= 2:
+                active = self._drl_active_activities.get(resource, [])
+                activity_i = (
+                    self._drl_activity_index.get(active[0], -1) if active else -1
+                )
+                values.append(
+                    (activity_i + 1) / max(1, len(self._drl_activities))
+                )
+
+        by_activity: Dict[str, List[SimEvent]] = {
+            activity: [] for activity in self._drl_activities
+        }
+        for request in self._waiting:
+            if request.activity in by_activity:
+                by_activity[request.activity].append(request)
+        for activity in self._drl_activities:
+            queued = by_activity[activity]
+            values.append(min(len(queued) / 100.0, 1.0))
+            oldest = max(
+                (engine.now - request.timestamp for request in queued),
+                default=0.0,
+            )
+            values.append(min(max(oldest, 0.0) / (7.0 * 86400.0), 1.0))
+            if self._drl_observation_version >= 3:
+                oldest_case_age = max((
+                    engine.now - self._case_first_seen.get(
+                        request.case_id, request.timestamp)
+                    for request in queued
+                ), default=0.0)
+                values.append(min(
+                    max(oldest_case_age, 0.0) / (30.0 * 86400.0), 1.0))
+                values.append(min(
+                    self._drl_expected_duration[activity] / (8.0 * 3600.0),
+                    1.0,
+                ))
+
+        total_capacity = max(1, len(self._drl_resources) * self._capacity)
+        values.append(min(len(self._waiting) / 100.0, 1.0))
+        values.append(min(sum(self._busy.values()) / total_capacity, 1.0))
+
+        if self._start is None:
+            seconds_of_day = float(engine.now) % 86400.0
+            weekday = int(float(engine.now) // 86400.0) % 7
+        else:
+            now_wall = self._now_wall(engine)
+            seconds_of_day = (
+                now_wall.hour * 3600 + now_wall.minute * 60 + now_wall.second)
+            weekday = now_wall.weekday()
+        day_angle = 2.0 * np.pi * seconds_of_day / 86400.0
+        week_angle = 2.0 * np.pi * weekday / 7.0
+        values.extend((
+            (np.sin(day_angle) + 1.0) / 2.0,
+            (np.cos(day_angle) + 1.0) / 2.0,
+            (np.sin(week_angle) + 1.0) / 2.0,
+            (np.cos(week_angle) + 1.0) / 2.0,
+        ))
+        observation = np.asarray(values, dtype=np.float32)
+        if observation.shape != (self.drl_observation_size,):
+            raise AssertionError(
+                f"DRL observation shape {observation.shape} != "
+                f"({self.drl_observation_size},)"
+            )
+        return observation
+
+    def _prepare_drl_decision(self, engine) -> None:
+        self._drl_decision_pending = bool(
+            self.drl_action_mask(engine)[:-1].any())
+
+    def apply_drl_action(self, engine, action: int) -> None:
+        """Apply one masked action, used by both Gym and frozen inference."""
+        if not self._drl:
+            raise RuntimeError("DRL mode is not enabled")
+        action = int(action)
+        if action < 0 or action >= self.drl_action_count:
+            raise ValueError(f"DRL action {action} outside [0, {self.drl_action_count})")
+        mask = self.drl_action_mask(engine)
+        if not mask[action]:
+            raise ValueError(f"infeasible DRL action {action}")
+
+        self._drl_decision_pending = False
+        if action == self.drl_postpone_action:
+            self._drl_postponements += 1
+            return
+
+        resource, activity = self._drl_decode_action(action)
+        request = self._drl_request_for(engine, resource, activity)
+        if request is None:  # Defensive: mask and application must agree.
+            raise RuntimeError(
+                f"masked action ({resource}, {activity}) lost its queued request")
+        self._waiting.remove(request)
+        self._begin(engine, request, resource)
+        self._drl_assignments += 1
+        # Several free slots/tasks may exist at the same simulation instant.
+        self._prepare_drl_decision(engine)
+
+    def _drive_drl(self, engine) -> None:
+        """Pause for Gym control or run a frozen model until it postpones."""
+        self._prepare_drl_decision(engine)
+        if self._drl_external_control or not self._drl_decision_pending:
+            return
+
+        max_actions = max(1, len(self._waiting) + len(self._drl_resources) * self._capacity)
+        for _ in range(max_actions):
+            if not self._drl_decision_pending:
+                return
+            observation = self.drl_observation(engine)
+            mask = self.drl_action_mask(engine)
+            action, _ = self._drl_model.predict(
+                observation, action_masks=mask, deterministic=True)
+            action = int(np.asarray(action).item())
+            self.apply_drl_action(engine, action)
+            if action == self.drl_postpone_action:
+                return
+        raise RuntimeError("DRL inference exceeded the same-instant action guard")
 
     # ------------------------------------------------------------------
     # k-Batching (Zeng & Zhao) — see module docstring
@@ -875,6 +1319,7 @@ class ResourceComponent:
         phantom successor is planned for it. No-op outside parksong mode."""
         if self._parksong and event.case_id is not None:
             self._active_cases.pop(event.case_id, None)
+            self._case_activity_visits.pop(event.case_id, None)
 
     def _epoch_flush(self, engine) -> None:
         """One allocation epoch for the advanced policies (see constructor
@@ -904,7 +1349,8 @@ class ResourceComponent:
         phantom_penalty: List[float] = []
         if self._parksong:
             for case_id, (activity, payload, begun_at) in self._active_cases.items():
-                pred = self._predictor.predict(activity)
+                visit = self._case_activity_visits.get(case_id, {}).get(activity, 1)
+                pred = self._predictor.predict(activity, visit=visit)
                 if pred is None:
                     continue
                 nxt, p_next = pred
@@ -1183,6 +1629,7 @@ class ResourceComponent:
                 return
             token["state"] = "allocated"
 
+        resuming = isinstance(request.payload, dict) and request.payload.get("resuming")
         if self._parksong and request.case_id is not None:
             # D1 bookkeeping: this case is now in service on this activity —
             # its predicted successor becomes a phantom item at the next
@@ -1192,15 +1639,23 @@ class ResourceComponent:
             # dropped on CASE_COMPLETE.
             self._active_cases[request.case_id] = (
                 request.activity, request.payload, engine.now)
+            if not resuming:
+                visits = self._case_activity_visits.setdefault(request.case_id, {})
+                visits[request.activity] = visits.get(request.activity, 0) + 1
 
         if resource is not None:
             self._busy[resource] = self._busy.get(resource, 0) + 1
+            self._allocation_counts[resource] = (
+                self._allocation_counts.get(resource, 0) + 1)
+            if self._drl:
+                self._drl_active_activities.setdefault(resource, []).append(
+                    request.activity
+                )
 
         waited = engine.now - request.timestamp
         self._wait_total += waited
         self._wait_count += 1
 
-        resuming = isinstance(request.payload, dict) and request.payload.get("resuming")
         engine.schedule(SimEvent(
             timestamp=engine.now,
             priority=5,
@@ -1239,7 +1694,11 @@ class ResourceComponent:
         ]
         if not available:
             return None
-        state = AllocationState(busy=self._busy, capacity=self._capacity)
+        state = AllocationState(
+            busy=self._busy,
+            capacity=self._capacity,
+            allocations=self._allocation_counts,
+        )
         return self._policy.select(event.activity, available, state)
 
     # ------------------------------------------------------------------
@@ -1254,6 +1713,9 @@ class ResourceComponent:
             "work_items_started": self._wait_count,
             "still_queued_at_end": len(self._waiting),
             "unpermitted_activities": self._unpermitted,
+            "drl_assignments": self._drl_assignments,
+            "drl_postponements": self._drl_postponements,
+            "allocations_per_resource": dict(self._allocation_counts),
         }
 
     def release(self, engine, resource: str, activity: Optional[str] = None) -> None:
