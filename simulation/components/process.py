@@ -837,6 +837,17 @@ class ProcessComponent:
         p_complete = self._lp.session_end_probs.get(activity, 0.5)
         end_complete = rng.random() < p_complete
         if session + 1 >= MAX_SESSIONS:
+            engine.stats["max_session_guard_reached"] = (
+                engine.stats.get("max_session_guard_reached", 0) + 1
+            )
+            by_activity = engine.stats.setdefault(
+                "max_session_guard_by_activity", {}
+            )
+            by_activity[activity] = by_activity.get(activity, 0) + 1
+            if not end_complete:
+                engine.stats["max_session_guard_forced_completions"] = (
+                    engine.stats.get("max_session_guard_forced_completions", 0) + 1
+                )
             end_complete = True  # loop guard
         w["session"] = session + 1
 

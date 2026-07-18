@@ -387,6 +387,26 @@ class LifecycleStateMachineTests(unittest.TestCase):
         self.assertEqual((10.0 - 0.0) + (35.0 - 15.0) + (72.0 - 42.0), 60.0)
         self.assertEqual(resource._busy["r1"], 0)
 
+    def test_max_session_guard_records_forced_completion(self):
+        session_count = 60
+        engine, _, _ = _run(
+            duration=200.0,
+            durations=(1.0,) * session_count,
+            gaps={session: 1.0 for session in range(1, session_count)},
+            session_draws={session: 0.9 for session in range(session_count)},
+            suspend_draws={session: 0.1 for session in range(1, session_count)},
+        )
+
+        rows = _work_rows(engine)
+        opened_sessions = sum(
+            row["lifecycle:transition"] in {"start", "resume"} for row in rows
+        )
+        self.assertEqual(opened_sessions, session_count)
+        self.assertEqual(engine.stats["max_session_guard_reached"], 1)
+        self.assertEqual(engine.stats["max_session_guard_forced_completions"], 1)
+        self.assertEqual(engine.stats["max_session_guard_by_activity"], {WORK: 1})
+        self.assertEqual(engine.stats["cases_completed"], 1)
+
     def test_abort_continues_case_without_double_release(self):
         engine, resource, _ = _run(
             duration=10.0,
