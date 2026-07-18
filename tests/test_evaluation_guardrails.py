@@ -11,6 +11,7 @@ from scripts.run_experiments import (
     EVALUATION_PROVENANCE_PATHS,
     REPO_ROOT,
     evaluation_provenance_hashes,
+    validate_evaluation_configuration,
     validate_resource_diagnostics,
 )
 
@@ -39,6 +40,25 @@ class EvaluationProvenanceTests(unittest.TestCase):
                 (REPO_ROOT / relative_path).read_bytes()
             ).hexdigest()
             self.assertEqual(hashes[relative_path], expected)
+
+    def test_saved_configuration_must_match_schema_provenance_and_run(self):
+        provenance = {"simulator.py": "abc"}
+        run = {"horizon_days": 30, "branching_mode": "visit"}
+        configuration = {
+            **run,
+            "cache_schema_version": 4,
+            "provenance_sha256": provenance,
+            "descriptive_extra": "allowed",
+        }
+        validate_evaluation_configuration(configuration, run, provenance, 4)
+
+        stale = {**configuration, "cache_schema_version": 2}
+        with self.assertRaisesRegex(ValueError, "rerun its notebook"):
+            validate_evaluation_configuration(stale, run, provenance, 4)
+
+        wrong_horizon = {**configuration, "horizon_days": 10}
+        with self.assertRaisesRegex(ValueError, "horizon_days"):
+            validate_evaluation_configuration(wrong_horizon, run, provenance, 4)
 
 
 class ResourceDiagnosticTests(unittest.TestCase):

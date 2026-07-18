@@ -53,6 +53,7 @@ import hashlib
 import random as _random
 import re
 import sys
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Optional, Set
@@ -143,6 +144,42 @@ def evaluation_provenance_hashes() -> Dict[str, str]:
         ).hexdigest()
         for relative_path in EVALUATION_PROVENANCE_PATHS
     }
+
+
+def validate_evaluation_configuration(
+    configuration: Mapping,
+    expected_run_configuration: Mapping,
+    expected_provenance: Mapping[str, str],
+    cache_schema_version: int,
+) -> None:
+    """Reject a saved evaluation summary that is stale or from another run.
+
+    Aggregate CSV files do not carry enough context to be combined safely on
+    their own.  Their sibling ``configuration.json`` must use the current cache
+    schema and code/input fingerprints, and it must agree with the run settings
+    expected by the consuming notebook.  Extra descriptive fields are allowed.
+    """
+    problems = []
+    actual_schema = configuration.get("cache_schema_version")
+    if actual_schema != cache_schema_version:
+        problems.append(
+            f"cache_schema_version={actual_schema!r}, expected {cache_schema_version!r}"
+        )
+
+    actual_provenance = configuration.get("provenance_sha256")
+    if actual_provenance != dict(expected_provenance):
+        problems.append("provenance_sha256 does not match the current simulator inputs")
+
+    for key, expected in expected_run_configuration.items():
+        actual = configuration.get(key)
+        if actual != expected:
+            problems.append(f"{key}={actual!r}, expected {expected!r}")
+
+    if problems:
+        raise ValueError(
+            "Saved evaluation configuration is incompatible; rerun its notebook. "
+            + "; ".join(problems)
+        )
 
 
 def validate_resource_diagnostics(
