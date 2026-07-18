@@ -492,6 +492,7 @@ class ProcessComponent:
         crn: bool = False,
         lifecycle_mode: str = "legacy",
         lifecycle_params=None,
+        atomic_duration_scale: float = 1.0,
     ):
         """
         Parameters
@@ -537,10 +538,13 @@ class ProcessComponent:
         if lifecycle_mode == "active" and lifecycle_params is None:
             raise ValueError("lifecycle_mode='active' requires lifecycle_params "
                              "(load from simulation_inputs_active.json).")
+        if atomic_duration_scale < 0:
+            raise ValueError("atomic_duration_scale must be >= 0")
 
         self._lifecycle_mode = lifecycle_mode
         self._active = lifecycle_mode == "active"
         self._lp = lifecycle_params
+        self._atomic_duration_scale = float(atomic_duration_scale)
         # work_item_id -> per-item session state (active mode). Keyed on work_item_id
         # so repeated/suspended instances of one (case, activity) never collide. §4.4
         self._witem: Dict[str, dict] = {}
@@ -713,7 +717,9 @@ class ProcessComponent:
             # committed in Design Default #1.
             rng = self._draw_rng(case_id, activity, "duration",
                                  self._repeat_counts.get(case_id, {}).get(activity, 0) + 1)
-            duration = self._sample_duration(activity, rng)
+            duration = (
+                self._sample_duration(activity, rng) * self._atomic_duration_scale
+            )
         else:
             duration = self._duration(engine, event, ctx)
 

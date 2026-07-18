@@ -90,6 +90,7 @@ class ResourceDiagnosticTests(unittest.TestCase):
         )
         self.assertEqual(meta["configuration"]["capacity"], 1)
         self.assertEqual(meta["configuration"]["roster_seed"], 43)
+        self.assertEqual(meta["configuration"]["atomic_duration_scale"], 1.0)
         self.assertIn(meta["configuration"]["arrival_model"], {"mdn", "parametric"})
         self.assertEqual(meta["resource_stats"]["unpermitted_activities"], 0)
         self.assertEqual(meta["resource_stats"]["still_queued_at_end"], 0)

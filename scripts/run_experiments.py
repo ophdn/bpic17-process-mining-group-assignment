@@ -476,6 +476,7 @@ def run_once(
     excluded_override: Optional[Set[str]] = None,
     roster_seed: Optional[int] = DEFAULT_ROSTER_SEED,
     capacity: Optional[int] = None,
+    atomic_duration_scale: float = 1.0,
 ) -> tuple[pd.DataFrame, dict]:
     """Build and run one (policy, seed, scenario) simulation.
 
@@ -509,6 +510,8 @@ def run_once(
         raise ValueError(
             "processing_time_mode must be distribution|ml_model|ml_probabilistic, "
             f"got {processing_time_mode!r}")
+    if atomic_duration_scale < 0:
+        raise ValueError("atomic_duration_scale must be >= 0")
 
     duration = days * 86400
 
@@ -549,6 +552,7 @@ def run_once(
         seed=seed, mode=processing_time_mode, start_datetime=START_DATETIME,
         resource_component=resources, crn=crn, case_attributes=case_attrs,
         lifecycle_mode=lifecycle_mode, lifecycle_params=lifecycle_params,
+        atomic_duration_scale=atomic_duration_scale,
     )
     if process_model == "advanced":
         process = PetriNetProcessComponent(
@@ -612,6 +616,7 @@ def run_once(
             "permissions": permissions,
             "lifecycle_mode": lifecycle_mode,
             "processing_time_mode": processing_time_mode,
+            "atomic_duration_scale": float(atomic_duration_scale),
             "roster_seed": effective_roster_seed,
             "capacity": effective_capacity,
             "arrival_model": "mdn" if USE_MDN_ARRIVALS else "parametric",
@@ -837,6 +842,11 @@ def parse_args():
     p.add_argument("--processing-time-mode", default="distribution",
                    choices=["distribution", "ml_model", "ml_probabilistic"],
                    help="Duration sampler used consistently across policy runs.")
+    p.add_argument(
+        "--atomic-duration-scale", type=float, default=1.0, metavar="S",
+        help="Scale synthetic A_/O_ durations in active mode. Use 0.0 for the "
+             "instantaneous-transition sensitivity bound.",
+    )
     p.add_argument("--no-crn", dest="crn", action="store_false",
                    help="Disable Common Random Numbers (paired comparisons "
                         "become unreliable -- see module docstring).")
@@ -878,6 +888,9 @@ def main():
     if args.roster_seed is not None and args.no_roster:
         print("--roster-seed and --no-roster are mutually exclusive.", file=sys.stderr)
         sys.exit(1)
+    if args.atomic_duration_scale < 0:
+        print("--atomic-duration-scale must be >= 0.", file=sys.stderr)
+        sys.exit(1)
     # Explicit N wins; --no-roster disables; otherwise the default is ON.
     roster_seed = None if args.no_roster else (
         args.roster_seed if args.roster_seed is not None else DEFAULT_ROSTER_SEED)
@@ -905,6 +918,7 @@ def main():
                 permissions=args.permissions,
                 roster_seed=roster_seed,
                 capacity=args.capacity,
+                atomic_duration_scale=args.atomic_duration_scale,
             )
             df, meta = apply_warmup(df, meta, args.warmup_days)
             if df.empty:

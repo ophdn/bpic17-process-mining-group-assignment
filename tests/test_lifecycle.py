@@ -366,6 +366,44 @@ class LifecycleStateMachineTests(unittest.TestCase):
         self.assertNotIn("c1", process._witem_seq)
         self.assertFalse(process._witem)
 
+    def test_atomic_duration_scale_zero_makes_active_ao_transition_instantaneous(self):
+        engine = SimulationEngine(
+            sim_duration=10.0,
+            start_datetime=datetime(2016, 1, 1),
+            lifecycle_mode="active",
+        )
+        process = ProcessComponent(
+            seed=7,
+            lifecycle_mode="active",
+            lifecycle_params=_params(),
+            atomic_duration_scale=0.0,
+        )
+        process._repeat_counts["c1"] = {}
+        process._ctx["c1"] = {
+            "start_t": 0.0, "position": 0, "prev_act": None, "attrs": {}
+        }
+        process._sample_duration = lambda activity, rng: 120.0
+
+        process.on_activity_start(engine, SimEvent(
+            timestamp=0.0,
+            event_type=EventType.ACTIVITY_START,
+            case_id="c1",
+            activity=NEXT,
+            resource="r1",
+            payload={"work_item_id": "c1:1"},
+        ))
+
+        self.assertEqual(len(engine._queue), 1)
+        self.assertEqual(engine._queue[0].timestamp, 0.0)
+
+    def test_atomic_duration_scale_rejects_negative_values(self):
+        with self.assertRaisesRegex(ValueError, "atomic_duration_scale"):
+            ProcessComponent(
+                lifecycle_mode="active",
+                lifecycle_params=_params(),
+                atomic_duration_scale=-0.1,
+            )
+
     def test_multi_suspend_resume_exact_timing_and_active_sum(self):
         engine, resource, _ = _run(
             duration=100.0,
