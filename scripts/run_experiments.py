@@ -11,7 +11,8 @@ docs/ROADMAP.md Phase B.
 Policy registry (extend as Part II lands more allocation strategies):
     random  -- R-RMA uniform random pick (Section 1.8 Basic baseline)
     piled   -- R-PE Piled Execution (same-activity batching on the wait queue)
-(k-batching, R-RRA, R-SHQ land here as they're implemented.)
+    drl     -- frozen masked-PPO policy (requires --drl-model)
+(k-batching and KRM use parameterized names such as kbatch5 and krm1.)
 
 Scenarios:
     normal  -- as-is
@@ -108,7 +109,7 @@ EVALUATION_PROVENANCE_PATHS = (
 START_DATETIME = datetime(2016, 1, 1)
 
 KNOWN_POLICIES = {"random", "piled", "roundrobin", "shortestqueue",
-                  "pullspt", "pulllaf", "parksong"}
+                  "pullspt", "pulllaf", "parksong", "drl"}
 _KRM_RE = re.compile(r"^krm(\d+(?:\.\d+)?)$")  # krm1, krm0.5, krm2 -> delta
 KNOWN_SCENARIOS = {"normal", "peak", "outage"}
 _KBATCH_RE = re.compile(r"^kbatch(\d+)$")
@@ -325,6 +326,7 @@ def build_resource_component(
     policy: str, seed: int, calendar, excluded: Optional[Set[str]],
     permission_model=None, lifecycle_mode: str = "legacy", lifecycle_params=None,
     capacity: Optional[int] = None,
+    drl_model_path: Optional[str] = None,
 ) -> ResourceComponent:
     if capacity is None:
         capacity = capacity_for_mode(lifecycle_mode)
@@ -358,6 +360,7 @@ def build_resource_component(
     pull = {"pullspt": "spt", "pulllaf": "laf"}.get(policy)
     krm_delta = parse_krm_policy(policy)
     parksong = (policy == "parksong")
+    drl = (policy == "drl")
     needs_duration_model = pull == "spt" or parksong or krm_delta is not None
 
     return ResourceComponent(
@@ -371,6 +374,8 @@ def build_resource_component(
         pull=pull,
         parksong=parksong,
         krm_delta=krm_delta,
+        drl=drl,
+        drl_model_path=drl_model_path,
         duration_model_path=(
             str(ACTIVE_MODEL_PATH if lifecycle_mode == "active" else LEGACY_MODEL_PATH)
             if needs_duration_model else None),
@@ -476,6 +481,7 @@ def run_once(
     excluded_override: Optional[Set[str]] = None,
     roster_seed: Optional[int] = DEFAULT_ROSTER_SEED,
     capacity: Optional[int] = None,
+    drl_model_path: Optional[str] = None,
 ) -> tuple[pd.DataFrame, dict]:
     """Build and run one (policy, seed, scenario) simulation.
 
@@ -541,7 +547,8 @@ def run_once(
                                          permission_model=perms,
                                          lifecycle_mode=lifecycle_mode,
                                          lifecycle_params=lifecycle_params,
-                                         capacity=effective_capacity)
+                                         capacity=effective_capacity,
+                                         drl_model_path=drl_model_path)
     recorder = _ArrivalRecorder()
     tracker = CaseCompletionTracker()
 
@@ -604,6 +611,7 @@ def run_once(
             "roster_seed": effective_roster_seed,
             "capacity": effective_capacity,
             "arrival_model": "mdn" if USE_MDN_ARRIVALS else "parametric",
+            "drl_model_path": str(drl_model_path) if policy == "drl" else None,
             "excluded_resources": sorted(excluded or ()),
             "resource_pool_size": len(resource_pool),
         },
@@ -852,6 +860,12 @@ def parse_args():
                         f"feature, so N parallel items each finish as fast as "
                         f"one: N multiplies throughput for free.")
     p.add_argument("--out", default=str(OUT_DEFAULT))
+    p.add_argument(
+        "--drl-model", default=None, metavar="PATH",
+        help="Frozen MaskablePPO .zip model used by policy 'drl'. Train it "
+             "with scripts/train_drl.py. The optional requirements-drl.txt "
+             "stack is needed only when this policy is selected.",
+    )
     p.add_argument("--report-wip", action="store_true",
                    help="Print a WIP-over-time diagnostic and exit (ignores --policies/--seeds).")
     return p.parse_args()
@@ -878,6 +892,10 @@ def main():
               f"(known: {sorted(KNOWN_POLICIES)}, or 'kbatchN' e.g. kbatch5)",
               file=sys.stderr)
         sys.exit(1)
+    if "drl" in policies and not args.drl_model:
+        print("Policy 'drl' requires --drl-model PATH (train one with "
+              "scripts/train_drl.py).", file=sys.stderr)
+        sys.exit(1)
 
     seeds = list(range(1, args.seeds + 1))
     out_dir = Path(args.out)
@@ -894,6 +912,7 @@ def main():
                 permissions=args.permissions,
                 roster_seed=roster_seed,
                 capacity=args.capacity,
+                drl_model_path=args.drl_model,
             )
             df, meta = apply_warmup(df, meta, args.warmup_days)
             if df.empty:

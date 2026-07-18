@@ -8,6 +8,11 @@
 # without the raw log, so it's tracked explicitly.
 simulation/models/*
 !simulation/models/bpic17_process.bpmn
+
+# Optional DRL checkpoints are large PyTorch zip files. Keep the small JSON
+# training metadata if it is deliberately added, but never commit checkpoints.
+models/drl_*.zip
+models/**/*.zip
 *.joblib
 
 # Byte-compiled / optimized / DLL files

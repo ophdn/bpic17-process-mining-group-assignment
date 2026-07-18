@@ -165,25 +165,8 @@ class SimulationEngine:
         print(f"[Engine] Starting simulation (duration={self.sim_duration:.0f}s)")
         wall_start = time.perf_counter()
 
-        while self._queue:
-            event = heapq.heappop(self._queue)
-
-            # Stop condition: event is beyond the simulation horizon
-            if event.timestamp > self.sim_duration:
-                if self.verbose:
-                    print(f"[Engine] Horizon reached at t={event.timestamp:.2f}. Stopping.")
-                break
-
-            # Advance the simulation clock
-            self._now = event.timestamp
-            self.stats["events_processed"] += 1
-
-            if self.verbose:
-                print(f"[t={self._now:>12.3f}] DISPATCH {event}")
-
-            # Dispatch to all registered handlers
-            for handler in self._handlers.get(event.event_type, []):
-                handler(self, event)
+        while self.step():
+            pass
 
         wall_elapsed = time.perf_counter() - wall_start
         self.stats["wall_time_seconds"] = wall_elapsed
@@ -195,6 +178,34 @@ class SimulationEngine:
             f"Cases completed: {self.stats['cases_completed']}, "
             f"Wall time: {wall_elapsed:.3f}s"
         )
+
+    def step(self) -> bool:
+        """Dispatch the next event and return whether one was processed.
+
+        ``run()`` is intentionally implemented in terms of this primitive.
+        A reinforcement-learning environment can therefore pause the DES at
+        allocation decision epochs without maintaining a second, subtly
+        different event loop.  Returning ``False`` means the event queue is
+        empty or the next event lies beyond the configured horizon.
+        """
+        if not self._queue:
+            return False
+
+        event = heapq.heappop(self._queue)
+        if event.timestamp > self.sim_duration:
+            if self.verbose:
+                print(f"[Engine] Horizon reached at t={event.timestamp:.2f}. Stopping.")
+            return False
+
+        self._now = event.timestamp
+        self.stats["events_processed"] += 1
+
+        if self.verbose:
+            print(f"[t={self._now:>12.3f}] DISPATCH {event}")
+
+        for handler in self._handlers.get(event.event_type, []):
+            handler(self, event)
+        return True
 
     # ------------------------------------------------------------------
     # Properties
