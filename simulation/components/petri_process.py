@@ -192,6 +192,11 @@ class PetriNetProcessComponent(ProcessComponent):
             raise ValueError(
                 f"branching_mode must be 'probs', 'visit' or 'rules', got {branching_mode!r}")
 
+        # The Petri net below is the structural model for this component. The
+        # Basic adjacency artifact is neither read nor required, so suppress its
+        # missing-file warning instead of suggesting that an advanced run is
+        # structurally unenforced.
+        kwargs["load_basic_adjacency"] = False
         super().__init__(**kwargs)
         bpmn_model = pm4py.read_bpmn(bpmn_path)
         self.net, self.im, self.fm = pm4py.convert_to_petri_net(bpmn_model)

@@ -493,6 +493,7 @@ class ProcessComponent:
         lifecycle_mode: str = "legacy",
         lifecycle_params=None,
         atomic_duration_scale: float = 1.0,
+        load_basic_adjacency: bool = True,
     ):
         """
         Parameters
@@ -580,17 +581,18 @@ class ProcessComponent:
         # lazily; harmless for PetriNetProcessComponent instances, which
         # never call _next_activity().
         self._basic_adjacency: Dict[str, set] = {}
-        try:
-            with open(BASIC_ADJACENCY_PATH, encoding="utf-8") as f:
-                raw = json.load(f)["adjacency"]
-            self._basic_adjacency = {k: set(v) for k, v in raw.items()}
-        except FileNotFoundError:
-            print(
-                f"[ProcessComponent] WARNING: {BASIC_ADJACENCY_PATH} not found — "
-                "Basic process model runs WITHOUT structural enforcement "
-                "(run scripts/mine_basic_process_model.py). "
-                "See process.py module docstring, Section 1.4 Basic."
-            )
+        if load_basic_adjacency:
+            try:
+                with open(BASIC_ADJACENCY_PATH, encoding="utf-8") as f:
+                    raw = json.load(f)["adjacency"]
+                self._basic_adjacency = {k: set(v) for k, v in raw.items()}
+            except FileNotFoundError:
+                print(
+                    f"[ProcessComponent] WARNING: {BASIC_ADJACENCY_PATH} not found — "
+                    "Basic process model runs WITHOUT structural enforcement "
+                    "(run scripts/mine_basic_process_model.py). "
+                    "See process.py module docstring, Section 1.4 Basic."
+                )
 
     # ------------------------------------------------------------------
     # Lazy model loading
