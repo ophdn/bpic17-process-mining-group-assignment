@@ -72,7 +72,8 @@ OUTPUT_PATH = REPO_ROOT / "output" / "event_log.csv"
 # Default trained-model artifact for the ML processing-time modes
 DEFAULT_MODEL_PATH = REPO_ROOT / "simulation" / "models" / "processing_time_model.joblib"
 # Active-lifecycle artifacts (§4.8) — versioned so retraining never overwrites the
-# legacy artifacts and a legacy run stays bit-reproducible.
+# legacy artifacts. The former resource-assigned A_/O_ behavior additionally
+# requires --atomic-duration-scale 1 when reproducing an older legacy run.
 ACTIVE_MODEL_PATH = REPO_ROOT / "simulation" / "models" / "processing_time_model_active.joblib"
 ACTIVE_INPUTS_PATH = REPO_ROOT / "simulation_inputs_active.json"
 
@@ -334,8 +335,8 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--lifecycle-mode", default="legacy", choices=["legacy", "active"],
-        help="'legacy' (default) reproduces today's single start->complete block "
-             "bit-for-bit (five-column log). 'active' runs the W_ work-item "
+        help="'legacy' (default) uses one start->complete block and a five-column "
+             "log. 'active' runs the W_ work-item "
              "suspend/resume state machine with active-service-time durations "
              "(six-column log, work_item_id), loading the mined parameters from "
              "--active-inputs-path (implementationplan §3/§4.4).",

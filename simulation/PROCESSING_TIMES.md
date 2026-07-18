@@ -1,8 +1,8 @@
 # Processing-Time and Work-Item Lifecycle Models
 
 The simulator has two deliberately separate lifecycle baselines and three
-duration samplers. `--lifecycle-mode legacy` is the default and preserves the
-original five-column, single-block `start → complete` behavior. Opt-in
+duration samplers. `--lifecycle-mode legacy` is the default and uses the
+five-column, single-block `start → complete` structure for human work. Opt-in
 `--lifecycle-mode active` models BPIC-17 W-item sessions explicitly:
 
 ```text
@@ -120,8 +120,9 @@ The legacy wrapper remains `.venv/bin/python setup_models.py`.
 ## Run
 
 ```bash
-# Reproducible original baseline.
-.venv/bin/python -m simulation.main --lifecycle-mode legacy --mode distribution
+# Reproduce the former resource-assigned A_/O_ legacy baseline.
+.venv/bin/python -m simulation.main --lifecycle-mode legacy --mode distribution \
+  --atomic-duration-scale 1
 
 # Active pool lifecycle.
 .venv/bin/python -m simulation.main --lifecycle-mode active --mode distribution
