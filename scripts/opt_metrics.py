@@ -148,6 +148,20 @@ def _instance_busy_seconds(
     return inst.apply(overlap_seconds, axis=1)
 
 
+def _filter_activity_prefixes(
+    inst: pd.DataFrame,
+    activity_prefixes: Optional[Iterable[str]],
+) -> pd.DataFrame:
+    """Restrict paired sessions to activity labels with selected prefixes."""
+    if activity_prefixes is None:
+        return inst
+    prefixes = tuple(str(prefix) for prefix in activity_prefixes)
+    if not prefixes:
+        return inst.iloc[0:0]
+    labels = inst["activity"].fillna("").astype(str)
+    return inst[labels.str.startswith(prefixes)]
+
+
 def activity_type_exposure(
     df: pd.DataFrame,
     availability_intervals: Optional[Mapping[str, Iterable[tuple]]] = None,
@@ -341,6 +355,7 @@ def average_cycle_time(
 def resource_busy_seconds(
     df: pd.DataFrame,
     availability_intervals: Optional[Mapping[str, Iterable[tuple]]] = None,
+    activity_prefixes: Optional[Iterable[str]] = None,
 ) -> pd.Series:
     """Total busy seconds per resource (sum of paired running sessions).
     Legacy logs have one start→complete session per instance; active logs also
@@ -353,8 +368,12 @@ def resource_busy_seconds(
     each active session and those intervals is counted. This is required for
     the slide-21 occupation definition because the simulator allows a task
     started near shift end to finish as overtime rather than preempting it.
+
+    `activity_prefixes` supports sensitivity views such as fitted work only
+    (`("W_",)`). It does not alter the resource availability denominator.
     """
     inst = paired_instances(df)
+    inst = _filter_activity_prefixes(inst, activity_prefixes)
     inst = inst[inst["resource"].notna() & (inst["resource"] != "")]
     busy = _instance_busy_seconds(inst, availability_intervals)
     return busy.groupby(inst["resource"]).sum()
@@ -365,6 +384,7 @@ def average_resource_occupation(
     resource_subset: Optional[Iterable[str]] = None,
     *,
     availability_intervals: Optional[Mapping[str, Iterable[tuple]]] = None,
+    activity_prefixes: Optional[Iterable[str]] = None,
 ) -> dict:
     """Mean share the resources are working during their availabilities.
 
@@ -378,9 +398,15 @@ def average_resource_occupation(
     an always-on automated account (Johannes's Section-1.6 Decision 4,
     e.g. User_1) has a huge availability denominator and a tiny occupation
     ratio, which distorts a staffing metric it is not really part of.
+
+    `activity_prefixes` restricts the busy-time numerator while retaining the
+    same staff availability denominator. Pass `("W_",)` to separate fitted
+    work from the assumed durations of atomic A_/O_ transitions.
     """
-    raw_busy = resource_busy_seconds(df)
-    busy = resource_busy_seconds(df, availability_intervals)
+    raw_busy = resource_busy_seconds(df, activity_prefixes=activity_prefixes)
+    busy = resource_busy_seconds(
+        df, availability_intervals, activity_prefixes
+    )
     if availability_seconds is not None:
         avail = pd.Series(dict(availability_seconds), dtype=float)
         basis = "availability_windows"
@@ -561,7 +587,10 @@ def handover_rate(df: pd.DataFrame) -> dict:
     }
 
 
-def resource_activity_switch_rate(df: pd.DataFrame) -> dict:
+def resource_activity_switch_rate(
+    df: pd.DataFrame,
+    activity_prefixes: Optional[Iterable[str]] = None,
+) -> dict:
     """Share of consecutive sessions handled by a resource whose activity changes.
 
     This directly evaluates Piled Execution's mechanism: keeping a resource on
@@ -569,7 +598,9 @@ def resource_activity_switch_rate(df: pd.DataFrame) -> dict:
     The case-level handover metric answers a different question and should not
     be used as evidence that activity piling works.
     """
-    inst = paired_instances(df).sort_values(["resource", "start", "complete"])
+    inst = paired_instances(df)
+    inst = _filter_activity_prefixes(inst, activity_prefixes)
+    inst = inst.sort_values(["resource", "start", "complete"])
     inst = inst[inst["resource"].notna() & (inst["resource"] != "")]
 
     same_resource = inst["resource"] == inst["resource"].shift(1)
@@ -587,6 +618,7 @@ def resource_activity_switch_rate(df: pd.DataFrame) -> dict:
 def rolling_workload_balance(
     df: pd.DataFrame, window: str = "1D",
     resource_subset: Optional[Iterable[str]] = None,
+    activity_prefixes: Optional[Iterable[str]] = None,
 ) -> dict:
     """Std of per-resource occupation WITHIN each rolling window, averaged
     across windows -- catches "fair on average, unfair in bursts", which
@@ -604,6 +636,7 @@ def rolling_workload_balance(
     windows is still meaningful.
     """
     inst = paired_instances(df)
+    inst = _filter_activity_prefixes(inst, activity_prefixes)
     inst = inst[inst["resource"].notna() & (inst["resource"] != "")]
     if resource_subset is not None:
         inst = inst[inst["resource"].isin(set(resource_subset))]

@@ -47,6 +47,21 @@ class EvaluationMetricTests(unittest.TestCase):
         self.assertEqual(result["n_resources_evaluated"], 2)
         self.assertEqual(result["zero_availability_resources"], ["r3"])
 
+    def test_occupation_can_report_fitted_work_only(self):
+        df = _legacy_log([
+            ("c1", "A_Create Application", "r1", 0, 20),
+            ("c2", "W_Complete application", "r1", 30, 10),
+        ])
+
+        result = opt_metrics.average_resource_occupation(
+            df,
+            availability_seconds={"r1": 100},
+            activity_prefixes=("W_",),
+        )
+
+        self.assertAlmostEqual(result["avg_resource_occupation"], 0.1)
+        self.assertEqual(result["per_resource"], {"r1": 0.1})
+
     def test_resource_activity_switch_rate_follows_each_resource(self):
         df = _legacy_log([
             ("c1", "A", "r1", 0, 5),
@@ -61,6 +76,22 @@ class EvaluationMetricTests(unittest.TestCase):
         self.assertEqual(result["n_resource_transitions"], 3)
         self.assertEqual(result["n_activity_switches"], 2)
         self.assertAlmostEqual(result["activity_switch_rate"], 2 / 3)
+
+    def test_resource_activity_switch_rate_can_exclude_atomic_steps(self):
+        df = _legacy_log([
+            ("c1", "W_Call after offers", "r1", 0, 5),
+            ("c2", "A_Validating", "r1", 10, 5),
+            ("c3", "A_Validating", "r1", 20, 5),
+            ("c4", "W_Call after offers", "r1", 30, 5),
+        ])
+
+        result = opt_metrics.resource_activity_switch_rate(
+            df, activity_prefixes=("W_",)
+        )
+
+        self.assertEqual(result["n_resource_transitions"], 1)
+        self.assertEqual(result["n_activity_switches"], 0)
+        self.assertEqual(result["activity_switch_rate"], 0.0)
 
     def test_rolling_balance_counts_fully_idle_staff(self):
         df = _legacy_log([("c1", "A", "r1", 0, 43_200)])
