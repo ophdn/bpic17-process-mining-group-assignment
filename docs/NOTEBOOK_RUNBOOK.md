@@ -1,9 +1,10 @@
 # Notebook execution runbook
 
-This runbook regenerates the processing-time evidence, the 10/30/60-day policy
-studies, and their machine-readable outputs. Run every command from the
+This runbook regenerates the processing-time evidence, the 60-day policy and
+staffing study, and their machine-readable outputs. Run every command from the
 repository root. The long simulations are intentionally not part of the test
-suite.
+suite. For the detailed evaluation-only workflow, DRL compatibility checks, and
+exact run counts, see `docs/EVALUATION_DEEP_RUNBOOK.md`.
 
 The active processing-time model, fitted lifecycle inputs, and controlled
 lifecycle-validation results are committed. Collaborators who only need the
@@ -110,9 +111,7 @@ Kernel and Run All**. Run them in this exact order:
 
 1. `notebooks/03_processing_times.ipynb`
 2. `notebooks/03_process_times.ipynb`
-3. `notebooks/04_evaluation.ipynb` — 10-day directional study
-4. `notebooks/04_evaluation_30.ipynb` — 30-day horizon check
-5. `notebooks/04_evaluation_60.ipynb` — primary evaluation and staffing study
+3. `notebooks/04_evaluation_60.ipynb` — evaluation and staffing study
 
 For a terminal-driven run, use the same order:
 
@@ -128,25 +127,14 @@ python -m jupyter nbconvert --to notebook --execute --inplace \
   --ExecutePreprocessor.timeout=-1
 
 python -m jupyter nbconvert --to notebook --execute --inplace \
-  notebooks/04_evaluation.ipynb \
-  --ExecutePreprocessor.kernel_name=bpic17-venv \
-  --ExecutePreprocessor.timeout=-1
-
-python -m jupyter nbconvert --to notebook --execute --inplace \
-  notebooks/04_evaluation_30.ipynb \
-  --ExecutePreprocessor.kernel_name=bpic17-venv \
-  --ExecutePreprocessor.timeout=-1
-
-python -m jupyter nbconvert --to notebook --execute --inplace \
   notebooks/04_evaluation_60.ipynb \
   --ExecutePreprocessor.kernel_name=bpic17-venv \
   --ExecutePreprocessor.timeout=-1
 ```
 
-The 60-day notebook deliberately runs last. Its final cell reads the 10- and
-30-day summaries and rejects them unless their schema, configuration, and full
-provenance match the current checkout. Run caches are reused only when the same
-checks pass; manually deleting caches is unnecessary.
+The 60-day notebook is self-contained and does not read the 10- or 30-day
+outputs. Run caches are reused only when the full schema, configuration, and
+provenance checks pass; manually deleting caches is unnecessary.
 
 All three evaluation notebooks model `A_` and `O_` records as automatic
 zero-time state changes. Their start and complete rows share a timestamp and
@@ -164,7 +152,6 @@ Inspect these machine-readable outputs after execution:
 - `output/report_inputs/processing_time_sampler_summary.csv`
 - `output/report_inputs/processing_time_recomposition.csv`
 - `output/report_inputs/processing_time_ml_diagnostics.csv`
-- `output/report_inputs/evaluation_horizon_summary.csv`
 - `output/report_inputs/evaluation_60d_report_values.json`
 
 The primary 60-day evaluation figures are:
@@ -172,6 +159,6 @@ The primary 60-day evaluation figures are:
 - `visualization/04_60_policy_tradeoff.pdf`
 - `visualization/04_60_staffing_impact.pdf`
 
-The 10- and 30-day studies are horizon checks; their old staffing files, if
-present locally, are not current outputs. Staffing conclusions come only from
-the 60-day notebook.
+The 10- and 30-day notebooks remain optional development checks. They are not
+part of this execution sequence because the final evaluation uses the 60-day
+configuration only.
