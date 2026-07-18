@@ -40,8 +40,17 @@ Keep the BPIC-17 source log at one of these locations:
 - `data/BPIChallenge2017.xes.gz`
 - the equivalent uncompressed `.xes` path
 
-The examples below use `data/BPIChallenge2017.xes.gz`. Do not continue with a
-different log version if the report is meant to reproduce the committed study.
+Set the path once and verify it before starting any expensive extraction. The
+current local checkout stores the uncompressed log at the repository root:
+
+```bash
+BPIC17_LOG="BPIChallenge2017.xes"
+ls -lh "$BPIC17_LOG"
+```
+
+Change `BPIC17_LOG` only when your copy is stored at one of the other supported
+locations. Do not continue with a different log version if the report is meant
+to reproduce the committed study.
 
 ## 3. Regenerate the active processing-time inputs and models
 
@@ -50,13 +59,13 @@ while because it reads the full event log.
 
 ```bash
 python extract_log_info.py \
-  --log data/BPIChallenge2017.xes.gz \
+  --log "$BPIC17_LOG" \
   --out simulation_inputs_active.json \
   --lifecycle \
   --availability-model models/availability_model.json
 
 python setup_models.py \
-  --log data/BPIChallenge2017.xes.gz \
+  --log "$BPIC17_LOG" \
   --lifecycle active \
   --force
 ```
