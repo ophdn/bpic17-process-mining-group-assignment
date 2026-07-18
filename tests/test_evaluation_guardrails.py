@@ -11,6 +11,7 @@ from scripts.run_experiments import (
     EVALUATION_PROVENANCE_PATHS,
     REPO_ROOT,
     evaluation_provenance_hashes,
+    validate_evaluation_configuration,
     validate_resource_diagnostics,
 )
 
@@ -18,10 +19,16 @@ from scripts.run_experiments import (
 class EvaluationProvenanceTests(unittest.TestCase):
     def test_manifest_covers_simulator_and_fitted_inputs(self):
         required = {
+            "models/permissions_orgmodel.json",
+            "simulation/components/arrival_mdn_weights.npz",
+            "simulation/components/petri_process.py",
             "simulation/components/resource.py",
             "simulation/components/process.py",
+            "simulation/models/bpic17_process.bpmn",
+            "simulation/models/dp_branching_probs.json",
             "scripts/run_experiments.py",
             "models/availability_model.json",
+            "simulation_inputs.json",
             "simulation_inputs_active.json",
         }
         self.assertTrue(required.issubset(EVALUATION_PROVENANCE_PATHS))
@@ -33,6 +40,25 @@ class EvaluationProvenanceTests(unittest.TestCase):
                 (REPO_ROOT / relative_path).read_bytes()
             ).hexdigest()
             self.assertEqual(hashes[relative_path], expected)
+
+    def test_saved_configuration_must_match_schema_provenance_and_run(self):
+        provenance = {"simulator.py": "abc"}
+        run = {"horizon_days": 30, "branching_mode": "visit"}
+        configuration = {
+            **run,
+            "cache_schema_version": 4,
+            "provenance_sha256": provenance,
+            "descriptive_extra": "allowed",
+        }
+        validate_evaluation_configuration(configuration, run, provenance, 4)
+
+        stale = {**configuration, "cache_schema_version": 2}
+        with self.assertRaisesRegex(ValueError, "rerun its notebook"):
+            validate_evaluation_configuration(stale, run, provenance, 4)
+
+        wrong_horizon = {**configuration, "horizon_days": 10}
+        with self.assertRaisesRegex(ValueError, "horizon_days"):
+            validate_evaluation_configuration(wrong_horizon, run, provenance, 4)
 
 
 class ResourceDiagnosticTests(unittest.TestCase):
@@ -90,9 +116,26 @@ class ResourceDiagnosticTests(unittest.TestCase):
         )
         self.assertEqual(meta["configuration"]["capacity"], 1)
         self.assertEqual(meta["configuration"]["roster_seed"], 43)
+        self.assertEqual(meta["configuration"]["atomic_duration_scale"], 1.0)
         self.assertIn(meta["configuration"]["arrival_model"], {"mdn", "parametric"})
         self.assertEqual(meta["resource_stats"]["unpermitted_activities"], 0)
         self.assertEqual(meta["resource_stats"]["still_queued_at_end"], 0)
+        self.assertFalse(meta["lifecycle_diagnostics"]["active_lifecycle_schema"])
+        self.assertEqual(meta["lifecycle_diagnostics"]["max_session_guard_reached"], 0)
+        self.assertEqual(meta["activity_type_exposure"]["event_rows"], 0)
+
+    def test_runner_wires_active_processing_time_artifact_for_ml_modes(self):
+        from scripts.run_experiments import run_once
+
+        _, meta = run_once(
+            "random", 1, 0, "normal", True, "basic", "probs",
+            lifecycle_mode="active", processing_time_mode="ml_model",
+            permissions="observed",
+        )
+        self.assertEqual(
+            meta["configuration"]["processing_time_model_path"],
+            "simulation/models/processing_time_model_active.joblib",
+        )
 
 
 if __name__ == "__main__":

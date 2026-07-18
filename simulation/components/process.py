@@ -492,6 +492,8 @@ class ProcessComponent:
         crn: bool = False,
         lifecycle_mode: str = "legacy",
         lifecycle_params=None,
+        atomic_duration_scale: float = 1.0,
+        load_basic_adjacency: bool = True,
     ):
         """
         Parameters
@@ -537,10 +539,13 @@ class ProcessComponent:
         if lifecycle_mode == "active" and lifecycle_params is None:
             raise ValueError("lifecycle_mode='active' requires lifecycle_params "
                              "(load from simulation_inputs_active.json).")
+        if atomic_duration_scale < 0:
+            raise ValueError("atomic_duration_scale must be >= 0")
 
         self._lifecycle_mode = lifecycle_mode
         self._active = lifecycle_mode == "active"
         self._lp = lifecycle_params
+        self._atomic_duration_scale = float(atomic_duration_scale)
         # work_item_id -> per-item session state (active mode). Keyed on work_item_id
         # so repeated/suspended instances of one (case, activity) never collide. §4.4
         self._witem: Dict[str, dict] = {}
@@ -576,17 +581,18 @@ class ProcessComponent:
         # lazily; harmless for PetriNetProcessComponent instances, which
         # never call _next_activity().
         self._basic_adjacency: Dict[str, set] = {}
-        try:
-            with open(BASIC_ADJACENCY_PATH, encoding="utf-8") as f:
-                raw = json.load(f)["adjacency"]
-            self._basic_adjacency = {k: set(v) for k, v in raw.items()}
-        except FileNotFoundError:
-            print(
-                f"[ProcessComponent] WARNING: {BASIC_ADJACENCY_PATH} not found — "
-                "Basic process model runs WITHOUT structural enforcement "
-                "(run scripts/mine_basic_process_model.py). "
-                "See process.py module docstring, Section 1.4 Basic."
-            )
+        if load_basic_adjacency:
+            try:
+                with open(BASIC_ADJACENCY_PATH, encoding="utf-8") as f:
+                    raw = json.load(f)["adjacency"]
+                self._basic_adjacency = {k: set(v) for k, v in raw.items()}
+            except FileNotFoundError:
+                print(
+                    f"[ProcessComponent] WARNING: {BASIC_ADJACENCY_PATH} not found — "
+                    "Basic process model runs WITHOUT structural enforcement "
+                    "(run scripts/mine_basic_process_model.py). "
+                    "See process.py module docstring, Section 1.4 Basic."
+                )
 
     # ------------------------------------------------------------------
     # Lazy model loading
@@ -713,7 +719,9 @@ class ProcessComponent:
             # committed in Design Default #1.
             rng = self._draw_rng(case_id, activity, "duration",
                                  self._repeat_counts.get(case_id, {}).get(activity, 0) + 1)
-            duration = self._sample_duration(activity, rng)
+            duration = (
+                self._sample_duration(activity, rng) * self._atomic_duration_scale
+            )
         else:
             duration = self._duration(engine, event, ctx)
 
@@ -837,6 +845,17 @@ class ProcessComponent:
         p_complete = self._lp.session_end_probs.get(activity, 0.5)
         end_complete = rng.random() < p_complete
         if session + 1 >= MAX_SESSIONS:
+            engine.stats["max_session_guard_reached"] = (
+                engine.stats.get("max_session_guard_reached", 0) + 1
+            )
+            by_activity = engine.stats.setdefault(
+                "max_session_guard_by_activity", {}
+            )
+            by_activity[activity] = by_activity.get(activity, 0) + 1
+            if not end_complete:
+                engine.stats["max_session_guard_forced_completions"] = (
+                    engine.stats.get("max_session_guard_forced_completions", 0) + 1
+                )
             end_complete = True  # loop guard
         w["session"] = session + 1
 

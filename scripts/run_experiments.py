@@ -55,6 +55,7 @@ import json
 import random as _random
 import re
 import sys
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Optional, Set
@@ -67,7 +68,7 @@ from simulation.core.engine import SimulationEngine
 from simulation.core.events import EventType, SimEvent
 from simulation.components.arrival import ArrivalComponent
 from simulation.components.arrival_mdn import MDNArrivalComponent
-from simulation.components.process import ProcessComponent
+from simulation.components.process import MAX_SESSIONS, ProcessComponent
 from simulation.components.petri_process import PetriNetProcessComponent
 from simulation.components.resource import (
     DEFAULT_CAPACITY_ACTIVE, DEFAULT_CAPACITY_LEGACY, DEFAULT_ROSTER_SEED,
@@ -96,23 +97,28 @@ ACTIVE_MODEL_PATH = REPO_ROOT / "simulation" / "models" / "processing_time_model
 # as repository-relative names so the resulting manifest is stable across
 # machines and can be written directly into notebook provenance.
 EVALUATION_PROVENANCE_PATHS = (
-    "scripts/opt_metrics.py",
-    "scripts/run_experiments.py",
-    "simulation/components/resource.py",
-    "simulation/components/process.py",
-    "simulation/components/petri_process.py",
-    "simulation/components/arrival_mdn.py",
-    "simulation/components/arrival_mdn_weights.npz",
-    "simulation/policies.py",
-    "simulation/policies_advanced.py",
-    "simulation/drl.py",
-    "simulation/models/bpic17_process.bpmn",
-    "simulation/models/dp_branching_probs.json",
-    "simulation_inputs.json",
+    "analysis/availability.py",
+    "analysis/permissions.py",
     "models/availability_model.json",
     "models/case_attributes.json",
     "models/permissions_observed.json",
     "models/permissions_orgmodel.json",
+    "scripts/opt_metrics.py",
+    "scripts/run_experiments.py",
+    "simulation/components/arrival_mdn.py",
+    "simulation/components/arrival_mdn_weights.npz",
+    "simulation/components/petri_process.py",
+    "simulation/components/permissions.py",
+    "simulation/components/resource.py",
+    "simulation/components/process.py",
+    "simulation/core/engine.py",
+    "simulation/drl.py",
+    "simulation/expected_duration.py",
+    "simulation/models/bpic17_process.bpmn",
+    "simulation/models/dp_branching_probs.json",
+    "simulation/policies.py",
+    "simulation/policies_advanced.py",
+    "simulation_inputs.json",
     "simulation_inputs_active.json",
 )
 
@@ -142,6 +148,42 @@ def evaluation_provenance_hashes() -> Dict[str, str]:
         ).hexdigest()
         for relative_path in EVALUATION_PROVENANCE_PATHS
     }
+
+
+def validate_evaluation_configuration(
+    configuration: Mapping,
+    expected_run_configuration: Mapping,
+    expected_provenance: Mapping[str, str],
+    cache_schema_version: int,
+) -> None:
+    """Reject a saved evaluation summary that is stale or from another run.
+
+    Aggregate CSV files do not carry enough context to be combined safely on
+    their own.  Their sibling ``configuration.json`` must use the current cache
+    schema and code/input fingerprints, and it must agree with the run settings
+    expected by the consuming notebook.  Extra descriptive fields are allowed.
+    """
+    problems = []
+    actual_schema = configuration.get("cache_schema_version")
+    if actual_schema != cache_schema_version:
+        problems.append(
+            f"cache_schema_version={actual_schema!r}, expected {cache_schema_version!r}"
+        )
+
+    actual_provenance = configuration.get("provenance_sha256")
+    if actual_provenance != dict(expected_provenance):
+        problems.append("provenance_sha256 does not match the current simulator inputs")
+
+    for key, expected in expected_run_configuration.items():
+        actual = configuration.get(key)
+        if actual != expected:
+            problems.append(f"{key}={actual!r}, expected {expected!r}")
+
+    if problems:
+        raise ValueError(
+            "Saved evaluation configuration is incompatible; rerun its notebook. "
+            + "; ".join(problems)
+        )
 
 
 def validate_resource_diagnostics(
@@ -486,6 +528,7 @@ def run_once(
     excluded_override: Optional[Set[str]] = None,
     roster_seed: Optional[int] = DEFAULT_ROSTER_SEED,
     capacity: Optional[int] = None,
+    atomic_duration_scale: float = 1.0,
     drl_model_path: Optional[str] = None,
 ) -> tuple[pd.DataFrame, dict]:
     """Build and run one (policy, seed, scenario) simulation.
@@ -520,6 +563,8 @@ def run_once(
         raise ValueError(
             "processing_time_mode must be distribution|ml_model|ml_probabilistic, "
             f"got {processing_time_mode!r}")
+    if atomic_duration_scale < 0:
+        raise ValueError("atomic_duration_scale must be >= 0")
     if process_model == "basic" and branching_mode != "probs":
         raise ValueError(
             f"branching_mode={branching_mode!r} requires process_model='advanced'; "
@@ -550,6 +595,9 @@ def run_once(
         LifecycleParameters.from_file(ACTIVE_INPUTS_PATH)
         if lifecycle_mode == "active" else None
     )
+    processing_time_model_path = (
+        ACTIVE_MODEL_PATH if lifecycle_mode == "active" else LEGACY_MODEL_PATH
+    )
     engine = SimulationEngine(
         sim_duration=duration, start_datetime=START_DATETIME, verbose=False,
         lifecycle_mode=lifecycle_mode)
@@ -567,8 +615,13 @@ def run_once(
 
     proc_kwargs = dict(
         seed=seed, mode=processing_time_mode, start_datetime=START_DATETIME,
+        model_path=(
+            str(processing_time_model_path)
+            if processing_time_mode != "distribution" else None
+        ),
         resource_component=resources, crn=crn, case_attributes=case_attrs,
         lifecycle_mode=lifecycle_mode, lifecycle_params=lifecycle_params,
+        atomic_duration_scale=atomic_duration_scale,
     )
     if process_model == "advanced":
         process = PetriNetProcessComponent(
@@ -605,6 +658,15 @@ def run_once(
     availability_intervals = availability_intervals_per_resource(
         calendar, START_DATETIME, days, active_resource_pool,
     )
+    lifecycle_diagnostics = opt_metrics.lifecycle_diagnostics(
+        df,
+        engine_stats=engine.stats,
+        max_sessions=MAX_SESSIONS,
+    )
+    activity_type_exposure = opt_metrics.activity_type_exposure(
+        df,
+        availability_intervals=availability_intervals,
+    )
     system_resources = set(getattr(calendar, "system", set()))
     human_resources = active_resource_pool - system_resources
 
@@ -616,6 +678,8 @@ def run_once(
         "availability_intervals": availability_intervals,
         "engine_stats": dict(engine.stats),
         "resource_stats": resources.stats(),
+        "lifecycle_diagnostics": lifecycle_diagnostics,
+        "activity_type_exposure": activity_type_exposure,
         "resource_subset": human_resources,
         "evaluation_window": (
             START_DATETIME, START_DATETIME + timedelta(days=days)),
@@ -632,6 +696,11 @@ def run_once(
             "permissions": permissions,
             "lifecycle_mode": lifecycle_mode,
             "processing_time_mode": processing_time_mode,
+            "processing_time_model_path": (
+                str(processing_time_model_path.relative_to(REPO_ROOT))
+                if processing_time_mode != "distribution" else None
+            ),
+            "atomic_duration_scale": float(atomic_duration_scale),
             "roster_seed": effective_roster_seed,
             "capacity": effective_capacity,
             "arrival_model": "mdn" if USE_MDN_ARRIVALS else "parametric",
@@ -905,6 +974,11 @@ def parse_args():
     p.add_argument("--processing-time-mode", default="distribution",
                    choices=["distribution", "ml_model", "ml_probabilistic"],
                    help="Duration sampler used consistently across policy runs.")
+    p.add_argument(
+        "--atomic-duration-scale", type=float, default=1.0, metavar="S",
+        help="Scale synthetic A_/O_ durations in active mode. Use 0.0 for the "
+             "instantaneous-transition sensitivity bound.",
+    )
     p.add_argument("--no-crn", dest="crn", action="store_false",
                    help="Disable Common Random Numbers (paired comparisons "
                         "become unreliable -- see module docstring).")
@@ -947,6 +1021,9 @@ def main():
 
     if args.roster_seed is not None and args.no_roster:
         print("--roster-seed and --no-roster are mutually exclusive.", file=sys.stderr)
+        sys.exit(1)
+    if args.atomic_duration_scale < 0:
+        print("--atomic-duration-scale must be >= 0.", file=sys.stderr)
         sys.exit(1)
     # Explicit N wins; --no-roster disables; otherwise the default is ON.
     roster_seed = None if args.no_roster else (
@@ -1001,6 +1078,7 @@ def main():
         "permissions": args.permissions,
         "lifecycle_mode": args.lifecycle_mode,
         "processing_time_mode": args.processing_time_mode,
+        "atomic_duration_scale": args.atomic_duration_scale,
         "crn": args.crn,
         "roster_seed": roster_seed,
         "capacity": args.capacity if args.capacity is not None else capacity_for_mode(
@@ -1043,6 +1121,7 @@ def main():
                 permissions=args.permissions,
                 roster_seed=roster_seed,
                 capacity=args.capacity,
+                atomic_duration_scale=args.atomic_duration_scale,
                 drl_model_path=args.drl_model,
             )
             resource_df = df

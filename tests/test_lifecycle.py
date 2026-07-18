@@ -366,6 +366,44 @@ class LifecycleStateMachineTests(unittest.TestCase):
         self.assertNotIn("c1", process._witem_seq)
         self.assertFalse(process._witem)
 
+    def test_atomic_duration_scale_zero_makes_active_ao_transition_instantaneous(self):
+        engine = SimulationEngine(
+            sim_duration=10.0,
+            start_datetime=datetime(2016, 1, 1),
+            lifecycle_mode="active",
+        )
+        process = ProcessComponent(
+            seed=7,
+            lifecycle_mode="active",
+            lifecycle_params=_params(),
+            atomic_duration_scale=0.0,
+        )
+        process._repeat_counts["c1"] = {}
+        process._ctx["c1"] = {
+            "start_t": 0.0, "position": 0, "prev_act": None, "attrs": {}
+        }
+        process._sample_duration = lambda activity, rng: 120.0
+
+        process.on_activity_start(engine, SimEvent(
+            timestamp=0.0,
+            event_type=EventType.ACTIVITY_START,
+            case_id="c1",
+            activity=NEXT,
+            resource="r1",
+            payload={"work_item_id": "c1:1"},
+        ))
+
+        self.assertEqual(len(engine._queue), 1)
+        self.assertEqual(engine._queue[0].timestamp, 0.0)
+
+    def test_atomic_duration_scale_rejects_negative_values(self):
+        with self.assertRaisesRegex(ValueError, "atomic_duration_scale"):
+            ProcessComponent(
+                lifecycle_mode="active",
+                lifecycle_params=_params(),
+                atomic_duration_scale=-0.1,
+            )
+
     def test_multi_suspend_resume_exact_timing_and_active_sum(self):
         engine, resource, _ = _run(
             duration=100.0,
@@ -386,6 +424,26 @@ class LifecycleStateMachineTests(unittest.TestCase):
         self.assertEqual(seconds, [0.0, 0.0, 10.0, 15.0, 35.0, 42.0, 72.0])
         self.assertEqual((10.0 - 0.0) + (35.0 - 15.0) + (72.0 - 42.0), 60.0)
         self.assertEqual(resource._busy["r1"], 0)
+
+    def test_max_session_guard_records_forced_completion(self):
+        session_count = 60
+        engine, _, _ = _run(
+            duration=200.0,
+            durations=(1.0,) * session_count,
+            gaps={session: 1.0 for session in range(1, session_count)},
+            session_draws={session: 0.9 for session in range(session_count)},
+            suspend_draws={session: 0.1 for session in range(1, session_count)},
+        )
+
+        rows = _work_rows(engine)
+        opened_sessions = sum(
+            row["lifecycle:transition"] in {"start", "resume"} for row in rows
+        )
+        self.assertEqual(opened_sessions, session_count)
+        self.assertEqual(engine.stats["max_session_guard_reached"], 1)
+        self.assertEqual(engine.stats["max_session_guard_forced_completions"], 1)
+        self.assertEqual(engine.stats["max_session_guard_by_activity"], {WORK: 1})
+        self.assertEqual(engine.stats["cases_completed"], 1)
 
     def test_abort_continues_case_without_double_release(self):
         engine, resource, _ = _run(

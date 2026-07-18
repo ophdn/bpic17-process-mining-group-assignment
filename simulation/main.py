@@ -176,6 +176,7 @@ def main(
     k_batching: int | None = None,
     lifecycle_mode: str = "legacy",
     active_inputs_path: str | None = None,
+    atomic_duration_scale: float = 1.0,
     roster_seed: int | None = DEFAULT_ROSTER_SEED,
     capacity: int | None = None,
 ):
@@ -257,6 +258,7 @@ def main(
         case_attributes=case_attrs,      # Section 1.5: attributes for every case
         lifecycle_mode=lifecycle_mode,   # legacy | active (§4.4)
         lifecycle_params=lifecycle_params,
+        atomic_duration_scale=atomic_duration_scale,
     )
     if process_model == "advanced":
         process = PetriNetProcessComponent(
@@ -340,6 +342,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--active-inputs-path", default=str(ACTIVE_INPUTS_PATH),
         help="Path to simulation_inputs_active.json (--lifecycle-mode active only).",
+    )
+    parser.add_argument(
+        "--atomic-duration-scale", type=float, default=1.0, metavar="S",
+        help="Scale synthetic A_/O_ durations in active mode. Default 1.0 keeps "
+             "the fitted-context fallbacks; 0.0 is an instantaneous-transition "
+             "sensitivity bound.",
     )
     parser.add_argument(
         "--process-model", default="advanced",
@@ -432,6 +440,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.capacity is not None and args.capacity < 1:
         parser.error("--capacity must be >= 1.")
+    if args.atomic_duration_scale < 0:
+        parser.error("--atomic-duration-scale must be >= 0.")
     if args.piled_execution and args.k_batching is not None:
         parser.error("--piled-execution and --k-batching are mutually exclusive.")
     if args.roster_seed is not None and args.no_roster:
@@ -465,6 +475,7 @@ if __name__ == "__main__":
         k_batching=args.k_batching,
         lifecycle_mode=args.lifecycle_mode,
         active_inputs_path=args.active_inputs_path,
+        atomic_duration_scale=args.atomic_duration_scale,
         roster_seed=roster_seed,
         capacity=args.capacity,
     )

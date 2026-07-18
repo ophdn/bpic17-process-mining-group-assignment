@@ -1,0 +1,59 @@
+{
+  "horizon_days": 60,
+  "seeds": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "scenario": "normal",
+  "crn": true,
+  "process_model": "advanced",
+  "branching_mode": "visit",
+  "permissions": "orgmodel",
+  "lifecycle_mode": "active",
+  "processing_time_mode": "distribution",
+  "atomic_duration_scale": 1.0,
+  "capacity": 1,
+  "roster_seed": 42,
+  "arrival_model": "mdn",
+  "cache_schema_version": 4,
+  "provenance_sha256": {
+    "analysis/availability.py": "279cfe7671ae25009ecdf9efd604ac0f75715605489d4b2885e992190993f2f3",
+    "analysis/permissions.py": "45f3720d45863f6e36de5dea408e21a25466ad984c6c9a86b1206cfad3f860d5",
+    "models/case_attributes.json": "97b2c091c50c0bc7ad247215dd4bcfbf2de622be0a5b88b454a6d1c6cc140ddb",
+    "models/permissions_orgmodel.json": "e9b97b45dcbfe451e52eedfac47bc363feaf606c02a883a49e2640634d065b24",
+    "scripts/opt_metrics.py": "a5ca575c4b2a9548abf1a3cdd838c625d3327637a24d39a526e8ecb8ef972998",
+    "scripts/run_experiments.py": "5fd6da7bae5c9e12abe6521f4803da0998c6d6cfc922e5a5289f49d025fc96e7",
+    "simulation/components/arrival_mdn.py": "ed3d0ed2fb61915d4f70a0f81457c8da63dfc78973390b93d199a555393e46fb",
+    "simulation/components/arrival_mdn_weights.npz": "e8e1dd684e574dc6605d6c2778bd2571126762c0e5b262c3430ed992a6360246",
+    "simulation/components/petri_process.py": "64ebfdfb1cda4e2511ba43ed9bfd06beb445dc5ca9b4fffd4bb159728bdf6338",
+    "simulation/components/permissions.py": "69769a1b52347d10d0e01df8f6965c0228638a4d62dabc49b056d9e99ce76e44",
+    "simulation/components/resource.py": "d1dbea5148edbf5721d57a6e46d4ed212071e13058593c3e3ccd6f9f5fbb9b8b",
+    "simulation/components/process.py": "3f6dde27027dbbf7bf57ccade9e66dff24649e956d9f2186e87c77a6bf1438fc",
+    "simulation/core/engine.py": "12f3e6333bd013603220f8995c9c99ad1681d222f693027ad5fa145e8cf6ef68",
+    "simulation/expected_duration.py": "1e21747b4a7690b21fc1acc995b8cef408f720b0146a871dfeec5b9b34952234",
+    "simulation/models/bpic17_process.bpmn": "fde3bf1943b3f7887a1d7c3eba9d5501a7251ad9b34609ea40379f6f79ded47c",
+    "simulation/models/dp_branching_probs.json": "68df5ce8ad087ba6fe1a53912cd4d7122292935cd9533e86657e3a1bd6d2d2ac",
+    "simulation/policies.py": "3a2474435fc117a5a126506e02b8c01267957bc22f0f73c3597f6b9419f4a19c",
+    "models/availability_model.json": "6611bc99ceb5e9d9e740368f2b669fc123f25ac711e2925a0112b3a3dd196ebf",
+    "simulation_inputs.json": "e12318d10dfede34448cc8231c5b436779bbe9a44ce1a1f5ee2194e6004afbf7",
+    "simulation_inputs_active.json": "f49352df00d415218937b7f83a9a9e68af4bc7f1940c66bde420b78dd6b1fd9f"
+  },
+  "effective_roster_seed_by_seed": {
+    "1": 43,
+    "2": 44,
+    "3": 45,
+    "4": 46
+  },
+  "policies": [
+    "random",
+    "piled",
+    "kbatch5"
+  ],
+  "resource_pool_size": 144,
+  "human_resource_count": 143,
+  "automated_resources": [
+    "User_1"
+  ]
+}

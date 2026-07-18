@@ -47,6 +47,10 @@ import numpy as np
 import pandas as pd
 
 DEFAULT_LOG_PATH = Path(__file__).resolve().parent.parent / "output" / "event_log.csv"
+RARE_DEGENERATE_WORK_ACTIVITIES = (
+    "W_Personal Loan collection",
+    "W_Shortened completion ",
+)
 
 
 # ---------------------------------------------------------------------
@@ -108,6 +112,204 @@ def paired_instances(df: pd.DataFrame) -> pd.DataFrame:
     return inst[["case_id", "activity", "resource", "start", "complete"]]
 
 
+def _activity_type(values: pd.Series) -> pd.Series:
+    """Classify activity labels into fitted work, atomic A/O, or other rows."""
+    labels = values.fillna("").astype(str)
+    return pd.Series(
+        np.select(
+            [labels.str.startswith("W_"), labels.str.startswith(("A_", "O_"))],
+            ["W", "AO"],
+            default="other",
+        ),
+        index=values.index,
+        dtype="object",
+    )
+
+
+def _instance_busy_seconds(
+    inst: pd.DataFrame,
+    availability_intervals: Optional[Mapping[str, Iterable[tuple]]] = None,
+    evaluation_window: Optional[tuple[pd.Timestamp, pd.Timestamp]] = None,
+) -> pd.Series:
+    """Busy seconds per session, clipped to shifts and/or an evaluation window."""
+    if availability_intervals is None and evaluation_window is None:
+        return (inst["complete"] - inst["start"]).dt.total_seconds()
+
+    def overlap_seconds(row):
+        intervals = (
+            (evaluation_window,)
+            if availability_intervals is None
+            else availability_intervals.get(row["resource"], ())
+        )
+        total = 0.0
+        for available_start, available_end in intervals:
+            overlap_start = max(row["start"], pd.Timestamp(available_start))
+            overlap_end = min(row["complete"], pd.Timestamp(available_end))
+            if evaluation_window is not None:
+                window_start, window_end = map(pd.Timestamp, evaluation_window)
+                overlap_start = max(overlap_start, window_start)
+                overlap_end = min(overlap_end, window_end)
+            if overlap_end > overlap_start:
+                total += (overlap_end - overlap_start).total_seconds()
+        return total
+
+    return inst.apply(overlap_seconds, axis=1)
+
+
+def _filter_activity_prefixes(
+    inst: pd.DataFrame,
+    activity_prefixes: Optional[Iterable[str]],
+) -> pd.DataFrame:
+    """Restrict paired sessions to activity labels with selected prefixes."""
+    if activity_prefixes is None:
+        return inst
+    prefixes = tuple(str(prefix) for prefix in activity_prefixes)
+    if not prefixes:
+        return inst.iloc[0:0]
+    labels = inst["activity"].fillna("").astype(str)
+    return inst[labels.str.startswith(prefixes)]
+
+
+def activity_type_exposure(
+    df: pd.DataFrame,
+    availability_intervals: Optional[Mapping[str, Iterable[tuple]]] = None,
+) -> dict:
+    """Quantify how much of a run comes from fitted W_ versus atomic A_/O_.
+
+    Event-row shares describe the generated log. Session and busy-time shares
+    use the same start/resume pairing as occupation. When calendar intervals are
+    supplied, busy time is clipped to realized availability just like the
+    reported occupation KPI.
+    """
+    basis = (
+        "active_overlap_with_availability"
+        if availability_intervals is not None else "all_active_time"
+    )
+    if df.empty or "concept:name" not in df.columns:
+        return {
+            "event_rows": 0,
+            "w_event_rows": 0,
+            "ao_event_rows": 0,
+            "w_event_share": float("nan"),
+            "ao_event_share": float("nan"),
+            "paired_sessions": 0,
+            "w_paired_sessions": 0,
+            "ao_paired_sessions": 0,
+            "w_session_share": float("nan"),
+            "ao_session_share": float("nan"),
+            "busy_seconds": 0.0,
+            "w_busy_seconds": 0.0,
+            "ao_busy_seconds": 0.0,
+            "w_busy_share": float("nan"),
+            "ao_busy_share": float("nan"),
+            "busy_time_basis": basis,
+        }
+
+    event_types = _activity_type(df["concept:name"])
+    named_events = event_types.isin({"W", "AO"})
+    event_counts = event_types[named_events].value_counts()
+    n_event_rows = int(named_events.sum())
+
+    inst = paired_instances(df)
+    inst = inst[inst["resource"].notna() & inst["resource"].astype(str).ne("")].copy()
+    inst["activity_type"] = _activity_type(inst["activity"])
+    inst = inst[inst["activity_type"].isin({"W", "AO"})]
+    session_counts = inst["activity_type"].value_counts()
+    busy = _instance_busy_seconds(inst, availability_intervals)
+    busy_by_type = busy.groupby(inst["activity_type"]).sum()
+    n_sessions = int(len(inst))
+    total_busy = float(busy.sum())
+
+    def share(value, total):
+        return float(value / total) if total else float("nan")
+
+    return {
+        "event_rows": n_event_rows,
+        "w_event_rows": int(event_counts.get("W", 0)),
+        "ao_event_rows": int(event_counts.get("AO", 0)),
+        "w_event_share": share(event_counts.get("W", 0), n_event_rows),
+        "ao_event_share": share(event_counts.get("AO", 0), n_event_rows),
+        "paired_sessions": n_sessions,
+        "w_paired_sessions": int(session_counts.get("W", 0)),
+        "ao_paired_sessions": int(session_counts.get("AO", 0)),
+        "w_session_share": share(session_counts.get("W", 0), n_sessions),
+        "ao_session_share": share(session_counts.get("AO", 0), n_sessions),
+        "busy_seconds": total_busy,
+        "w_busy_seconds": float(busy_by_type.get("W", 0.0)),
+        "ao_busy_seconds": float(busy_by_type.get("AO", 0.0)),
+        "w_busy_share": share(busy_by_type.get("W", 0.0), total_busy),
+        "ao_busy_share": share(busy_by_type.get("AO", 0.0), total_busy),
+        "busy_time_basis": basis,
+    }
+
+
+def lifecycle_diagnostics(
+    df: pd.DataFrame,
+    *,
+    engine_stats: Optional[Mapping[str, object]] = None,
+    max_sessions: int = 60,
+    rare_activities: Iterable[str] = RARE_DEGENERATE_WORK_ACTIVITIES,
+) -> dict:
+    """Return JSON-safe churn, guard, rare-route, and withdrawal diagnostics."""
+    if "work_item_id" not in df.columns or not df["work_item_id"].notna().any():
+        return {
+            "active_lifecycle_schema": False,
+            "work_items": 0,
+            "median_sessions_per_work_item": None,
+            "max_sessions_per_work_item": 0,
+            "max_session_guard_reached_in_log": 0,
+            "max_session_guard_reached": int(
+                (engine_stats or {}).get("max_session_guard_reached", 0)
+            ),
+            "max_session_guard_forced_completions": int(
+                (engine_stats or {}).get("max_session_guard_forced_completions", 0)
+            ),
+            "withdrawals": 0,
+            "withdrawals_by_activity": {},
+            "rare_work_items_routed": {str(a): 0 for a in rare_activities},
+        }
+
+    lifecycle = df[df["work_item_id"].notna()].copy()
+    lifecycle["concept:name"] = lifecycle["concept:name"].fillna("").astype(str)
+    work = lifecycle[lifecycle["concept:name"].str.startswith("W_")]
+    opened = work[work["lifecycle:transition"].isin({"start", "resume"})]
+    sessions = opened.groupby("work_item_id", sort=False).size()
+    inferred_guard = int((sessions >= max_sessions).sum())
+    stats = engine_stats or {}
+
+    withdrawn = work[work["lifecycle:transition"].eq("withdraw")]
+    withdrawals_by_activity = {
+        str(activity): int(count)
+        for activity, count in withdrawn.groupby("concept:name").size().items()
+    }
+    routed = work.groupby("concept:name")["work_item_id"].nunique()
+
+    return {
+        "active_lifecycle_schema": True,
+        "work_items": int(work["work_item_id"].nunique()),
+        "median_sessions_per_work_item": (
+            float(sessions.median()) if not sessions.empty else None
+        ),
+        "max_sessions_per_work_item": int(sessions.max()) if not sessions.empty else 0,
+        "max_session_guard_reached_in_log": inferred_guard,
+        "max_session_guard_reached": int(stats.get("max_session_guard_reached", 0)),
+        "max_session_guard_forced_completions": int(
+            stats.get("max_session_guard_forced_completions", 0)
+        ),
+        "max_session_guard_by_activity": {
+            str(activity): int(count)
+            for activity, count in dict(
+                stats.get("max_session_guard_by_activity", {})
+            ).items()
+        },
+        "withdrawals": int(len(withdrawn)),
+        "withdrawals_by_activity": withdrawals_by_activity,
+        "rare_work_items_routed": {
+            str(activity): int(routed.get(activity, 0)) for activity in rare_activities
+        },
+    }
+
+
 # ---------------------------------------------------------------------
 # 1. Average Cycle Time (slide 21)
 # ---------------------------------------------------------------------
@@ -161,6 +363,7 @@ def average_cycle_time(
 def resource_busy_seconds(
     df: pd.DataFrame,
     availability_intervals: Optional[Mapping[str, Iterable[tuple]]] = None,
+    activity_prefixes: Optional[Iterable[str]] = None,
     evaluation_window: Optional[tuple[pd.Timestamp, pd.Timestamp]] = None,
 ) -> pd.Series:
     """Total busy seconds per resource (sum of paired running sessions).
@@ -174,30 +377,18 @@ def resource_busy_seconds(
     each active session and those intervals is counted. This is required for
     the slide-21 occupation definition because the simulator allows a task
     started near shift end to finish as overtime rather than preempting it.
+
+    `activity_prefixes` supports sensitivity views such as fitted work only
+    (`("W_",)`). It does not alter the resource availability denominator.
     """
     inst = paired_instances(df)
+    inst = _filter_activity_prefixes(inst, activity_prefixes)
     inst = inst[inst["resource"].notna() & (inst["resource"] != "")]
-    if availability_intervals is None and evaluation_window is None:
-        busy = (inst["complete"] - inst["start"]).dt.total_seconds()
-    else:
-        def overlap_seconds(row):
-            if availability_intervals is None:
-                intervals = (evaluation_window,)
-            else:
-                intervals = availability_intervals.get(row["resource"], ())
-            total = 0.0
-            for available_start, available_end in intervals:
-                overlap_start = max(row["start"], pd.Timestamp(available_start))
-                overlap_end = min(row["complete"], pd.Timestamp(available_end))
-                if evaluation_window is not None:
-                    window_start, window_end = map(pd.Timestamp, evaluation_window)
-                    overlap_start = max(overlap_start, window_start)
-                    overlap_end = min(overlap_end, window_end)
-                if overlap_end > overlap_start:
-                    total += (overlap_end - overlap_start).total_seconds()
-            return total
-
-        busy = inst.apply(overlap_seconds, axis=1)
+    busy = _instance_busy_seconds(
+        inst,
+        availability_intervals=availability_intervals,
+        evaluation_window=evaluation_window,
+    )
     return busy.groupby(inst["resource"]).sum()
 
 def average_resource_occupation(
@@ -206,6 +397,7 @@ def average_resource_occupation(
     resource_subset: Optional[Iterable[str]] = None,
     *,
     availability_intervals: Optional[Mapping[str, Iterable[tuple]]] = None,
+    activity_prefixes: Optional[Iterable[str]] = None,
     evaluation_window: Optional[tuple[pd.Timestamp, pd.Timestamp]] = None,
 ) -> dict:
     """Mean share the resources are working during their availabilities.
@@ -220,13 +412,25 @@ def average_resource_occupation(
     an always-on automated account (Johannes's Section-1.6 Decision 4,
     e.g. User_1) has a huge availability denominator and a tiny occupation
     ratio, which distorts a staffing metric it is not really part of.
+
+    `activity_prefixes` restricts the busy-time numerator while retaining the
+    same staff availability denominator. Pass `("W_",)` to separate fitted
+    work from the assumed durations of atomic A_/O_ transitions.
     """
     # ``raw_busy`` is clipped to the evaluated horizon but not to shifts, so
     # the difference to ``busy`` is genuine overtime.  Without this global
     # clip a warm-up period would be misreported as time outside availability.
-    raw_busy = resource_busy_seconds(df, evaluation_window=evaluation_window)
+    raw_busy = resource_busy_seconds(
+        df,
+        activity_prefixes=activity_prefixes,
+        evaluation_window=evaluation_window,
+    )
     busy = resource_busy_seconds(
-        df, availability_intervals, evaluation_window=evaluation_window)
+        df,
+        availability_intervals=availability_intervals,
+        activity_prefixes=activity_prefixes,
+        evaluation_window=evaluation_window,
+    )
     if availability_seconds is not None:
         avail = pd.Series(dict(availability_seconds), dtype=float)
         basis = "availability_windows"
@@ -409,6 +613,7 @@ def handover_rate(df: pd.DataFrame) -> dict:
 
 def resource_activity_switch_rate(
     df: pd.DataFrame,
+    activity_prefixes: Optional[Iterable[str]] = None,
     evaluation_window: Optional[tuple[pd.Timestamp, pd.Timestamp]] = None,
 ) -> dict:
     """Share of consecutive sessions handled by a resource whose activity changes.
@@ -418,7 +623,9 @@ def resource_activity_switch_rate(
     The case-level handover metric answers a different question and should not
     be used as evidence that activity piling works.
     """
-    inst = paired_instances(df).sort_values(["resource", "start", "complete"])
+    inst = paired_instances(df)
+    inst = _filter_activity_prefixes(inst, activity_prefixes)
+    inst = inst.sort_values(["resource", "start", "complete"])
     inst = inst[inst["resource"].notna() & (inst["resource"] != "")]
     if evaluation_window is not None:
         window_start, window_end = map(pd.Timestamp, evaluation_window)
@@ -439,6 +646,7 @@ def resource_activity_switch_rate(
 def rolling_workload_balance(
     df: pd.DataFrame, window: str = "1D",
     resource_subset: Optional[Iterable[str]] = None,
+    activity_prefixes: Optional[Iterable[str]] = None,
     evaluation_window: Optional[tuple[pd.Timestamp, pd.Timestamp]] = None,
 ) -> dict:
     """Std of per-resource occupation WITHIN each rolling window, averaged
@@ -457,6 +665,7 @@ def rolling_workload_balance(
     windows is still meaningful.
     """
     inst = paired_instances(df)
+    inst = _filter_activity_prefixes(inst, activity_prefixes)
     inst = inst[inst["resource"].notna() & (inst["resource"] != "")]
     if evaluation_window is not None:
         window_start, window_end = map(pd.Timestamp, evaluation_window)

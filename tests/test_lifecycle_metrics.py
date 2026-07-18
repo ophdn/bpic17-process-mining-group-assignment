@@ -4,10 +4,43 @@ import unittest
 
 import pandas as pd
 
-from scripts.eval_lifecycle import lifecycle_evidence
+from scripts.eval_lifecycle import (
+    LIFECYCLE_VALIDATION_SCHEMA_VERSION,
+    REPORT_LIFECYCLE_CONFIGURATION,
+    lifecycle_evidence,
+    lifecycle_validation_provenance_hashes,
+    validate_lifecycle_validation_artifact,
+)
 
 
 class LifecycleMetricTests(unittest.TestCase):
+    def test_report_artifact_requires_current_configuration_and_provenance(self):
+        artifact = {
+            "configuration": {
+                **REPORT_LIFECYCLE_CONFIGURATION,
+                "processing_time_mode": "distribution",
+                "validation_schema_version": LIFECYCLE_VALIDATION_SCHEMA_VERSION,
+                "provenance_sha256": lifecycle_validation_provenance_hashes(),
+            }
+        }
+        validate_lifecycle_validation_artifact(artifact, "distribution")
+
+        stale_capacity = {
+            "configuration": {**artifact["configuration"], "capacity": 3}
+        }
+        with self.assertRaisesRegex(ValueError, "capacity=3"):
+            validate_lifecycle_validation_artifact(stale_capacity, "distribution")
+
+        missing_provenance = {
+            "configuration": {
+                key: value
+                for key, value in artifact["configuration"].items()
+                if key != "provenance_sha256"
+            }
+        }
+        with self.assertRaisesRegex(ValueError, "provenance"):
+            validate_lifecycle_validation_artifact(missing_provenance, "distribution")
+
     def test_recomposition_and_resume_ownership_key_on_work_item(self):
         base = pd.Timestamp("2016-01-04T09:00:00")
         rows = [

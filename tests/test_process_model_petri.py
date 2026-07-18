@@ -7,8 +7,16 @@ from pm4py.objects.petri_net.obj import Marking, PetriNet
 from pm4py.objects.petri_net.utils import petri_utils
 
 from simulation.components.petri_process import PetriNetProcessComponent
+from simulation.main import DEFAULT_BPMN_PATH
 from simulation.core.engine import SimulationEngine
 from simulation.core.events import EventType, SimEvent
+
+
+def test_advanced_component_does_not_warn_about_basic_adjacency(capsys):
+    PetriNetProcessComponent(bpmn_path=str(DEFAULT_BPMN_PATH), seed=1)
+    output = capsys.readouterr().out
+    assert "basic_adjacency.json" not in output
+    assert "WITHOUT structural enforcement" not in output
 
 
 def _component_with_linear_net(enforce_terminal_outcomes: bool = False) -> PetriNetProcessComponent:

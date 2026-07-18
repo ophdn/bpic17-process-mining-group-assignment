@@ -1,0 +1,31 @@
+{
+  "selected_basic_sampler": "Distribution",
+  "active_time_mean_relative_error": {
+    "Distribution": 0.1401,
+    "Point ML": 0.7532,
+    "Probabilistic ML": 0.3867
+  },
+  "completed_active_minutes_range": [
+    1.637347754894785,
+    9.94791772665444
+  ],
+  "completed_non_active_hours_range": [
+    6.235992567366014,
+    6.37471332111505
+  ],
+  "historical_same_resource_resume_rate": 0.175,
+  "simulated_same_resource_resume_rate_range": [
+    0.16526362428001773,
+    0.17492327926348092
+  ],
+  "boundary_hazard_activities": [
+    "W_Shortened completion ",
+    "W_Personal Loan collection"
+  ],
+  "policy_evaluation_processing_time_mode": "distribution",
+  "report_figures": [
+    "03_lifecycle_time_recomposition.pdf",
+    "03_point_model_feature_importance.pdf",
+    "03_quantile_interval_coverage.pdf"
+  ]
+}

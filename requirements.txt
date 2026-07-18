@@ -10,6 +10,7 @@ scipy==1.18.0
 
 # Jupyter kernel and visualization support (required by all notebooks)
 ipykernel==7.2.0
+nbconvert==7.17.1
 matplotlib==3.10.9
 seaborn==0.13.2
 networkx==3.6.1   # §1.7 resource-map (force-directed layout of the org groups)
