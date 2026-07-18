@@ -52,70 +52,70 @@
   },
   "processing_times": {
     "W_Assess potential fraud": {
-      "distribution": "gamma",
+      "distribution": "weibull_min",
       "params": [
-        0.3057,
+        0.4948,
         0.0,
-        1090175.6221
+        172996.7419
       ],
-      "mean_s": 333226.34,
-      "std_s": 749126.94,
-      "n": 333
+      "mean_s": 332276.96,
+      "std_s": 702597.44,
+      "n": 282
     },
     "W_Call after offers": {
       "distribution": "lognorm",
       "params": [
-        3.9715,
+        3.8921,
         0.0,
-        184.7252
+        166.7117
       ],
-      "mean_s": 148086.33,
-      "std_s": 645666.93,
-      "n": 350
+      "mean_s": 129168.74,
+      "std_s": 558239.33,
+      "n": 342
     },
     "W_Call incomplete files": {
       "distribution": "weibull_min",
       "params": [
-        0.4091,
+        0.4174,
         0.0,
-        226141.4779
+        241515.1206
       ],
-      "mean_s": 626302.53,
-      "std_s": 1207241.74,
-      "n": 4304
+      "mean_s": 634319.96,
+      "std_s": 1199747.04,
+      "n": 2793
     },
     "W_Complete application": {
       "distribution": "lognorm",
       "params": [
-        2.2212,
+        2.2181,
         0.0,
-        2135.1602
+        2133.6863
       ],
-      "mean_s": 34554.48,
-      "std_s": 113121.32,
-      "n": 19253
+      "mean_s": 34261.79,
+      "std_s": 111846.38,
+      "n": 19104
     },
     "W_Handle leads": {
       "distribution": "lognorm",
       "params": [
-        1.5805,
+        1.58,
         0.0,
-        128.1099
+        129.5777
       ],
-      "mean_s": 1325.35,
-      "std_s": 7933.1,
-      "n": 3572
+      "mean_s": 1343.08,
+      "std_s": 8013.94,
+      "n": 3493
     },
     "W_Validate application": {
       "distribution": "gamma",
       "params": [
-        0.3213,
+        0.2979,
         0.0,
-        1056395.7929
+        692427.4519
       ],
-      "mean_s": 339420.66,
-      "std_s": 565850.68,
-      "n": 25314
+      "mean_s": 206257.01,
+      "std_s": 301329.53,
+      "n": 15848
     }
   },
   "arrival_rate": {
@@ -4129,6 +4129,82 @@
       }
     },
     "terminal_continuation": {
+      "W_Complete application": {
+        "complete": {
+          "A_Complete": 0.9962,
+          "W_Assess potential fraud": 0.0004,
+          "O_Create Offer": 0.0001,
+          "A_Accepted": 0.0001,
+          "__CASE_END__": 0.0033
+        },
+        "ate_abort": {
+          "A_Complete": 0.9917,
+          "O_Create Offer": 0.0003,
+          "W_Assess potential fraud": 0.0005,
+          "A_Accepted": 0.0006,
+          "A_Denied": 0.0001,
+          "__CASE_END__": 0.0069
+        },
+        "withdraw": {
+          "A_Complete": 0.9946,
+          "__CASE_END__": 0.0054
+        }
+      },
+      "W_Call incomplete files": {
+        "complete": {
+          "A_Validating": 0.7644,
+          "O_Cancelled": 0.0064,
+          "W_Assess potential fraud": 0.0025,
+          "A_Denied": 0.0007,
+          "__CASE_END__": 0.2259
+        },
+        "ate_abort": {
+          "A_Validating": 0.7317,
+          "O_Cancelled": 0.0695,
+          "W_Call after offers": 0.0002,
+          "O_Accepted": 0.0,
+          "W_Assess potential fraud": 0.0001,
+          "A_Denied": 0.0001,
+          "A_Incomplete": 0.0001,
+          "__CASE_END__": 0.1982
+        }
+      },
+      "W_Validate application": {
+        "complete": {
+          "A_Incomplete": 0.6803,
+          "W_Assess potential fraud": 0.0054,
+          "O_Cancelled": 0.0561,
+          "A_Validating": 0.0004,
+          "A_Denied": 0.0025,
+          "W_Validate application": 0.0005,
+          "O_Returned": 0.0001,
+          "__CASE_END__": 0.2547
+        },
+        "ate_abort": {
+          "A_Incomplete": 0.5298,
+          "O_Cancelled": 0.0917,
+          "W_Assess potential fraud": 0.0036,
+          "A_Denied": 0.0018,
+          "O_Returned": 0.0003,
+          "A_Validating": 0.0,
+          "O_Accepted": 0.0002,
+          "W_Validate application": 0.0003,
+          "__CASE_END__": 0.3724
+        }
+      },
+      "W_Handle leads": {
+        "complete": {
+          "A_Concept": 0.9997,
+          "W_Handle leads": 0.0003
+        },
+        "ate_abort": {
+          "A_Concept": 1.0
+        },
+        "withdraw": {
+          "A_Concept": 0.9987,
+          "W_Assess potential fraud": 0.0013
+        }
+      },
       "W_Call after offers": {
         "complete": {
           "A_Validating": 0.6053,
@@ -4149,19 +4225,6 @@
           "A_Denied": 0.0019,
           "W_Call after offers": 0.0009,
           "__CASE_END__": 0.3032
-        }
-      },
-      "W_Handle leads": {
-        "complete": {
-          "A_Concept": 0.9997,
-          "W_Handle leads": 0.0003
-        },
-        "ate_abort": {
-          "A_Concept": 1.0
-        },
-        "withdraw": {
-          "A_Concept": 0.9987,
-          "W_Assess potential fraud": 0.0013
         }
       },
       "W_Assess potential fraud": {
@@ -4190,69 +4253,6 @@
         },
         "withdraw": {
           "W_Handle leads": 1.0
-        }
-      },
-      "W_Validate application": {
-        "complete": {
-          "A_Incomplete": 0.6803,
-          "W_Assess potential fraud": 0.0054,
-          "O_Cancelled": 0.0561,
-          "A_Validating": 0.0004,
-          "A_Denied": 0.0025,
-          "W_Validate application": 0.0005,
-          "O_Returned": 0.0001,
-          "__CASE_END__": 0.2547
-        },
-        "ate_abort": {
-          "A_Incomplete": 0.5298,
-          "O_Cancelled": 0.0917,
-          "W_Assess potential fraud": 0.0036,
-          "A_Denied": 0.0018,
-          "O_Returned": 0.0003,
-          "A_Validating": 0.0,
-          "O_Accepted": 0.0002,
-          "W_Validate application": 0.0003,
-          "__CASE_END__": 0.3724
-        }
-      },
-      "W_Call incomplete files": {
-        "complete": {
-          "A_Validating": 0.7644,
-          "O_Cancelled": 0.0064,
-          "W_Assess potential fraud": 0.0025,
-          "A_Denied": 0.0007,
-          "__CASE_END__": 0.2259
-        },
-        "ate_abort": {
-          "A_Validating": 0.7317,
-          "O_Cancelled": 0.0695,
-          "W_Call after offers": 0.0002,
-          "O_Accepted": 0.0,
-          "W_Assess potential fraud": 0.0001,
-          "A_Denied": 0.0001,
-          "A_Incomplete": 0.0001,
-          "__CASE_END__": 0.1982
-        }
-      },
-      "W_Complete application": {
-        "complete": {
-          "A_Complete": 0.9962,
-          "W_Assess potential fraud": 0.0004,
-          "O_Create Offer": 0.0001,
-          "A_Accepted": 0.0001,
-          "__CASE_END__": 0.0033
-        },
-        "ate_abort": {
-          "A_Complete": 0.9917,
-          "O_Create Offer": 0.0003,
-          "W_Assess potential fraud": 0.0005,
-          "A_Accepted": 0.0006,
-          "A_Denied": 0.0001,
-          "__CASE_END__": 0.0069
-        },
-        "withdraw": {
-          "A_Complete": 0.9946,
-          "__CASE_END__": 0.0054
         }
       }
     },

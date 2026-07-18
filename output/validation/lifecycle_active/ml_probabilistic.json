@@ -1,239 +1,285 @@
 {
   "configuration": {
+    "policy": "random",
+    "seed": 1,
+    "horizon_days": 60,
+    "scenario": "normal",
+    "crn": true,
+    "process_model": "advanced",
+    "branching_mode": "visit",
+    "permissions": "orgmodel",
     "lifecycle_mode": "active",
-    "log": "output/event_log_active_ml_probabilistic.csv",
-    "completed_cases": 1367,
-    "logged_rows": 151348,
+    "processing_time_mode": "ml_probabilistic",
+    "processing_time_model_path": "simulation/models/processing_time_model_active.joblib",
+    "atomic_duration_scale": 1.0,
+    "roster_seed": 43,
+    "capacity": 1,
+    "arrival_model": "mdn",
+    "excluded_resources": [],
+    "resource_pool_size": 144,
+    "validation_schema_version": 1,
+    "provenance_sha256": {
+      "analysis/availability.py": "279cfe7671ae25009ecdf9efd604ac0f75715605489d4b2885e992190993f2f3",
+      "analysis/permissions.py": "45f3720d45863f6e36de5dea408e21a25466ad984c6c9a86b1206cfad3f860d5",
+      "models/case_attributes.json": "97b2c091c50c0bc7ad247215dd4bcfbf2de622be0a5b88b454a6d1c6cc140ddb",
+      "models/permissions_orgmodel.json": "e9b97b45dcbfe451e52eedfac47bc363feaf606c02a883a49e2640634d065b24",
+      "scripts/opt_metrics.py": "a5ca575c4b2a9548abf1a3cdd838c625d3327637a24d39a526e8ecb8ef972998",
+      "scripts/run_experiments.py": "5fd6da7bae5c9e12abe6521f4803da0998c6d6cfc922e5a5289f49d025fc96e7",
+      "simulation/components/arrival_mdn.py": "ed3d0ed2fb61915d4f70a0f81457c8da63dfc78973390b93d199a555393e46fb",
+      "simulation/components/arrival_mdn_weights.npz": "e8e1dd684e574dc6605d6c2778bd2571126762c0e5b262c3430ed992a6360246",
+      "simulation/components/petri_process.py": "64ebfdfb1cda4e2511ba43ed9bfd06beb445dc5ca9b4fffd4bb159728bdf6338",
+      "simulation/components/permissions.py": "69769a1b52347d10d0e01df8f6965c0228638a4d62dabc49b056d9e99ce76e44",
+      "simulation/components/resource.py": "d1dbea5148edbf5721d57a6e46d4ed212071e13058593c3e3ccd6f9f5fbb9b8b",
+      "simulation/components/process.py": "3f6dde27027dbbf7bf57ccade9e66dff24649e956d9f2186e87c77a6bf1438fc",
+      "simulation/core/engine.py": "12f3e6333bd013603220f8995c9c99ad1681d222f693027ad5fa145e8cf6ef68",
+      "simulation/expected_duration.py": "1e21747b4a7690b21fc1acc995b8cef408f720b0146a871dfeec5b9b34952234",
+      "simulation/models/bpic17_process.bpmn": "fde3bf1943b3f7887a1d7c3eba9d5501a7251ad9b34609ea40379f6f79ded47c",
+      "simulation/models/dp_branching_probs.json": "68df5ce8ad087ba6fe1a53912cd4d7122292935cd9533e86657e3a1bd6d2d2ac",
+      "simulation/policies.py": "3a2474435fc117a5a126506e02b8c01267957bc22f0f73c3597f6b9419f4a19c",
+      "models/availability_model.json": "6611bc99ceb5e9d9e740368f2b669fc123f25ac711e2925a0112b3a3dd196ebf",
+      "simulation_inputs.json": "e12318d10dfede34448cc8231c5b436779bbe9a44ce1a1f5ee2194e6004afbf7",
+      "simulation_inputs_active.json": "f49352df00d415218937b7f83a9a9e68af4bc7f1940c66bde420b78dd6b1fd9f",
+      "scripts/eval_lifecycle.py": "f00c3bd21d9ab772b43e21bfb61ca1a0ac1d556d0abc67cf2715c52e5853a2b2",
+      "scripts/metrics.py": "3b124d70f9c65c24737036b57825934bb005000d11996a47356fabf7dcf5f8e6",
+      "scripts/run_lifecycle_validation.py": "f677b4e9c137d815661556295b38fd8be008d9a03ac565cee471a9ac9a8a059b",
+      "simulation/models/processing_time_model_active.joblib": "5d594c720c4397ba82a112822cc64f104bcb95bb1adefcd17ec128f26581d168",
+      "output/models/processing_time_metrics_active.json": "6c3f9786e959ce4414e6dd207b9b5e59774902872b138e5a07048862cf99c155"
+    },
+    "completed_cases": 3080,
+    "logged_rows": 132233,
     "label": "ml_probabilistic"
   },
   "general_metrics": {
-    "n_cases": 1367,
+    "n_cases": 3080,
     "branching": {
       "per_activity_tvd": {
-        "A_Accepted": 0.011,
-        "A_Cancelled": null,
-        "A_Complete": 0.1218,
+        "A_Accepted": 0.0127,
+        "A_Cancelled": 0.0041,
+        "A_Complete": 0.0849,
         "A_Concept": 0.0013,
-        "A_Create Application": 0.0052,
-        "A_Denied": null,
-        "A_Incomplete": 0.5128,
+        "A_Create Application": 0.0154,
+        "A_Denied": 0.0035,
+        "A_Incomplete": 0.5173,
         "A_Pending": null,
-        "A_Submitted": 0.0664,
-        "A_Validating": 0.7326,
-        "O_Accepted": 0.0159,
+        "A_Submitted": 0.068,
+        "A_Validating": 0.4271,
+        "O_Accepted": 0.0828,
         "O_Cancelled": null,
-        "O_Create Offer": 0.0124,
-        "O_Created": 0.0675,
+        "O_Create Offer": 0.0103,
+        "O_Created": 0.0668,
         "O_Refused": null,
-        "O_Returned": 0.2544,
-        "O_Sent (mail and online)": 0.2621,
+        "O_Returned": 0.2615,
+        "O_Sent (mail and online)": 0.2544,
         "O_Sent (online only)": null,
         "W_Assess potential fraud": null,
         "W_Call after offers": null,
         "W_Call incomplete files": 0.0124,
-        "W_Complete application": 0.0049,
+        "W_Complete application": 0.0043,
         "W_Handle leads": 0.0,
         "W_Personal Loan collection": null,
         "W_Shortened completion ": null,
         "W_Validate application": 0.0866
       },
-      "mean_tvd": 0.1355,
-      "activities_missing_in_run": [
-        "A_Cancelled",
-        "A_Denied",
-        "A_Pending",
-        "O_Cancelled",
-        "O_Refused",
+      "mean_tvd": 0.1063,
+      "activities_absent_in_run": [
         "O_Sent (online only)",
         "W_Assess potential fraud",
         "W_Call after offers",
         "W_Personal Loan collection",
         "W_Shortened completion "
+      ],
+      "activities_always_terminal_in_run": [
+        "A_Pending",
+        "O_Cancelled",
+        "O_Refused"
       ]
     },
     "processing_times": {
       "per_activity": {
         "W_Complete application": {
-          "sim_mean_s": 203.8,
+          "sim_mean_s": 199.2,
           "ref_mean_s": 372.92,
-          "sim_std_s": 310.8,
+          "sim_std_s": 328.1,
           "ref_std_s": 954.14,
-          "rel_err_mean": 0.4535
+          "rel_err_mean": 0.4658
         },
         "W_Call after offers": null,
         "W_Validate application": {
-          "sim_mean_s": 184.1,
+          "sim_mean_s": 201.2,
           "ref_mean_s": 449.33,
-          "sim_std_s": 307.3,
+          "sim_std_s": 338.2,
           "ref_std_s": 1678.54,
-          "rel_err_mean": 0.5902
+          "rel_err_mean": 0.5523
         },
         "W_Call incomplete files": {
-          "sim_mean_s": 209.9,
+          "sim_mean_s": 200.7,
           "ref_mean_s": 226.67,
-          "sim_std_s": 322.3,
+          "sim_std_s": 310.1,
           "ref_std_s": 1240.59,
-          "rel_err_mean": 0.074
+          "rel_err_mean": 0.1145
         },
         "W_Handle leads": {
-          "sim_mean_s": 116.8,
+          "sim_mean_s": 105.6,
           "ref_mean_s": 180.27,
-          "sim_std_s": 202.4,
+          "sim_std_s": 116.8,
           "ref_std_s": 1490.14,
-          "rel_err_mean": 0.3522
+          "rel_err_mean": 0.4141
         },
         "W_Assess potential fraud": null,
         "W_Shortened completion ": null,
         "W_Personal Loan collection": null
       },
-      "mean_rel_err": 0.3675,
+      "mean_rel_err": 0.3867,
       "target": "active_session_seconds"
     },
     "arrival_rate": {
-      "sim_mean_interarrival_s": 1118.02,
+      "sim_mean_interarrival_s": 1185.46,
       "ref_mean_interarrival_s": 1002.23,
-      "rel_err": 0.1155,
-      "sim_daily_arrivals_mean": 76.46,
+      "rel_err": 0.1828,
+      "sim_daily_arrivals_mean": 71.91,
       "ref_daily_arrivals_mean": 86.09,
-      "daily_arrivals_rel_err": 0.1118
+      "daily_arrivals_rel_err": 0.1647
     },
     "arrival_profile": {
-      "hour_of_day_mae": 0.0297,
-      "day_of_week_mae": 0.0427
+      "hour_of_day_mae": 0.0136,
+      "day_of_week_mae": 0.0079
     },
     "variants": {
-      "ref_top20_variants_reproduced": 10,
-      "ref_top20_traffic_coverage_pct": 16.41
+      "ref_top20_variants_reproduced": 17,
+      "ref_top20_traffic_coverage_pct": 39.0,
+      "ref_top20_variants_reproduced_ignoring_absent_activities": 17,
+      "ref_top20_traffic_coverage_pct_ignoring_absent_activities": 39.0,
+      "activities_ignored_for_variant_match": []
     },
     "case_stats": {
-      "sim_case_length_mean": 26.21,
+      "sim_case_length_mean": 15.25,
       "ref_case_length_mean": 15.09,
-      "case_length_rel_err": 0.7368,
-      "sim_case_duration_mean_s": 188984.0,
+      "case_length_rel_err": 0.0107,
+      "sim_case_duration_mean_s": 122489.9,
       "ref_case_duration_mean_s": 1887879.72,
-      "case_duration_rel_err": 0.8999
+      "case_duration_rel_err": 0.9351
     },
     "lifecycle": {
       "suspend_counts": {
         "per_activity": {
           "W_Handle leads": {
-            "sim_mean": 0.0204,
+            "sim_mean": 0.0317,
             "ref_mean": 0.0684,
-            "abs_error": 0.048,
-            "n_work_items": 98
+            "abs_error": 0.0367,
+            "n_work_items": 284
           },
           "W_Complete application": {
-            "sim_mean": 0.3457,
+            "sim_mean": 0.349,
             "ref_mean": 1.0534,
-            "abs_error": 0.7077,
-            "n_work_items": 622
+            "abs_error": 0.7044,
+            "n_work_items": 1427
           },
           "W_Call after offers": null,
           "W_Validate application": {
-            "sim_mean": 1.3593,
+            "sim_mean": 1.3584,
             "ref_mean": 1.4633,
-            "abs_error": 0.104,
-            "n_work_items": 2989
+            "abs_error": 0.1049,
+            "n_work_items": 2709
           },
           "W_Call incomplete files": {
-            "sim_mean": 2.6,
+            "sim_mean": 2.6458,
             "ref_mean": 2.5747,
-            "abs_error": 0.0253,
-            "n_work_items": 70
+            "abs_error": 0.0711,
+            "n_work_items": 144
           },
           "W_Assess potential fraud": null
         },
-        "mean_abs_error": 0.2213
+        "mean_abs_error": 0.2293
       }
     }
   },
   "lifecycle": {
     "transition_counts": {
-      "suspend": 4462,
-      "schedule": 3779,
-      "start": 3769,
-      "resume": 2403,
-      "ate_abort": 2059,
-      "complete": 1710,
-      "withdraw": 10
+      "suspend": 4568,
+      "schedule": 4564,
+      "start": 4471,
+      "ate_abort": 2287,
+      "resume": 2281,
+      "complete": 2184,
+      "withdraw": 93
     },
     "terminal_recomposition": {
       "ate_abort": {
-        "work_items": 2059,
+        "work_items": 2287,
         "elapsed_seconds": {
-          "n": 2059,
-          "mean": 41438.84865026615,
-          "median": 222.067708,
-          "p90": 103143.93494
+          "n": 2287,
+          "mean": 48160.72076437123,
+          "median": 230.909753,
+          "p90": 157129.1710754001
         },
         "active_seconds": {
-          "n": 2059,
-          "mean": 322.7939490747936,
-          "median": 136.630485,
-          "p90": 901.1437684000001
+          "n": 2287,
+          "mean": 353.70034800174903,
+          "median": 129.974288,
+          "p90": 1015.8595264
         },
         "non_active_seconds": {
-          "n": 2059,
-          "mean": 41116.05470119135,
+          "n": 2287,
+          "mean": 47807.02041636947,
           "median": 0.0,
-          "p90": 102708.25656000002
+          "p90": 156357.37043220014
         },
         "suspends": {
-          "n": 2059,
-          "mean": 1.7105390966488587,
+          "n": 2287,
+          "mean": 1.6720594665500657,
           "median": 1.0,
           "p90": 3.0
         }
       },
       "complete": {
-        "work_items": 1710,
+        "work_items": 2184,
         "elapsed_seconds": {
-          "n": 1710,
-          "mean": 32246.179440370175,
-          "median": 155.8803355,
-          "p90": 82624.51112100008
+          "n": 2184,
+          "mean": 22706.94913650595,
+          "median": 115.4176205,
+          "p90": 59522.913902600034
         },
         "active_seconds": {
-          "n": 1710,
-          "mean": 287.0929871807018,
-          "median": 120.358154,
-          "p90": 855.3524839000012
+          "n": 2184,
+          "mean": 243.75766271199632,
+          "median": 95.08876000000001,
+          "p90": 790.4025403
         },
         "non_active_seconds": {
-          "n": 1710,
-          "mean": 31959.08645318947,
+          "n": 2184,
+          "mean": 22463.191473793955,
           "median": 0.0,
-          "p90": 82445.97894260004
+          "p90": 58675.113709300014
         },
         "suspends": {
-          "n": 1710,
-          "mean": 0.5497076023391813,
+          "n": 2184,
+          "mean": 0.34065934065934067,
           "median": 0.0,
-          "p90": 2.0
+          "p90": 1.0
         }
       },
       "withdraw": {
-        "work_items": 10,
+        "work_items": 93,
         "elapsed_seconds": {
-          "n": 10,
-          "mean": 1036.6658372,
-          "median": 123.49514049999999,
-          "p90": 4069.2966638
+          "n": 93,
+          "mean": 2561.9298440967746,
+          "median": 63.256028,
+          "p90": 182.23344879999996
         },
         "active_seconds": {
-          "n": 10,
+          "n": 93,
           "mean": 0.0,
           "median": 0.0,
           "p90": 0.0
         },
         "non_active_seconds": {
-          "n": 10,
-          "mean": 1036.6658372,
-          "median": 123.49514049999999,
-          "p90": 4069.2966638
+          "n": 93,
+          "mean": 2561.9298440967746,
+          "median": 63.256028,
+          "p90": 182.23344879999996
         },
         "suspends": {
-          "n": 10,
+          "n": 93,
           "mean": 0.0,
           "median": 0.0,
           "p90": 0.0
@@ -243,107 +289,107 @@
     "by_activity_and_terminal": {
       "W_Call incomplete files": {
         "ate_abort": {
-          "work_items": 62,
+          "work_items": 128,
           "elapsed_seconds": {
-            "n": 62,
-            "mean": 141929.3620475484,
-            "median": 973.7438950000001,
-            "p90": 323186.93534229987
+            "n": 128,
+            "mean": 121754.93481856251,
+            "median": 6681.441577,
+            "p90": 426235.6389571
           },
           "active_seconds": {
-            "n": 62,
-            "mean": 607.944266064516,
-            "median": 204.21189800000002,
-            "p90": 2128.8512659
+            "n": 128,
+            "mean": 554.87391403125,
+            "median": 352.747927,
+            "p90": 1288.4106677
           },
           "suspends": {
-            "n": 62,
-            "mean": 2.8225806451612905,
+            "n": 128,
+            "mean": 2.8046875,
             "median": 2.0,
-            "p90": 5.0
+            "p90": 6.0
           }
         },
         "complete": {
-          "work_items": 8,
+          "work_items": 16,
           "elapsed_seconds": {
-            "n": 8,
-            "mean": 7535.971455375001,
-            "median": 163.7981755,
-            "p90": 21562.093232999992
+            "n": 16,
+            "mean": 137188.72433081252,
+            "median": 868.0077670000001,
+            "p90": 252433.99018800003
           },
           "active_seconds": {
-            "n": 8,
-            "mean": 323.07530337500003,
-            "median": 109.6857435,
-            "p90": 787.4023551999999
+            "n": 16,
+            "mean": 628.9085151874999,
+            "median": 488.88279050000006,
+            "p90": 1628.3452255
           },
           "suspends": {
-            "n": 8,
-            "mean": 0.875,
-            "median": 0.0,
-            "p90": 3.0
+            "n": 16,
+            "mean": 1.375,
+            "median": 1.0,
+            "p90": 4.0
           }
         }
       },
       "W_Complete application": {
         "ate_abort": {
-          "work_items": 215,
+          "work_items": 498,
           "elapsed_seconds": {
-            "n": 215,
-            "mean": 188.20827747906978,
-            "median": 72.87479,
-            "p90": 747.1292121999994
+            "n": 498,
+            "mean": 204.93729400803213,
+            "median": 78.490409,
+            "p90": 752.6393606000001
           },
           "active_seconds": {
-            "n": 215,
-            "mean": 188.20827747906978,
-            "median": 72.87479,
-            "p90": 747.1292121999994
+            "n": 498,
+            "mean": 204.93729400803213,
+            "median": 78.490409,
+            "p90": 752.6393606000001
           },
           "suspends": {
-            "n": 215,
+            "n": 498,
             "mean": 1.0,
             "median": 1.0,
             "p90": 1.0
           }
         },
         "complete": {
-          "work_items": 401,
+          "work_items": 910,
           "elapsed_seconds": {
-            "n": 401,
-            "mean": 212.1391488603491,
-            "median": 81.228423,
-            "p90": 825.444318
+            "n": 910,
+            "mean": 196.08440753846153,
+            "median": 78.7283295,
+            "p90": 744.3933545000002
           },
           "active_seconds": {
-            "n": 401,
-            "mean": 212.1391488603491,
-            "median": 81.228423,
-            "p90": 825.444318
+            "n": 910,
+            "mean": 196.08440753846153,
+            "median": 78.7283295,
+            "p90": 744.3933545000002
           },
           "suspends": {
-            "n": 401,
+            "n": 910,
             "mean": 0.0,
             "median": 0.0,
             "p90": 0.0
           }
         },
         "withdraw": {
-          "work_items": 6,
+          "work_items": 19,
           "elapsed_seconds": {
-            "n": 6,
-            "mean": 1685.6047493333333,
-            "median": 470.190327,
-            "p90": 4477.632395
+            "n": 19,
+            "mean": 12296.090401631578,
+            "median": 172.144412,
+            "p90": 34244.611769799994
           },
           "active_seconds": {
-            "n": 6,
+            "n": 19,
             "mean": 0.0,
             "median": 0.0,
             "p90": 0.0
           },
           "suspends": {
-            "n": 6,
+            "n": 19,
             "mean": 0.0,
             "median": 0.0,
             "p90": 0.0
@@ -352,63 +398,63 @@
       },
       "W_Handle leads": {
         "ate_abort": {
-          "work_items": 2,
+          "work_items": 9,
           "elapsed_seconds": {
-            "n": 2,
-            "mean": 195.02313750000002,
-            "median": 195.02313750000002,
-            "p90": 337.6821099
+            "n": 9,
+            "mean": 109.62316144444445,
+            "median": 62.942421,
+            "p90": 197.55190280000005
           },
           "active_seconds": {
-            "n": 2,
-            "mean": 195.02313750000002,
-            "median": 195.02313750000002,
-            "p90": 337.6821099
+            "n": 9,
+            "mean": 109.62316144444445,
+            "median": 62.942421,
+            "p90": 197.55190280000005
           },
           "suspends": {
-            "n": 2,
+            "n": 9,
             "mean": 1.0,
             "median": 1.0,
             "p90": 1.0
           }
         },
         "complete": {
-          "work_items": 92,
+          "work_items": 201,
           "elapsed_seconds": {
-            "n": 92,
-            "mean": 115.07292304347823,
-            "median": 65.2725535,
-            "p90": 221.2338421
+            "n": 201,
+            "mean": 105.44649242288557,
+            "median": 72.749894,
+            "p90": 243.809529
           },
           "active_seconds": {
-            "n": 92,
-            "mean": 115.07292304347823,
-            "median": 65.2725535,
-            "p90": 221.2338421
+            "n": 201,
+            "mean": 105.44649242288557,
+            "median": 72.749894,
+            "p90": 243.809529
           },
           "suspends": {
-            "n": 92,
+            "n": 201,
             "mean": 0.0,
             "median": 0.0,
             "p90": 0.0
           }
         },
         "withdraw": {
-          "work_items": 4,
+          "work_items": 74,
           "elapsed_seconds": {
-            "n": 4,
-            "mean": 63.257469,
-            "median": 62.9184565,
-            "p90": 69.41680079999999
+            "n": 74,
+            "mean": 62.61834959459459,
+            "median": 59.396895,
+            "p90": 96.98218030000002
           },
           "active_seconds": {
-            "n": 4,
+            "n": 74,
             "mean": 0.0,
             "median": 0.0,
             "p90": 0.0
           },
           "suspends": {
-            "n": 4,
+            "n": 74,
             "mean": 0.0,
             "median": 0.0,
             "p90": 0.0
@@ -417,43 +463,43 @@
       },
       "W_Validate application": {
         "ate_abort": {
-          "work_items": 1780,
+          "work_items": 1652,
           "elapsed_seconds": {
-            "n": 1780,
-            "mean": 42967.47983034662,
-            "median": 282.902011,
-            "p90": 128392.6884678001
+            "n": 1652,
+            "mean": 57176.68967946246,
+            "median": 584.518009,
+            "p90": 181221.2869233
           },
           "active_seconds": {
-            "n": 1780,
-            "mean": 329.2614442224719,
-            "median": 146.545424,
-            "p90": 888.0780417000019
+            "n": 1652,
+            "mean": 384.2878050938257,
+            "median": 147.24674,
+            "p90": 1109.5991482000002
           },
           "suspends": {
-            "n": 1780,
-            "mean": 1.7584269662921348,
+            "n": 1652,
+            "mean": 1.7905569007263922,
             "median": 1.0,
             "p90": 3.0
           }
         },
         "complete": {
-          "work_items": 1209,
+          "work_items": 1057,
           "elapsed_seconds": {
-            "n": 1209,
-            "mean": 45479.75563587841,
-            "median": 320.112718,
-            "p90": 136290.43566440005
+            "n": 1057,
+            "mean": 44652.153045410596,
+            "median": 250.892914,
+            "p90": 157525.34499519996
           },
           "active_seconds": {
-            "n": 1209,
-            "mean": 324.80554014805625,
-            "median": 141.14376099999998,
-            "p90": 884.5484378000004
+            "n": 1057,
+            "mean": 305.2721317719962,
+            "median": 120.295039,
+            "p90": 917.2798464
           },
           "suspends": {
-            "n": 1209,
-            "mean": 0.771712158808933,
+            "n": 1057,
+            "mean": 0.6830652790917692,
             "median": 0.0,
             "p90": 2.0
           }
@@ -461,19 +507,19 @@
       }
     },
     "resume_ownership": {
-      "same_resource": 267,
-      "total_resumes": 2403,
-      "same_resource_rate": 0.1111111111111111,
+      "same_resource": 399,
+      "total_resumes": 2281,
+      "same_resource_rate": 0.17492327926348092,
       "by_activity": {
         "W_Call incomplete files": {
-          "same_resource": 3,
-          "total_resumes": 120,
-          "same_resource_rate": 0.025
+          "same_resource": 21,
+          "total_resumes": 253,
+          "same_resource_rate": 0.08300395256916997
         },
         "W_Validate application": {
-          "same_resource": 264,
-          "total_resumes": 2283,
-          "same_resource_rate": 0.11563731931668857
+          "same_resource": 378,
+          "total_resumes": 2028,
+          "same_resource_rate": 0.1863905325443787
         }
       }
     }
