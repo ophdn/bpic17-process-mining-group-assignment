@@ -66,6 +66,168 @@ einer JSON-Datei in `output/` reproduzierbar (Datei-Index unten).
 
 ---
 
+## Update 18.07. (Nachtrag) — Replay-Fix & Netz-Abschluss
+
+Zwei Änderungen nach dem Abend-Update. Die Tabelle in diesem Abschnitt ist
+**die aktuelle** — sie ersetzt die Tabelle im Abend-Update oben.
+
+### N1 — Selektionsbias im DP-Mining behoben (Repair-Replay)
+
+`mine_dp_probs.py` brach die Replay eines Cases beim **ersten** Schritt ab,
+den das Netz nicht erlaubte (`act not in frontier` → `break`). Die Folge war
+subtiler als "nur 57,7 % der Daten":
+
+- Entscheidungen **vor** dem Abbruch wurden für *jeden* Case gezählt — frühe
+  Decision Points hatten also nahezu die volle Population.
+- Alles **danach** ging verloren. Je tiefer ein Decision Point bzw. je höher
+  der Besuchs-Bucket, desto stärker war die Stichprobe auf "modellkonforme"
+  Cases verengt.
+- Am härtesten traf es `__END__`: Die Terminierung wurde nur für Cases
+  gezählt, deren **ganze** Trace exakt passte (`if fits:`). Ein Case, der
+  drei Decision Points sauber durchlief und erst danach abwich, lieferte
+  **kein** Ende-Signal.
+
+**Fix:** Bei einer Abweichung wird nicht mehr abgebrochen, sondern die
+passende Transition wird zwangsweise gefeuert, indem fehlende Tokens in
+unterversorgte Input-Stellen eingefügt werden (Missing-Token-Konvention des
+Token-Based Replay). Der abweichende Schritt selbst wird **nie** als
+Decision-Point-Wahl gezählt (er war dort nie legal) — aber alle
+Entscheidungen davor *und danach* fließen ein.
+
+> **Terminologie für den Report:** Das ist **Token-Replay-Repair**, *nicht*
+> Alignment-based Replay. Repariert wird lokal und greedy an der
+> Abweichungsstelle, ohne Lookahead/Backtracking; ein echtes Alignment
+> (pm4py `alignments`, A*-Suche) würde global die kostenminimale Kombination
+> aus Synchron-/Log-/Model-Moves suchen und könnte auch frühere Schritte
+> anders auflösen. Bitte nicht als "alignment-based" bezeichnen.
+
+**Wirkung auf die geminete Tabelle** (volles Log, 31 509 Cases):
+
+| | vorher | nachher |
+|---|---:|---:|
+| Decision Points mit ≥30 Samples | 21 | **220** |
+| Cases, die über ihre erste Abweichung hinaus beitragen | 0 | **13 313 (42,3 %)** |
+| Perfect-Fit-Rate (unverändert, nur jetzt separat ausgewiesen) | 57,7 % | 57,7 % |
+
+P(`__END__`) am strukturell fast geschlossenen Decision Point
+`A_Incomplete | A_Validating | W_Validate application`:
+
+| Bucket | vorher | nachher |
+|---|---:|---:|
+| 1 | 3,87 % | 4,63 % |
+| 2 | 0,02 % | 2,61 % |
+| 3 | **0 %** (keine Beobachtung) | **17,09 %** |
+| 4 | 0,22 % | 11,06 % |
+| 5+ | **0 %** (keine Beobachtung) | **11,64 %** |
+| gepoolt (`all`) | 1,73 % | 7,85 % |
+
+Die Nullen waren **fehlende Daten, keine Evidenz für Unmöglichkeit** — genau
+der Fall, über den `docs/ROADMAP.md` (A1-Update Teil 8) beim Verwerfen der
+END-Shrinkage nachgedacht hat. Das Argument dort bleibt gültig (der Punkt
+hatte ~1887 Beobachtungen), aber die *Buckets 3 und 5+* waren sehr wohl
+datenarm, weil ihre Cases vorher weggeworfen wurden.
+
+**Nebenbefund — echte Modell-Lücke, jetzt sichtbar:** 2 730 Events
+referenzieren 4 Aktivitäten, für die das Signavio-BPMN **gar keine**
+Transition hat: `O_Sent (online only)`, `W_Assess potential fraud`,
+`W_Call after offers`, `W_Shortened completion`. Diese werden übersprungen,
+**ohne** die Markierung zu bewegen (ein *Log-Move* im Alignment-Sinn) und als
+`n_unrepairable_events` separat gezählt. Vorher war das von einer normalen
+Branching-Abweichung nicht unterscheidbar. Gehört als Limitation zu D2.
+
+### N2 — Cases schließen das Petrinetz jetzt formal ab
+
+Die Laufstatistik meldete `final_marking: 0` — **kein einziger** simulierter
+Case endete im Endmarking des Netzes. Ursache war nicht die
+Kontrollfluss-Erzwingung, sondern deren letzter Schritt: Wenn ein Case
+beschloss zu enden (gemineter `__END__`-Entscheid oder Terminal-Outcome-
+Regel), endete er sofort — **ohne die stillen Transitionen zu feuern, die das
+Netz zum Abschluss anbietet**. `_final_reachable_by_tau` hatte bereits
+festgestellt, dass das Endmarking von dort erreichbar ist; nur gefeuert hat
+den Pfad niemand. Die Cases endeten einen Tau-Schritt vor dem Sink.
+
+**Fix:** Beim Beenden wird die Markierung über die netzeigene
+Abschlussstruktur ins Endmarking geführt (`_complete_via_tau`, BFS nur über
+unsichtbare Transitionen). Das ist die Abschluss-Hälfte derselben
+Petrinetz-Algebra, die überall sonst den Kontrollfluss erzwingt: keine
+sichtbare Transition feuert, nichts erreicht das Log.
+
+**Ergebnis: 1 777 von 2 453 abgeschlossenen Cases (72,4 %) schließen das Netz
+jetzt formal ab — bei bit-identischen KPIs** (Fitness, Precision, TVD,
+Completion, Case-Länge alle unverändert). Genau das ist zu erwarten: Der Case
+endet an derselben Stelle, das Netz wird nur sauber geschlossen statt
+abgebrochen.
+
+Der Netz-Abschluss wird als **eigener Zähler** (`closed_at_final_marking`)
+geführt, nicht in `end_reasons` gefaltet: *Warum* ein Case endete (Auslöser)
+und *ob das Netz geschlossen wurde* (Zustand) sind zwei verschiedene Fragen.
+Eine erste Fassung überschrieb den End-Grund und ließ dabei 1 601
+`terminal_outcome`-Fälle aus der Statistik verschwinden — der bestehende Test
+`test_terminal_outcome_fires_forced_followup_before_ending` hat das gefangen.
+
+**Warum nicht 100 %?** Nicht wegen des Simulators: Replay der *echten* Traces
+zeigt, dass **0 % der realen BPIC-17-Cases** exakt im Endmarking dieses Netzes
+enden, und **46,5 % an einer Stelle stoppen, von der aus es überhaupt nicht
+erreichbar ist** (sichtbare Transitionen bleiben aktiviert). Das ist eine
+Eigenschaft des Signavio-Modells, nicht der Erzwingung.
+
+> **Für die Verteidigung von 1.4 (Anforderung "Petri net algebra is used to
+> enforce the control-flow"):** Alle drei geforderten Teile sind im Code
+> belegbar — `.bpmn` laden (`pm4py.read_bpmn`), ins Petrinetz konvertieren
+> (`pm4py.convert_to_petri_net`), Kontrollfluss per Netz-Algebra erzwingen
+> (`semantics.enabled_transitions`/`execute` + Tau-Closure; die Menge legaler
+> Folgeaktivitäten ist ausschließlich das in der Markierung Aktivierte, das
+> Branching-Modell wählt nur darunter). "Enforce the control-flow" verlangt
+> **nicht**, dass jeder Case im Sink landet — und das reale Log tut es bei
+> diesem Netz zu 0 %. Mit N2 lässt sich zusätzlich sagen: 72,4 % der Cases
+> schließen das Netz auch formal ab.
+
+### Aktuelle KPI-Tabelle (60 Tage, Seed 42, orgmodel, legacy lifecycle)
+
+| KPI | Basic | Adv. `probs` | Adv. `visit` | Adv. `rules` | Real Log |
+|---|---:|---:|---:|---:|---:|
+| Fully-fitting traces | 0,00 % | 95,47 % | 95,47 % | **99,55 %** | 68,84 % |
+| Ø Trace-Fitness | 0,240 | 0,997 | 0,997 | 1,000 | 0,976 |
+| Precision | 0,678 | **0,748** | **0,748** | 0,536 | 0,520 |
+| Branching TVD | 0,422 | **0,091** | **0,091** | 0,125 | 0,006 |
+| Top-20-Varianten | 0/20 | 17/20 | 17/20 | 17/20 | 20/20 |
+| Ø Case-Länge (real 15,1) | 16,11 | 12,77 | 12,77 | 13,54 | 15,08 |
+| Case-Länge rel. Fehler | 0,068 | 0,154 | 0,154 | **0,103** | ~0 |
+| Case-Dauer rel. Fehler | 0,985 | **0,693** | **0,693** | 0,736 | ~0 |
+| Completion-Rate | 0,990 | 0,507 | 0,507 | **0,545** | 0,633 |
+| **Netz formal abgeschlossen** | — | **1777 (72,4 %)** | **1777 (72,4 %)** | **1883 (71,3 %)** | — |
+
+Veränderung ggü. der Abend-Tabelle (Advanced): Fully-fitting 93,81 → 95,47 %,
+Precision 0,721 → 0,748, TVD 0,107 → 0,091, Case-Dauer-Fehler 0,714 → 0,693.
+Schlechter: Case-Länge 0,118 → 0,154. Completion praktisch unverändert
+(0,507 → 0,5066).
+
+### N3 — Wichtig: `probs` und `visit` sind nicht mehr unterscheidbar
+
+In der Tabelle oben sind die Spalten `probs` und `visit` **identisch** — das
+ist kein Copy-Paste-Fehler, sondern eine direkte Folge von N1, und es muss im
+Report benannt werden.
+
+Die geminete DP-Tabelle wird **in jedem Modus** geladen (bewusst: der
+`__END__`-Entscheid gehört zur Netz-Terminierung, nicht zu einer
+Branching-Heuristik), und in `_weighted_choice` hat sie **Vorrang** vor der
+aktivitätskonditionierten Tabelle. Letztere ist der *einzige* Unterschied
+zwischen `probs` und `visit`. Solange die DP-Tabelle nur 21 Decision Points
+abdeckte, fiel die Simulation oft auf den modusspezifischen Pfad zurück und
+die Modi divergierten (alte Ablation: TVD 0,24 vs. 0,11). Mit 220 abgedeckten
+Decision Points greift die DP-Tabelle praktisch immer — die Modi laufen auf
+dieselbe Trajektorie.
+
+**Konsequenz für den Report:** Die Ablation "probs vs. visit" diskriminiert
+nicht mehr und sollte nicht mehr als Vergleich präsentiert werden. Die
+Besuchskonditionierung ist deshalb *nicht* verschwunden — sie steckt jetzt in
+der DP-Tabelle selbst (Buckets 1…4, 5+ pro Decision Point), also auf der
+feineren, decision-point-genauen Ebene statt auf Aktivitätsebene. Die
+inhaltliche Aussage von D3 (Replay-Mining schlägt Bigramme) bleibt gültig;
+die Aussage "visit schlägt probs" ist gegenstandslos geworden.
+
+---
+
 ## 1. Was gebaut wurde
 
 | Baustein | Datei | Assignment-Level |
@@ -228,8 +390,22 @@ END-Entscheidung und Terminal-Regel.
 
 - Case-Dauer/Completion abhängig von 1.3 (Warte-/Servicezeiten) und 1.6
   (Verfügbarkeiten) — außerhalb 1.4/1.5.
-- DP-Tabellen aus den 57,7 % exakt passenden Cases gemined (Selektionsbias
-  möglich).
+- ~~DP-Tabellen aus den 57,7 % exakt passenden Cases gemined (Selektionsbias
+  möglich).~~ **Behoben am 18.07., s. N1 oben:** Repair-Replay lässt jetzt
+  100 % der Cases beitragen (13 313 davon über ihre erste Abweichung hinaus).
+  Restliche Limitation: Der abweichende Schritt selbst wird nicht gezählt,
+  und 2 730 Events betreffen 4 Aktivitäten ohne Transition im BPMN (Log-Moves,
+  s. N1) — die DP-Tabelle sagt also nichts über deren Kontext aus.
+- **`train_decision_rules.py` hat denselben Bias ungefixt:** dessen
+  `replay_log()` bricht weiterhin beim ersten abweichenden Schritt ab
+  (`fits = False; break`), d. h. die Trainingsdaten der D5-Decision-Trees
+  (`rules`-Modus) stammen weiterhin nur aus den exakt passenden Cases. Wer
+  die `rules`-Zahlen verteidigt, muss das nennen — oder den Fix aus N1 dorthin
+  übertragen (gleiche Struktur, ~30 Zeilen).
+- Der `rules`-Modus erreicht die beste Case-Länge (0,103) und Completion
+  (0,545), aber die mit Abstand schlechteste Precision (0,536 vs. 0,748) —
+  bei gleicher Variantenabdeckung. Für den Default spricht das weiterhin
+  gegen `rules`.
 - **Korrektur 18.07.:** die vorherige Zeile hier war überholt/falsch.
   1.5 Advanced II (History-konditioniertes Prediction-Model pro Decision
   Point, Trainingsdaten per Log-Replay auf dem Prozessmodell identifiziert
@@ -254,7 +430,8 @@ END-Entscheidung und Terminal-Regel.
 | `output/validation/process_model_comparison/ablation/` | 18.07.: BPMN-Gateway/Terminal-Outcomes/Branching-Mode isoliert (A1-Update Teil 1-3) |
 | `output/validation/horizon_censoring/drain.json` | Zensierungsnachweis — **Achtung:** unter altem 30-Tage-Setup gemessen, s. Update-Hinweis oben |
 | `output/models/decision_rules_metrics.json` | D5 (16 DP-Modelle, temporaler Split) |
-| `simulation/models/dp_branching_probs.json` | gemint: P(Label bzw. END | DP, Besuch); Shrinkage geprüft & verworfen, s. Update oben |
+| `simulation/models/dp_branching_probs.json` | gemint: P(Label bzw. END \| DP, Besuch); **220 statt 21 Decision Points seit dem Repair-Replay (N1)**; Diagnosefelder `replay_perfect_fit_pct`, `n_cases_repaired`, `n_repair_events`, `n_unrepairable_events`; Shrinkage geprüft & verworfen, s. Update oben |
+| `output/validation/branching_probs_vs_rules/advanced_{probs,rules}.json` | aktuelle Modusvergleiche (18.07. Nachtrag). **Achtung:** `advanced_{probs_terminal,visit_bigram,visit}.json` im selben Ordner stammen aus dem alten 30-Tage-Setup und sind überholt |
 | `simulation_inputs.json` → `branching_probs_by_visit` | Besuchs-Buckets 1/2/3+ |
 | `docs/ROADMAP.md`, "A1-Update (18.07., Teil 1-8)" | volle Herleitung aller Änderungen seit dieser Notiz |
 | Repro-Kommandos | `scripts/compare_process_models.py --configs advanced --branching-mode {probs,visit,rules} --permissions orgmodel`; `scripts/mine_dp_probs.py --log data/BPIChallenge2017.xes.gz`; `scripts/eval_real_log.py`; `scripts/discover_process_model.py --log …` |

@@ -241,6 +241,7 @@ class PetriNetProcessComponent(ProcessComponent):
             "allow_end_opportunities": 0,
             "allow_end_without_dp": 0,
             "end_label_choices": 0,
+            "closed_at_final_marking": 0,
             "end_reasons": {
                 "final_marking": 0,
                 "end_label": 0,
@@ -334,6 +335,12 @@ class PetriNetProcessComponent(ProcessComponent):
                     case_id=case_id,
                     activity=followup,
                 ))
+            # The domain rule decided the case is over; if the net is in a
+            # state it can legally close from, close it through the net
+            # instead of just abandoning the marking (see _complete_via_tau).
+            # The reason stays "terminal_outcome" — that is what *triggered*
+            # the end; whether the net also closed is counted separately.
+            self._complete_via_tau(case_id)
             self._end_case(engine, case_id, reason="terminal_outcome")
             return
         if self._should_terminate(case_id, activity, counts):
@@ -451,6 +458,12 @@ class PetriNetProcessComponent(ProcessComponent):
     def _end_case(self, engine, case_id: str, reason: str) -> None:
         reasons = self._debug["end_reasons"]
         reasons[reason] = reasons.get(reason, 0) + 1
+        # Orthogonal to *why* the case ended: did it also leave the net in its
+        # final marking? A case can end for a domain reason (terminal_outcome)
+        # and still have closed the net properly, so these are two questions,
+        # not one — collapsing them into the reason would hide the trigger.
+        if self._markings.get(case_id) == self.fm:
+            self._debug["closed_at_final_marking"] += 1
         self._markings.pop(case_id, None)
         self._dp_visit_counts.pop(case_id, None)
         self._case_attrs.pop(case_id, None)
@@ -469,6 +482,7 @@ class PetriNetProcessComponent(ProcessComponent):
             "allow_end_without_dp": self._debug["allow_end_without_dp"],
             "end_label_choices": self._debug["end_label_choices"],
             "end_reasons": dict(self._debug["end_reasons"]),
+            "closed_at_final_marking": self._debug["closed_at_final_marking"],
         }
 
     def _payload(self, case_id: str) -> dict:
@@ -565,11 +579,79 @@ class PetriNetProcessComponent(ProcessComponent):
         chosen = self._weighted_choice(case_id, current_activity, labels,
                                        allow_end=allow_end)
         if chosen == END_LABEL:
+            # The mined data says real cases stop here and the net agrees it
+            # may: close it properly through the net's own tau structure so
+            # the case completes AT the final marking, rather than ending one
+            # silent step short of it. The reason stays "end_label" — that is
+            # what triggered the end; landing on the final marking is counted
+            # separately by _end_case.
+            self._complete_via_tau(case_id)
             self._advance_reasons[case_id] = "end_label"
-            return None  # caller ends the case (final marking is tau-reachable)
+            return None
         self._advance_reasons.pop(case_id, None)
         self._markings[case_id] = frontier[chosen]
         return chosen
+
+    def _complete_via_tau(self, case_id: str) -> bool:
+        """Drive the case's marking to the net's final marking by firing the
+        invisible transitions that lead there, and report whether it landed.
+
+        Deciding to stop is not the same as *completing* the net. At most
+        stopping points the final marking is reachable only through the
+        BPMN's closing gateway/join taus (this is what
+        _final_reachable_by_tau tests). Ending the case without firing them
+        leaves the token one silent step short of the sink, so
+        `marking == fm` never holds and the run reports zero net
+        completions even though the trace was legal all along and the net
+        was ready to close.
+
+        Firing the tau path is the completion half of the same Petri net
+        algebra used to enforce control flow everywhere else: no visible
+        activity fires, nothing reaches the log, the marking simply follows
+        the net's own closing structure to the sink. Returns False (leaving
+        the marking untouched) when the final marking is genuinely not
+        tau-reachable — those cases still end for their own reason, but
+        they end without claiming net completion.
+        """
+        marking = self._markings.get(case_id)
+        if marking is None:
+            return False
+        path = self._tau_path_to_final(marking)
+        if path is None:
+            return False
+        for t in path:
+            marking = semantics.execute(t, self.net, marking)
+        self._markings[case_id] = marking
+        return marking == self.fm
+
+    def _tau_path_to_final(self, marking: Marking) -> Optional[List]:
+        """Shortest sequence of invisible transitions from *marking* to the
+        final marking, or None if there is none. BFS so the case closes by
+        the most direct silent route the net offers rather than wandering
+        tau-loops; the reachable-marking set is small and finite (same
+        argument as _visible_frontier)."""
+        if marking == self.fm:
+            return []
+        start = tuple(sorted((p.name, c) for p, c in marking.items()))
+        seen = {start}
+        queue = [(marking, [])]
+        while queue:
+            m, path = queue.pop(0)
+            # Sorted for the same reason _visible_frontier sorts: transition
+            # iteration order is otherwise memory-layout dependent, and the
+            # chosen path must be reproducible under a fixed seed.
+            for t in sorted(semantics.enabled_transitions(self.net, m),
+                            key=lambda t: t.name):
+                if t.label is not None:
+                    continue
+                nm = semantics.execute(t, self.net, m)
+                if nm == self.fm:
+                    return path + [t]
+                key = tuple(sorted((p.name, c) for p, c in nm.items()))
+                if key not in seen:
+                    seen.add(key)
+                    queue.append((nm, path + [t]))
+        return None
 
     def _final_reachable_by_tau(self, marking: Marking) -> bool:
         """True if the net's final marking can be reached from *marking* by

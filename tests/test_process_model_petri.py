@@ -38,6 +38,7 @@ def _component_with_linear_net(enforce_terminal_outcomes: bool = False) -> Petri
         "allow_end_opportunities": 0,
         "allow_end_without_dp": 0,
         "end_label_choices": 0,
+        "closed_at_final_marking": 0,
         "end_reasons": {
             "final_marking": 0,
             "end_label": 0,
@@ -158,3 +159,44 @@ def test_case_completes_when_final_marking_is_reached():
     scheduled = [(event.event_type, event.activity) for event in engine._queue]
     assert (EventType.CASE_COMPLETE, None) in scheduled
     assert component.debug_stats()["end_reasons"]["final_marking"] == 1
+
+
+def _component_with_tau_closing_net() -> PetriNetProcessComponent:
+    """Linear net whose last step to the final marking is a *silent*
+    transition: p0 -A_Cancelled-> p1 -tau-> p2(fm).
+
+    This is the shape the real Signavio net has at most stopping points —
+    the visible work is done, and only the BPMN's closing gateway taus
+    stand between the case and the sink.
+    """
+    component = _component_with_linear_net(enforce_terminal_outcomes=True)
+    for t in component.net.transitions:
+        t.label = {"t_pending": "A_Cancelled", "t_validating": None}[t.name]
+    p0 = next(p for p in component.net.places if p.name == "p0")
+    component._markings["c1"] = Marking({p0: 1})
+    return component
+
+
+def test_ending_fires_the_tau_path_so_the_net_reaches_its_final_marking():
+    """Deciding to stop must also *close* the net: when the final marking is
+    reachable by silent transitions, ending a case fires them so the run can
+    report genuine Petri-net completion instead of stopping one tau short.
+
+    The end *reason* still records what triggered the end (the terminal
+    outcome rule here) — reaching the final marking is tracked separately,
+    because they answer different questions.
+    """
+    engine = SimulationEngine(sim_duration=10, start_datetime=datetime(2016, 1, 1))
+    component = _component_with_tau_closing_net()
+
+    component.on_activity_complete(
+        engine,
+        SimEvent(timestamp=0, event_type=EventType.ACTIVITY_COMPLETE,
+                 case_id="c1", activity="A_Cancelled"),
+    )
+
+    stats = component.debug_stats()
+    assert stats["closed_at_final_marking"] == 1
+    assert stats["end_reasons"]["terminal_outcome"] == 1
+    # The silent closing step must not surface as an activity in the log.
+    assert [row["concept:name"] for row in engine.logger._rows] == []

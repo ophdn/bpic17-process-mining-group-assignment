@@ -1,120 +1,165 @@
 {
-  "n_cases": 1688,
+  "n_cases": 2641,
   "branching": {
     "per_activity_tvd": {
-      "A_Accepted": 0.0003,
-      "A_Cancelled": null,
-      "A_Complete": 0.1183,
-      "A_Concept": 0.0013,
-      "A_Create Application": 0.0119,
-      "A_Denied": null,
-      "A_Incomplete": 0.6221,
+      "A_Accepted": 0.0001,
+      "A_Cancelled": 0.003,
+      "A_Complete": 0.2234,
+      "A_Concept": 0.0002,
+      "A_Create Application": 0.0012,
+      "A_Denied": 0.0022,
+      "A_Incomplete": 0.5435,
       "A_Pending": null,
-      "A_Submitted": 0.01,
-      "A_Validating": 0.4422,
-      "O_Accepted": 0.0123,
+      "A_Submitted": 0.024,
+      "A_Validating": 0.3339,
+      "O_Accepted": 0.0067,
       "O_Cancelled": null,
-      "O_Create Offer": 0.0096,
-      "O_Created": 0.0668,
+      "O_Create Offer": 0.0093,
+      "O_Created": 0.0231,
       "O_Refused": null,
-      "O_Returned": 0.311,
-      "O_Sent (mail and online)": 0.038,
+      "O_Returned": 0.1408,
+      "O_Sent (mail and online)": 0.0613,
       "O_Sent (online only)": null,
       "W_Assess potential fraud": null,
       "W_Call after offers": null,
-      "W_Call incomplete files": 0.4285,
-      "W_Complete application": 0.0005,
+      "W_Call incomplete files": 0.3889,
+      "W_Complete application": 0.0002,
       "W_Handle leads": 0.0,
       "W_Personal Loan collection": null,
       "W_Shortened completion ": null,
-      "W_Validate application": 0.3949
+      "W_Validate application": 0.4805
     },
-    "mean_tvd": 0.1542,
-    "activities_missing_in_run": [
-      "A_Cancelled",
-      "A_Denied",
+    "mean_tvd": 0.1246,
+    "activities_absent_in_run": [],
+    "activities_always_terminal_in_run": [
       "A_Pending",
       "O_Cancelled",
-      "O_Refused",
+      "O_Refused"
+    ],
+    "activities_not_in_bpmn": [
       "O_Sent (online only)",
       "W_Assess potential fraud",
       "W_Call after offers",
       "W_Personal Loan collection",
       "W_Shortened completion "
-    ]
+    ],
+    "excluded_target_mass": {
+      "A_Accepted": 0.0003,
+      "A_Cancelled": 0.0011,
+      "A_Complete": 0.0076,
+      "A_Concept": 0.0011,
+      "A_Denied": 0.0013,
+      "A_Incomplete": 0.0003,
+      "A_Submitted": 0.0009,
+      "A_Validating": 0.0008,
+      "O_Created": 0.0447,
+      "O_Returned": 0.0018,
+      "O_Sent (mail and online)": 0.0001,
+      "W_Call incomplete files": 0.0032,
+      "W_Complete application": 0.0004,
+      "W_Validate application": 0.0062
+    }
   },
   "processing_times": {
     "per_activity": {
       "W_Assess potential fraud": null,
       "W_Call after offers": null,
       "W_Call incomplete files": {
-        "sim_mean_s": 328476.9,
+        "sim_mean_s": 170347.8,
         "ref_mean_s": 626302.53,
-        "sim_std_s": 470916.2,
+        "sim_std_s": 318666.3,
         "ref_std_s": 1207241.74,
-        "rel_err_mean": 0.4755
+        "rel_err_mean": 0.728
       },
       "W_Complete application": {
-        "sim_mean_s": 16415.1,
+        "sim_mean_s": 16252.6,
         "ref_mean_s": 34554.48,
-        "sim_std_s": 60088.9,
+        "sim_std_s": 66547.7,
         "ref_std_s": 113121.32,
-        "rel_err_mean": 0.525
+        "rel_err_mean": 0.5297
       },
       "W_Handle leads": {
-        "sim_mean_s": 426.2,
+        "sim_mean_s": 391.2,
         "ref_mean_s": 1325.35,
-        "sim_std_s": 732.1,
+        "sim_std_s": 1048.1,
         "ref_std_s": 7933.1,
-        "rel_err_mean": 0.6784
+        "rel_err_mean": 0.7048
       },
       "W_Validate application": {
-        "sim_mean_s": 153528.0,
+        "sim_mean_s": 231015.3,
         "ref_mean_s": 339420.66,
-        "sim_std_s": 268146.2,
+        "sim_std_s": 420355.6,
         "ref_std_s": 565850.68,
-        "rel_err_mean": 0.5477
+        "rel_err_mean": 0.3194
       }
     },
-    "mean_rel_err": 0.5566
+    "mean_rel_err": 0.5705,
+    "target": "elapsed_start_complete_seconds"
   },
   "arrival_rate": {
-    "sim_mean_interarrival_s": 1533.01,
+    "sim_mean_interarrival_s": 1070.77,
     "ref_mean_interarrival_s": 1002.23,
-    "rel_err": 0.5296
+    "rel_err": 0.0684,
+    "sim_daily_arrivals_mean": 80.64,
+    "ref_daily_arrivals_mean": 86.09,
+    "daily_arrivals_rel_err": 0.0633
   },
+  "arrival_profile": null,
   "variants": {
-    "ref_top20_variants_reproduced": 10,
-    "ref_top20_traffic_coverage_pct": 16.41
+    "ref_top20_variants_reproduced": 17,
+    "ref_top20_traffic_coverage_pct": 39.0,
+    "ref_top20_variants_reproduced_ignoring_absent_activities": 17,
+    "ref_top20_traffic_coverage_pct_ignoring_absent_activities": 39.0,
+    "activities_ignored_for_variant_match": []
   },
   "case_stats": {
-    "sim_case_length_mean": 15.15,
+    "sim_case_length_mean": 13.54,
     "ref_case_length_mean": 15.09,
-    "case_length_rel_err": 0.0037,
-    "sim_case_duration_mean_s": 51360.3,
+    "case_length_rel_err": 0.1026,
+    "sim_case_duration_mean_s": 498475.0,
     "ref_case_duration_mean_s": 1887879.72,
-    "case_duration_rel_err": 0.9728
+    "case_duration_rel_err": 0.736
   },
   "control_flow": {
     "fitness": {
-      "perc_fit_traces": 48.16350710900474,
-      "average_trace_fitness": 0.9695563709246384,
-      "log_fitness": 0.9826007680892852,
-      "percentage_of_fitting_traces": 48.16350710900474
+      "perc_fit_traces": 99.54562665656948,
+      "average_trace_fitness": 0.9996716864848358,
+      "log_fitness": 0.9997207223939789,
+      "percentage_of_fitting_traces": 99.54562665656948
     },
-    "precision": 0.469196668190764
+    "precision": 0.535564494083649
   },
   "run_stats": {
-    "cases_started": 2318,
-    "cases_completed": 1688,
-    "completion_rate": 0.7282,
-    "sim_duration_days": 30,
-    "seed": 42
+    "cases_started": 4842,
+    "cases_completed": 2641,
+    "completion_rate": 0.5454,
+    "sim_duration_days": 60.0,
+    "seed": 42,
+    "lifecycle_mode": "legacy",
+    "petri_debug": {
+      "allow_end_opportunities": 4334,
+      "allow_end_without_dp": 0,
+      "end_label_choices": 204,
+      "end_reasons": {
+        "final_marking": 0,
+        "end_label": 204,
+        "terminal_outcome": 2314,
+        "loop_guard": 123,
+        "dead_marking": 0,
+        "terminal_continuation_end": 0,
+        "terminal_allow_end_fallback": 0
+      },
+      "closed_at_final_marking": 1883
+    }
   },
   "config": {
     "process_model": "advanced",
     "bpmn": "bpic17_process.bpmn",
     "branching_mode": "rules",
-    "processing_time_mode": "distribution"
+    "terminal_outcomes": "on",
+    "permissions": "orgmodel",
+    "processing_time_mode": "distribution",
+    "lifecycle_mode": "legacy",
+    "reference": "simulation_inputs.json"
   }
 }
