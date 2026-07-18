@@ -70,7 +70,6 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from pm4py.objects.petri_net import semantics  # noqa: E402
 from pm4py.objects.petri_net.obj import Marking  # noqa: E402
 
 from extract_log_info import load_log, filter_to_complete  # noqa: E402
@@ -78,6 +77,7 @@ from simulation.components.petri_process import (  # noqa: E402
     DP_VISIT_BUCKET_MAX,
     PetriNetProcessComponent,
 )
+from simulation.petri_replay import label_transition_map, repair_and_fire  # noqa: E402
 
 DEFAULT_BPMN = REPO_ROOT / "simulation" / "models" / "bpic17_process.bpmn"
 OUTPUT_PATH = REPO_ROOT / "simulation" / "models" / "dp_branching_probs.json"
@@ -85,84 +85,6 @@ OUTPUT_PATH = REPO_ROOT / "simulation" / "models" / "dp_branching_probs.json"
 
 def bucket_of(k: int) -> str:
     return str(k) if k < DP_VISIT_BUCKET_MAX else f"{DP_VISIT_BUCKET_MAX}+"
-
-
-def _label_transition_map(net) -> dict:
-    """label -> transitions sharing it, sorted by name for a deterministic
-    repair tie-break (mirrors the sort key _fire_activity/_visible_frontier
-    already use elsewhere in the codebase for the same reason).
-
-    Unlike PetriNetProcessComponent._fire_activity, which only ever looks
-    among transitions already *enabled* at the current marking, repair must
-    find a candidate by label regardless of whether it is enabled right
-    now -- that's the whole point of repairing it.
-    """
-    mapping: dict = defaultdict(list)
-    for t in net.transitions:
-        if t.label is not None:
-            mapping[t.label].append(t)
-    for label in mapping:
-        mapping[label].sort(key=lambda t: t.name)
-    return mapping
-
-
-def _repair_and_fire(net, marking, label_map: dict, label: str):
-    """Force *label* to fire from *marking* even though it isn't reachable
-    by any tau combination, by inserting the missing tokens its cheapest
-    matching transition needs (token-based-replay's "missing token" repair,
-    the same convention pm4py's own conformance checker uses) and then
-    firing it.
-
-    Returns (new_marking, n_missing_tokens), or (None, 0) if the net has no
-    transition labelled *label* at all. This does happen: the Signavio net
-    (D2) has no transition for a handful of rare real activities (e.g.
-    "W_Assess potential fraud", "W_Call after offers") -- a genuine
-    vocabulary gap in the model itself, not a bug in this repair, and
-    previously invisible because any deviation aborted the whole trace
-    before this distinction could be made. The caller counts these
-    separately (n_unrepairable_events) instead of silently lumping them in
-    with ordinary branching deviations.
-
-    The result is clamped to at most one token per place before returning
-    (see the comment above the clamp below) -- without it this measured
-    35s on a single 30-event, 6-repair case (should be <0.1s), because the
-    surplus tokens a repair can leave behind blow up the tau-closure search
-    _visible_frontier/_final_reachable_by_tau do for every later decision
-    point in the same case.
-    """
-    candidates = label_map.get(label)
-    if not candidates:
-        return None, 0
-    best_marking, best_missing = None, None
-    for t in candidates:
-        repaired = Marking(marking)
-        missing = 0
-        for arc in t.in_arcs:
-            need = arc.weight
-            have = repaired.get(arc.source, 0)
-            if have < need:
-                repaired[arc.source] = need
-                missing += need - have
-        if best_missing is None or missing < best_missing:
-            best_marking, best_missing = semantics.execute(t, net, repaired), missing
-
-    # This net models a single case's control state one token at a time --
-    # every place is meant to hold at most one (a live simulation case
-    # never has two tokens in the same place; _final_reachable_by_tau's own
-    # docstring relies on "the net's reachable-marking set is small and
-    # finite"). A repair can violate that by inserting a token into a place
-    # that already holds one left over from earlier in the trace (e.g. an
-    # AND-split branch whose join was skipped by a previous repair) --
-    # invisible to correctness (place still just means "this branch is
-    # pending"), but each surplus token roughly multiplies the number of
-    # tau-combinations _visible_frontier has to enumerate for every
-    # subsequent decision in this case. Clamping back to the net's intended
-    # 1-safe invariant after every repair keeps that search in the small
-    # space it was designed for.
-    for place, count in list(best_marking.items()):
-        if count > 1:
-            best_marking[place] = 1
-    return best_marking, best_missing
 
 
 def mine(df_complete, comp: PetriNetProcessComponent):
@@ -182,7 +104,7 @@ def mine(df_complete, comp: PetriNetProcessComponent):
     """
     counts: dict = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
     replay_key = "__mine__"
-    label_map = _label_transition_map(comp.net)
+    label_map = label_transition_map(comp.net)
     n_perfect = n_repaired = 0
     n_repair_events = n_missing_tokens = n_unrepairable_events = 0
 
@@ -215,7 +137,7 @@ def mine(df_complete, comp: PetriNetProcessComponent):
             # option here), but replay continues via repair instead of
             # abandoning the rest of the trace.
             case_needed_repair = True
-            new_marking, missing = _repair_and_fire(comp.net, marking, label_map, act)
+            new_marking, missing = repair_and_fire(comp.net, marking, label_map, act)
             if new_marking is None:
                 n_unrepairable_events += 1
                 continue  # no transition for this label at all; marking unchanged

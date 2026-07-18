@@ -73,6 +73,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from extract_log_info import load_log, filter_to_complete  # noqa: E402
 
 from simulation.components.petri_process import PetriNetProcessComponent  # noqa: E402
+from simulation.petri_replay import label_transition_map, repair_and_fire  # noqa: E402
 
 RANDOM_SEED = 42
 
@@ -146,16 +147,27 @@ def replay_log(df_complete: pd.DataFrame, comp: PetriNetProcessComponent):
     comp's Petri net, using comp's own _visible_frontier/_fire_activity so
     decision points match exactly what the simulation will see.
 
-    Returns (examples, n_fitting, n_nonfitting) where examples maps
-    decision_point_key (sorted tuple of enabled labels) -> list of
-    (attribute snapshot dict, chosen label, case start timestamp). The
-    timestamp enables the temporal train/test split (train on older cases,
-    test on the most recent ones — lecture 05, slide 37).
+    Deviations are repaired rather than abandoned (simulation/petri_replay.py):
+    when the next real activity is not reachable from the current marking by
+    any combination of tau transitions, its transition is force-fired with the
+    tokens it is missing, and the replay continues. Abandoning instead — which
+    this function used to do — meant only the ~57.7% of cases that replay
+    end-to-end ever contributed examples from their later decision points,
+    biasing every deep decision point toward the subpopulation that happens to
+    follow the model exactly. The deviating step itself is still never recorded
+    as a training example: it was not a legal option at that marking, so its
+    "choice" is not evidence about that decision point.
+
+    Returns (examples, stats) where examples maps decision_point_key (sorted
+    tuple of enabled labels) -> list of (attribute snapshot dict, chosen label,
+    case start timestamp). The timestamp enables the temporal train/test split
+    (train on older cases, test on the most recent ones — lecture 05, slide 37).
     """
     examples: dict = defaultdict(list)
     replay_key = "__replay__"
-    n_fitting = 0
-    n_nonfitting = 0
+    label_map = label_transition_map(comp.net)
+    n_perfect = n_repaired = 0
+    n_repair_events = n_unrepairable_events = 0
 
     for case_id, case_df in df_complete.groupby("case_id", sort=False):
         case_df = case_df.sort_values("timestamp")
@@ -164,32 +176,50 @@ def replay_log(df_complete: pd.DataFrame, comp: PetriNetProcessComponent):
         snapshot = _initial_snapshot(first_row)
 
         comp._markings[replay_key] = Marking(comp.im)
-        fits = True
+        case_needed_repair = False
         for row in case_df.itertuples():
             act = row.activity
             marking = comp._markings[replay_key]
             frontier = comp._visible_frontier(marking)
-            if act not in frontier:
-                fits = False
-                break
 
-            if len(frontier) > 1:
-                dp_key = tuple(sorted(frontier.keys()))
-                examples[dp_key].append((dict(snapshot), act, case_start))
+            if act in frontier:
+                if len(frontier) > 1:
+                    dp_key = tuple(sorted(frontier.keys()))
+                    examples[dp_key].append((dict(snapshot), act, case_start))
+                comp._markings[replay_key] = frontier[act]
+                comp._fire_activity(replay_key, act)
+            else:
+                case_needed_repair = True
+                new_marking, _ = repair_and_fire(comp.net, marking, label_map, act)
+                if new_marking is None:
+                    # No transition for this label anywhere in the net (4 real
+                    # activities are missing from the Signavio model): skip the
+                    # event without advancing the marking — a log move.
+                    n_unrepairable_events += 1
+                else:
+                    comp._markings[replay_key] = new_marking
+                    n_repair_events += 1
 
-            comp._markings[replay_key] = frontier[act]
-            comp._fire_activity(replay_key, act)
-
+            # The offer attributes are observed facts about the case, so they
+            # update on the real event regardless of whether the net agreed
+            # this step was legal — otherwise a repaired case would carry a
+            # stale snapshot into every decision point after the deviation.
             if act == "O_Create Offer":
                 _apply_offer(snapshot, row)
 
         comp._markings.pop(replay_key, None)
-        if fits:
-            n_fitting += 1
+        if case_needed_repair:
+            n_repaired += 1
         else:
-            n_nonfitting += 1
+            n_perfect += 1
 
-    return examples, n_fitting, n_nonfitting
+    stats = {
+        "n_perfect": n_perfect,
+        "n_repaired": n_repaired,
+        "n_repair_events": n_repair_events,
+        "n_unrepairable_events": n_unrepairable_events,
+    }
+    return examples, stats
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -324,13 +354,16 @@ def main() -> None:
     print(f"[replay] Loading Petri net from {args.bpmn} ...")
     comp = PetriNetProcessComponent(bpmn_path=str(args.bpmn), seed=RANDOM_SEED)
 
-    print("[replay] Replaying real log to find decision points ...")
+    print("[replay] Replaying real log to find decision points (repairing deviations) ...")
     t0 = time.perf_counter()
-    examples, n_fitting, n_nonfitting = replay_log(df_complete, comp)
-    n_total = n_fitting + n_nonfitting
+    examples, replay_stats = replay_log(df_complete, comp)
+    n_perfect, n_repaired = replay_stats["n_perfect"], replay_stats["n_repaired"]
+    n_total = n_perfect + n_repaired
     print(f"[replay] Done in {time.perf_counter() - t0:.1f}s. "
-          f"{n_fitting:,}/{n_total:,} cases fit the net "
-          f"({100 * n_fitting / n_total:.1f}%), {n_nonfitting:,} non-fitting (skipped mid-replay).")
+          f"{n_perfect:,}/{n_total:,} cases replay without repair "
+          f"({100 * n_perfect / n_total:.1f}%); {n_repaired:,} repaired and kept "
+          f"({replay_stats['n_repair_events']:,} repair events, "
+          f"{replay_stats['n_unrepairable_events']:,} activities absent from the net).")
     print(f"[replay] {len(examples)} distinct decision points observed, "
           f"{sum(len(v) for v in examples.values()):,} decision instances total.")
 
@@ -359,10 +392,7 @@ def main() -> None:
         "categorical_features": CATEGORICAL_FEATURES,
         "numeric_features": NUMERIC_FEATURES,
         "sentinels": {"unknown": UNKNOWN},
-        "replay_stats": {
-            "n_fitting": n_fitting, "n_nonfitting": n_nonfitting,
-            "n_decision_points": len(examples),
-        },
+        "replay_stats": {**replay_stats, "n_decision_points": len(examples)},
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(artifact, args.output)
@@ -374,12 +404,17 @@ def main() -> None:
     import json
     metrics_json = {
         "real_log_replay_on_bpmn": {
-            "n_fitting": n_fitting,
-            "n_nonfitting": n_nonfitting,
-            "fit_pct": round(100 * n_fitting / max(n_fitting + n_nonfitting, 1), 2),
-            "note": "share of real BPIC-17 cases whose full trace replays on "
-                    "the BPMN/Petri net — key evidence for the process-model "
-                    "source decision (Section 1.4)",
+            **replay_stats,
+            "perfect_fit_pct": round(100 * n_perfect / max(n_total, 1), 2),
+            "note": "perfect_fit_pct = share of real BPIC-17 cases whose full "
+                    "trace replays on the BPMN/Petri net with no repair — key "
+                    "evidence for the process-model source decision (Section "
+                    "1.4). Training examples now come from all cases, not only "
+                    "these: deviations are repaired (missing-token replay) so "
+                    "decision points after a deviation are not fitted on the "
+                    "compliant subpopulation alone. n_unrepairable_events "
+                    "counts events whose activity has no transition in the net "
+                    "at all (4 real activities are missing from the model).",
         },
         "split": "temporal_80_20 (lecture 05 slide 37)",
         "decision_points": {
