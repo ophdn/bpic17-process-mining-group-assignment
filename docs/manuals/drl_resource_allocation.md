@@ -78,6 +78,12 @@ Set `--spt-pretrain-decisions 0` for a from-scratch ablation. The demonstration
 count, imitation loss, reward weights, action/state versions and training device
 are saved in the model's JSON metadata.
 
+The default entropy coefficient is `0.005`, which prevents the SPT warm start
+from becoming deterministic too early. Override it with `--ent-coef`; use `0`
+for a no-entropy ablation. Validation uses `--eval-episodes` distinct held-out
+seeds beginning at `--eval-seed`, and repeats that same seed set at every
+checkpoint so reward variation and checkpoint comparisons are meaningful.
+
 `100000` steps only establish that the pipeline learns. In the BPIC model it
 learned a postponement-heavy policy that completed 92.3 cases per evaluation
 run. The older version-2 one-million-step policy completed 245.5, while Random

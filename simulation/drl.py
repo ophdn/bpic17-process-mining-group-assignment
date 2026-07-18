@@ -16,7 +16,7 @@ within a finite horizon.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, Optional, Tuple
+from typing import Callable, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -103,6 +103,7 @@ class ResourceAllocationEnv(_GymBase):
         completion_reward: float = 0.01,
         terminal_wip_penalty: float = 0.002,
         increment_seeds: bool = True,
+        episode_seeds: Optional[Sequence[int]] = None,
     ):
         gym = _gymnasium()
         super().__init__()
@@ -114,6 +115,13 @@ class ResourceAllocationEnv(_GymBase):
         self._completion_reward = float(completion_reward)
         self._terminal_wip_penalty = float(terminal_wip_penalty)
         self._increment_seeds = bool(increment_seeds)
+        self._episode_seeds = (
+            tuple(int(seed) for seed in episode_seeds)
+            if episode_seeds is not None else None
+        )
+        if self._episode_seeds is not None and not self._episode_seeds:
+            raise ValueError("episode_seeds must contain at least one seed")
+        self._episode_seed_index = 0
         if self._reward_scale <= 0:
             raise ValueError("reward_scale must be positive")
         if min(
@@ -127,8 +135,12 @@ class ResourceAllocationEnv(_GymBase):
         self.resources = None
         self._terminated = False
         self._reuse_initial_episode = True
-        self._build(self._next_seed)
-        self._next_seed += 1
+        if self._episode_seeds is not None:
+            self._build(self._episode_seeds[0])
+            self._episode_seed_index = 1 % len(self._episode_seeds)
+        else:
+            self._build(self._next_seed)
+            self._next_seed += 1
 
         self.action_space = gym.spaces.Discrete(self.resources.drl_action_count)
         self.observation_space = gym.spaces.Box(
@@ -157,11 +169,20 @@ class ResourceAllocationEnv(_GymBase):
             # Reuse the episode built in __init__; SB3 calls reset immediately.
             pass
         else:
-            episode_seed = int(seed) if seed is not None else (
-                self._next_seed if self._increment_seeds else self._base_seed
-            )
+            if seed is not None:
+                episode_seed = int(seed)
+            elif self._episode_seeds is not None:
+                episode_seed = self._episode_seeds[self._episode_seed_index]
+                self._episode_seed_index = (
+                    self._episode_seed_index + 1
+                ) % len(self._episode_seeds)
+            else:
+                episode_seed = (
+                    self._next_seed if self._increment_seeds else self._base_seed
+                )
             self._build(episode_seed)
-            if seed is None and self._increment_seeds:
+            if (seed is None and self._episode_seeds is None
+                    and self._increment_seeds):
                 self._next_seed += 1
         return self._observation(), self._info()
 

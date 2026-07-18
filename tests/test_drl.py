@@ -171,6 +171,31 @@ class TestDRLResourceAllocation(unittest.TestCase):
         self.assertTrue(env.resources.drl_decision_pending)
         self.assertEqual(observation.shape, env.observation_space.shape)
 
+    @unittest.skipUnless(HAVE_GYMNASIUM, "optional requirements-drl.txt not installed")
+    def test_evaluation_seed_cycle_is_distinct_and_reproducible(self):
+        from simulation.drl import ResourceAllocationEnv
+
+        built_seeds = []
+
+        def factory(seed):
+            built_seeds.append(seed)
+            resource = ResourceComponent(
+                permissions=StaticPermissions({"r1": {"A"}}),
+                drl=True,
+                drl_external_control=True,
+            )
+            engine = SimulationEngine(sim_duration=1)
+            engine.register(resource)
+            return engine, resource
+
+        env = ResourceAllocationEnv(factory, episode_seeds=[100, 101, 102])
+        env.reset()  # Reuses the episode built during construction.
+        env.reset()
+        env.reset()
+        env.reset()
+
+        self.assertEqual(built_seeds, [100, 101, 102, 100])
+
 
 if __name__ == "__main__":
     unittest.main()

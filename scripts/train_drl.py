@@ -90,6 +90,10 @@ def parse_args():
     parser.add_argument("--gamma", type=float, default=0.999)
     parser.add_argument("--clip-range", type=float, default=0.2)
     parser.add_argument(
+        "--ent-coef", type=float, default=0.005,
+        help="Entropy bonus that preserves exploration after the SPT warm start.",
+    )
+    parser.add_argument(
         "--postpone-penalty", type=float, default=0.001,
         help="Scale-adjusted penalty for avoidable strategic idling.",
     )
@@ -333,6 +337,7 @@ def main():
         args.terminal_wip_penalty,
         args.eval_freq,
         args.spt_pretrain_decisions,
+        args.ent_coef,
     ) < 0 or args.eval_episodes <= 0:
         raise SystemExit(
             "reward weights/--eval-freq must be non-negative and "
@@ -393,6 +398,7 @@ def main():
         batch_size=args.batch_size,
         gamma=args.gamma,
         clip_range=args.clip_range,
+        ent_coef=args.ent_coef,
         seed=args.seed,
         device=device,
         verbose=args.verbose,
@@ -423,13 +429,21 @@ def main():
     callback = None
     best_dir = args.out.parent / f"{args.out.name}_validation"
     if args.eval_freq:
-        eval_env = ResourceAllocationEnv(
-            factory,
-            base_seed=args.eval_seed,
-            postpone_penalty=args.postpone_penalty,
-            completion_reward=args.completion_reward,
-            terminal_wip_penalty=args.terminal_wip_penalty,
-            increment_seeds=False,
+        from stable_baselines3.common.monitor import Monitor
+
+        eval_env = Monitor(
+            ResourceAllocationEnv(
+                factory,
+                base_seed=args.eval_seed,
+                postpone_penalty=args.postpone_penalty,
+                completion_reward=args.completion_reward,
+                terminal_wip_penalty=args.terminal_wip_penalty,
+                # Every validation round sees the same distinct held-out seeds.
+                # Since its length equals n_eval_episodes, the cycle realigns at
+                # the beginning of every MaskableEvalCallback evaluation.
+                episode_seeds=range(
+                    args.eval_seed, args.eval_seed + args.eval_episodes),
+            )
         )
         callback = MaskableEvalCallback(
             eval_env,
@@ -492,6 +506,10 @@ def main():
             "frequency": args.eval_freq,
             "episodes": args.eval_episodes,
             "seed": args.eval_seed if args.eval_freq else None,
+            "seeds": (
+                list(range(args.eval_seed, args.eval_seed + args.eval_episodes))
+                if args.eval_freq else []
+            ),
             "reward_best_model": (
                 str(reward_best_model_path) if best_model_path.exists() else None
             ),
@@ -506,6 +524,7 @@ def main():
             ),
             "gamma": args.gamma,
             "clip_range": args.clip_range,
+            "ent_coef": args.ent_coef,
         },
     }
     metadata_path = args.out.with_suffix(".json")
