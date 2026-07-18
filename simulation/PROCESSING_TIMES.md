@@ -10,8 +10,9 @@ schedule → start → (suspend → resume)* → complete | ate_abort
          ↘ withdraw (while still queued)
 ```
 
-Only `W_` work items enter this state machine. Atomic `A_`/`O_` activities keep
-their synthetic start plus fallback duration and do not churn.
+Only `W_` work items enter this state machine. `A_`/`O_` activities are modeled
+as instantaneous automatic state changes. They do not use permissions,
+calendars, queues, policy decisions, or resource capacity.
 
 This default applies to the standalone `simulation.main` CLI. The experiment
 runner defaults to active mode, and the 04 evaluation notebooks set
@@ -28,19 +29,18 @@ evaluation configuration. Withdrawal hazards exist for four of the eight
 activities; an absent hazard means that the item cannot withdraw while queued.
 
 The older static duration table has fitted distributions for six `W_`
-activities. Its fallback table contains the other two rare `W_` activities and
-18 `A_`/`O_` activities. In active mode, all eight `W_` activities use the
-versioned active-session fits, but the 18 atomic activities still use assumed
-fallback durations. These assumptions affect event spacing, resource
-occupation, and queueing even though BPIC-17 offers no start/complete pairs from
-which to estimate them directly.
+activities. Its fallback table also contains the other two rare `W_` activities
+and synthetic values for `A_`/`O_` activities. In active mode, all eight `W_`
+activities use the versioned active-session fits. The synthetic `A_`/`O_`
+durations are not used by the default configuration because BPIC-17 provides no
+observed start/complete interval for these state changes.
 
-Evaluation therefore reports two views: all-activity resource KPIs and W_-only
-KPIs with the same availability denominator. It also runs a paired lower-bound
-sensitivity with `--atomic-duration-scale 0`. This removes A_/O_ busy duration
-but retains permission checks, calendars, assignment, and event order. The
-default scale is `1`; the zero case is a robustness check, not the preferred
-model.
+Evaluation retains the all-activity and W_-only KPI columns for compatibility,
+but their resource measures should coincide: automatic `A_`/`O_` transitions
+contribute event rows and no busy time. A positive
+`--atomic-duration-scale` explicitly restores the former synthetic-duration,
+resource-assigned path for legacy reproduction; it is not part of the reported
+evaluation design.
 
 ## Why active service time is separate
 
@@ -128,9 +128,9 @@ The legacy wrapper remains `.venv/bin/python setup_models.py`.
 .venv/bin/python -m simulation.main --lifecycle-mode active --mode ml_model
 .venv/bin/python -m simulation.main --lifecycle-mode active --mode ml_probabilistic
 
-# Lower-bound sensitivity for atomic A_/O_ durations.
+# Optional reproduction of the former synthetic A_/O_ resource path.
 .venv/bin/python -m simulation.main --lifecycle-mode active --mode distribution \
-  --atomic-duration-scale 0
+  --atomic-duration-scale 1
 ```
 
 k-batching uses expected elapsed duration in legacy mode and expected **next
@@ -141,6 +141,10 @@ resource-release point.
 
 - v1 is serial: one in-flight W-item per case. This covers 99.8% of BPIC-17
   cases; the small concurrent minority is outside fit claims.
+- `A_` and `O_` records are treated as zero-time automatic state changes because
+  BPIC-17 does not expose service intervals for them. This avoids inventing
+  resource demand, but it also means that the simulator cannot represent human
+  effort or delays that may have occurred behind those milestone records.
 - The pool model is intentional: only about 17.5% of historical resumes use the
   previous resource. That rate is a baseline calibration target, not invariant
   under allocation policies.

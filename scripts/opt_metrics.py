@@ -414,8 +414,9 @@ def average_resource_occupation(
     ratio, which distorts a staffing metric it is not really part of.
 
     `activity_prefixes` restricts the busy-time numerator while retaining the
-    same staff availability denominator. Pass `("W_",)` to separate fitted
-    work from the assumed durations of atomic A_/O_ transitions.
+    same staff availability denominator. Pass `("W_",)` to isolate human work;
+    A_/O_ state changes are automatic and contribute no busy time in the
+    default configuration.
     """
     # ``raw_busy`` is clipped to the evaluated horizon but not to shifts, so
     # the difference to ``busy`` is genuine overtime.  Without this global

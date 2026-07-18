@@ -199,7 +199,7 @@ def validate_resource_diagnostics(
     availability.  Queue length is not a failure condition, but it is retained
     because it makes finite-horizon truncation visible.
     """
-    required_columns = {"lifecycle:transition", "org:resource"}
+    required_columns = {"concept:name", "lifecycle:transition", "org:resource"}
     missing_columns = required_columns - set(df.columns)
     if missing_columns:
         raise AssertionError(
@@ -207,10 +207,20 @@ def validate_resource_diagnostics(
         )
 
     active = df["lifecycle:transition"].isin({"start", "resume"})
-    active_resources = df.loc[active, "org:resource"]
+    work = df["concept:name"].fillna("").astype(str).str.startswith("W_")
+    active_resources = df.loc[active & work, "org:resource"]
     missing_resource_starts = int(
         active_resources.isna().sum()
         + active_resources.dropna().astype(str).str.strip().eq("").sum()
+    )
+    atomic = df["concept:name"].fillna("").astype(str).str.startswith(("A_", "O_"))
+    atomic_starts = df.loc[active & atomic, "org:resource"]
+    assigned_atomic_starts = int(
+        atomic_starts.notna().sum()
+        - atomic_starts.dropna().astype(str).str.strip().eq("").sum()
+    )
+    automatic_atomic_transitions = int(
+        resource_stats.get("automatic_atomic_transitions", 0)
     )
     unpermitted = int(resource_stats.get("unpermitted_activities", -1))
     still_queued = int(resource_stats.get("still_queued_at_end", -1))
@@ -224,8 +234,18 @@ def validate_resource_diagnostics(
         raise AssertionError(f"run contains {unpermitted} unpermitted activities")
     if missing_resource_starts != 0:
         raise AssertionError(
-            f"run contains {missing_resource_starts} unassigned start/resume events"
+            f"run contains {missing_resource_starts} unassigned W_ start/resume events"
         )
+    if automatic_atomic_transitions:
+        if automatic_atomic_transitions != len(atomic_starts):
+            raise AssertionError(
+                "automatic atomic transition count does not match A_/O_ starts"
+            )
+        if assigned_atomic_starts:
+            raise AssertionError(
+                f"run contains {assigned_atomic_starts} resource-assigned automatic "
+                "A_/O_ starts"
+            )
     if still_queued < 0:
         raise AssertionError("resource stats do not contain still_queued_at_end")
     if capacity == 1 and max_occupation is not None and max_occupation > 1.0 + 1e-9:
@@ -237,6 +257,8 @@ def validate_resource_diagnostics(
         "unpermitted_activities": unpermitted,
         "still_queued_at_end": still_queued,
         "missing_resource_starts": missing_resource_starts,
+        "automatic_atomic_transitions": automatic_atomic_transitions,
+        "assigned_atomic_starts": assigned_atomic_starts,
         "max_resource_occupation": max_occupation,
     }
 
@@ -373,6 +395,7 @@ def build_resource_component(
     capacity: Optional[int] = None,
     drl_model_path: Optional[str] = None,
     branching_mode: str = "probs",
+    automatic_atomic: bool = True,
 ) -> ResourceComponent:
     if capacity is None:
         capacity = capacity_for_mode(lifecycle_mode)
@@ -390,6 +413,7 @@ def build_resource_component(
                 ACTIVE_MODEL_PATH if lifecycle_mode == "active" else LEGACY_MODEL_PATH),
             lifecycle_mode=lifecycle_mode,
             lifecycle_params=lifecycle_params,
+            automatic_atomic=automatic_atomic,
         )
     if not is_known_policy(policy):
         raise ValueError(
@@ -429,6 +453,7 @@ def build_resource_component(
         lifecycle_mode=lifecycle_mode,
         lifecycle_params=lifecycle_params,
         branching_mode=branching_mode,
+        automatic_atomic=automatic_atomic,
     )
 
 
@@ -528,7 +553,7 @@ def run_once(
     excluded_override: Optional[Set[str]] = None,
     roster_seed: Optional[int] = DEFAULT_ROSTER_SEED,
     capacity: Optional[int] = None,
-    atomic_duration_scale: float = 1.0,
+    atomic_duration_scale: float = 0.0,
     drl_model_path: Optional[str] = None,
 ) -> tuple[pd.DataFrame, dict]:
     """Build and run one (policy, seed, scenario) simulation.
@@ -608,7 +633,8 @@ def run_once(
                                          lifecycle_params=lifecycle_params,
                                          capacity=effective_capacity,
                                          drl_model_path=drl_model_path,
-                                         branching_mode=branching_mode)
+                                         branching_mode=branching_mode,
+                                         automatic_atomic=atomic_duration_scale == 0.0)
     recorder = _ArrivalRecorder()
     completion_recorder = _CompletionRecorder()
     tracker = CaseCompletionTracker()
@@ -701,6 +727,9 @@ def run_once(
                 if processing_time_mode != "distribution" else None
             ),
             "atomic_duration_scale": float(atomic_duration_scale),
+            "atomic_activity_mode": (
+                "automatic" if atomic_duration_scale == 0.0 else "resource"
+            ),
             "roster_seed": effective_roster_seed,
             "capacity": effective_capacity,
             "arrival_model": "mdn" if USE_MDN_ARRIVALS else "parametric",
@@ -975,9 +1004,10 @@ def parse_args():
                    choices=["distribution", "ml_model", "ml_probabilistic"],
                    help="Duration sampler used consistently across policy runs.")
     p.add_argument(
-        "--atomic-duration-scale", type=float, default=1.0, metavar="S",
-        help="Scale synthetic A_/O_ durations in active mode. Use 0.0 for the "
-             "instantaneous-transition sensitivity bound.",
+        "--atomic-duration-scale", type=float, default=0.0, metavar="S",
+        help="Scale synthetic A_/O_ durations. Default 0.0 "
+             "makes them automatic instantaneous state transitions; positive "
+             "values restore resource allocation and synthetic durations.",
     )
     p.add_argument("--no-crn", dest="crn", action="store_false",
                    help="Disable Common Random Numbers (paired comparisons "

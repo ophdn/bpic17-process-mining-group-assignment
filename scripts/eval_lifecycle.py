@@ -60,7 +60,7 @@ REPORT_LIFECYCLE_CONFIGURATION = {
     "branching_mode": "visit",
     "permissions": "orgmodel",
     "lifecycle_mode": "active",
-    "atomic_duration_scale": 1.0,
+    "atomic_duration_scale": 0.0,
     "roster_seed": 43,
     "capacity": 1,
     "arrival_model": "mdn",

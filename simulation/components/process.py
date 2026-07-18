@@ -148,8 +148,9 @@ PROCESSING_TIME_PARAMS: Dict[str, Tuple[str, tuple]] = {
     "W_Validate application":   ("gamma",       (0.3213, 0.0, 1056395.7929)),
 }
 
-# Mean durations (seconds) for activities without a fitted distribution
-# (A_ and O_ activities — estimated from BPIC-17 context)
+# Synthetic means retained for explicit legacy reproduction with
+# atomic_duration_scale > 0. They are not used by the default zero-time A_/O_
+# configuration. The two rare W_ entries remain runtime fallbacks.
 FALLBACK_MEAN_DURATIONS: Dict[str, float] = {
     "A_Create Application": 120,
     "A_Submitted":          60,
@@ -492,7 +493,7 @@ class ProcessComponent:
         crn: bool = False,
         lifecycle_mode: str = "legacy",
         lifecycle_params=None,
-        atomic_duration_scale: float = 1.0,
+        atomic_duration_scale: float = 0.0,
         load_basic_adjacency: bool = True,
     ):
         """
@@ -712,16 +713,19 @@ class ProcessComponent:
         ctx = self._ctx.get(case_id) or {
             "start_t": engine.now, "position": 0, "prev_act": None
         }
-        if self._active:
-            # A_/O_ events do not enter the lifecycle model and the active ML
-            # artifact is intentionally trained on W_ sessions only. Keep their
-            # synthetic start + legacy fallback/distribution behavior exactly as
-            # committed in Design Default #1.
+        is_atomic = bool(activity and activity.startswith(("A_", "O_")))
+        if is_atomic:
+            # BPIC-17 exposes no start/complete interval for A_/O_ state
+            # changes. A zero scale therefore makes them instantaneous in both
+            # lifecycle modes. Positive scales retain the former synthetic
+            # duration path for explicit sensitivity or legacy reproduction.
             rng = self._draw_rng(case_id, activity, "duration",
                                  self._repeat_counts.get(case_id, {}).get(activity, 0) + 1)
-            duration = (
-                self._sample_duration(activity, rng) * self._atomic_duration_scale
-            )
+            duration = self._sample_duration(activity, rng) * self._atomic_duration_scale
+        elif self._active:
+            # Only W_ activities reach this branch in active mode, and they were
+            # handled by the lifecycle session machine above.
+            raise AssertionError(f"unexpected non-W_ active activity {activity!r}")
         else:
             duration = self._duration(engine, event, ctx)
 

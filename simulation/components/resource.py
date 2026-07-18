@@ -406,6 +406,7 @@ class ResourceComponent:
         drl_observation_version: Optional[int] = None,
         drl_action_version: Optional[int] = None,
         branching_mode: str = "probs",
+        automatic_atomic: bool = True,
     ):
         modes = {
             "piled": piled, "batching_k": batching_k is not None,
@@ -429,6 +430,8 @@ class ResourceComponent:
         self._capacity = capacity_per_resource
         self._rng = random.Random(seed)
         self._piled = piled
+        self._automatic_atomic = bool(automatic_atomic)
+        self._automatic_atomic_transitions = 0
         self._allocation_counts: Dict[str, int] = {}
 
         # Pull-side selection discipline (Russell et al. pull patterns,
@@ -681,10 +684,28 @@ class ResourceComponent:
         """A work item is enabled. Start it now if a qualified resource is free
         *and on shift*; otherwise queue it (R-DE).
 
+        When ``automatic_atomic`` is enabled, A_/O_ activities are modeled as
+        instantaneous state transitions. They bypass permissions, calendars,
+        capacity, policy selection and the wait queue, and start without a
+        human resource. ProcessComponent completes them at the same timestamp.
+
         k-Batching (see module docstring): if ``self._batching_k`` is set,
         this discipline is replaced entirely — a request NEVER allocates
         immediately, it always queues and waits for a batch flush.
         """
+        if self._automatic_atomic and (event.activity or "").startswith(("A_", "O_")):
+            self._automatic_atomic_transitions += 1
+            engine.schedule(SimEvent(
+                timestamp=engine.now,
+                priority=5,
+                event_type=EventType.ACTIVITY_START,
+                case_id=event.case_id,
+                activity=event.activity,
+                resource=None,
+                payload=event.payload,
+            ))
+            return
+
         self._arm_withdraw(engine, event)
         token = self._queue_token(event)
         if token is not None and token.get("state") != "queued":
@@ -1715,6 +1736,7 @@ class ResourceComponent:
             "unpermitted_activities": self._unpermitted,
             "drl_assignments": self._drl_assignments,
             "drl_postponements": self._drl_postponements,
+            "automatic_atomic_transitions": self._automatic_atomic_transitions,
             "allocations_per_resource": dict(self._allocation_counts),
         }
 

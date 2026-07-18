@@ -383,8 +383,8 @@ The logger writes a PM4Py-compatible event log. Legacy mode records every
 
 Active mode adds `schedule`, `suspend`, `resume`, `ate_abort`, and `withdraw`
 rows for `W_` items plus a sixth `work_item_id` column. Atomic `A_`/`O_` items
-retain their synthetic start/complete pairs. Use `work_item_id`, not
-`(case, activity)`, to reconstruct lifecycle sessions.
+retain start/complete pairs at the same timestamp, without a resource assignment.
+Use `work_item_id`, not `(case, activity)`, to reconstruct lifecycle sessions.
 
 To save the log after a run:
 

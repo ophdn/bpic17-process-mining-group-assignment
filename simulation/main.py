@@ -176,7 +176,7 @@ def main(
     k_batching: int | None = None,
     lifecycle_mode: str = "legacy",
     active_inputs_path: str | None = None,
-    atomic_duration_scale: float = 1.0,
+    atomic_duration_scale: float = 0.0,
     roster_seed: int | None = DEFAULT_ROSTER_SEED,
     capacity: int | None = None,
 ):
@@ -247,6 +247,7 @@ def main(
         duration_model_path=model_path if k_batching else None,
         lifecycle_mode=lifecycle_mode,
         lifecycle_params=lifecycle_params,
+        automatic_atomic=atomic_duration_scale == 0.0,
     )
 
     process_kwargs = dict(
@@ -344,10 +345,11 @@ if __name__ == "__main__":
         help="Path to simulation_inputs_active.json (--lifecycle-mode active only).",
     )
     parser.add_argument(
-        "--atomic-duration-scale", type=float, default=1.0, metavar="S",
-        help="Scale synthetic A_/O_ durations in active mode. Default 1.0 keeps "
-             "the fitted-context fallbacks; 0.0 is an instantaneous-transition "
-             "sensitivity bound.",
+        "--atomic-duration-scale", type=float, default=0.0, metavar="S",
+        help="Scale synthetic A_/O_ durations. Default 0.0 "
+             "models them as automatic instantaneous state transitions that "
+             "bypass resource allocation. Positive values restore the legacy "
+             "synthetic-duration resource path.",
     )
     parser.add_argument(
         "--process-model", default="advanced",

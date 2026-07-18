@@ -66,6 +66,7 @@ class ResourceDiagnosticTests(unittest.TestCase):
     def _event_log(resource="r1"):
         return pd.DataFrame({
             "lifecycle:transition": ["schedule", "start", "resume", "complete"],
+            "concept:name": ["W_Test", "W_Test", "W_Test", "W_Test"],
             "org:resource": [None, resource, resource, resource],
         })
 
@@ -81,13 +82,33 @@ class ResourceDiagnosticTests(unittest.TestCase):
         self.assertEqual(diagnostics["max_resource_occupation"], 0.8)
 
     def test_unassigned_active_event_is_rejected(self):
-        with self.assertRaisesRegex(AssertionError, "unassigned start/resume"):
+        with self.assertRaisesRegex(AssertionError, "unassigned W_ start/resume"):
             validate_resource_diagnostics(
                 self._event_log(resource=None),
                 {"unpermitted_activities": 0, "still_queued_at_end": 0},
                 {"r1": 0.5},
                 capacity=1,
             )
+
+    def test_unassigned_automatic_atomic_start_is_allowed(self):
+        df = pd.DataFrame({
+            "concept:name": ["A_Create Application", "A_Create Application"],
+            "lifecycle:transition": ["start", "complete"],
+            "org:resource": [None, None],
+        })
+        diagnostics = validate_resource_diagnostics(
+            df,
+            {
+                "unpermitted_activities": 0,
+                "still_queued_at_end": 0,
+                "automatic_atomic_transitions": 1,
+            },
+            {"r1": 0.0},
+            capacity=1,
+        )
+        self.assertEqual(diagnostics["missing_resource_starts"], 0)
+        self.assertEqual(diagnostics["automatic_atomic_transitions"], 1)
+        self.assertEqual(diagnostics["assigned_atomic_starts"], 0)
 
     def test_unpermitted_activity_is_rejected(self):
         with self.assertRaisesRegex(AssertionError, "unpermitted activities"):
@@ -116,7 +137,8 @@ class ResourceDiagnosticTests(unittest.TestCase):
         )
         self.assertEqual(meta["configuration"]["capacity"], 1)
         self.assertEqual(meta["configuration"]["roster_seed"], 43)
-        self.assertEqual(meta["configuration"]["atomic_duration_scale"], 1.0)
+        self.assertEqual(meta["configuration"]["atomic_duration_scale"], 0.0)
+        self.assertEqual(meta["configuration"]["atomic_activity_mode"], "automatic")
         self.assertIn(meta["configuration"]["arrival_model"], {"mdn", "parametric"})
         self.assertEqual(meta["resource_stats"]["unpermitted_activities"], 0)
         self.assertEqual(meta["resource_stats"]["still_queued_at_end"], 0)

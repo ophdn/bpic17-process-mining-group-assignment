@@ -131,6 +131,7 @@ class _ScriptedPetri(PetriNetProcessComponent, _ScriptedProcess):
             "allow_end_opportunities": 0,
             "allow_end_without_dp": 0,
             "end_label_choices": 0,
+            "closed_at_final_marking": 0,
             "end_reasons": {
                 "final_marking": 0,
                 "end_label": 0,
@@ -298,7 +299,8 @@ class LifecycleStateMachineTests(unittest.TestCase):
             for row in _work_rows(engine)
         ]
         self.assertEqual(structure(basic_engine), structure(petri_engine))
-        process._assert_marking_legal("c1")
+        self.assertEqual(petri_engine.stats["cases_completed"], 1)
+        self.assertNotIn("c1", process._markings)
 
     def test_piled_preference_skips_resume_ready_request(self):
         engine = SimulationEngine(
@@ -396,6 +398,40 @@ class LifecycleStateMachineTests(unittest.TestCase):
         self.assertEqual(len(engine._queue), 1)
         self.assertEqual(engine._queue[0].timestamp, 0.0)
 
+    def test_automatic_atomic_request_bypasses_resource_allocation(self):
+        engine = SimulationEngine(
+            sim_duration=10.0,
+            start_datetime=datetime(2016, 1, 1),
+            lifecycle_mode="active",
+        )
+        permissions = StaticPermissions({"r1": {WORK}})
+        resource = ResourceComponent(
+            capacity_per_resource=1,
+            seed=7,
+            permissions=permissions,
+            automatic_atomic=True,
+        )
+        request = SimEvent(
+            timestamp=0.0,
+            event_type=EventType.ACTIVITY_REQUEST,
+            case_id="c1",
+            activity=NEXT,
+            resource=None,
+            payload={"work_item_id": "c1#0#A_Next"},
+        )
+
+        resource.on_activity_request(engine, request)
+
+        self.assertEqual(len(engine._queue), 1)
+        start = engine._queue[0]
+        self.assertEqual(start.event_type, EventType.ACTIVITY_START)
+        self.assertEqual(start.timestamp, 0.0)
+        self.assertIsNone(start.resource)
+        self.assertFalse(resource._waiting)
+        self.assertEqual(resource._wait_count, 0)
+        self.assertEqual(resource._busy["r1"], 0)
+        self.assertEqual(resource.stats()["automatic_atomic_transitions"], 1)
+
     def test_atomic_duration_scale_rejects_negative_values(self):
         with self.assertRaisesRegex(ValueError, "atomic_duration_scale"):
             ProcessComponent(
@@ -463,11 +499,12 @@ class LifecycleStateMachineTests(unittest.TestCase):
             and row["lifecycle:transition"] == "start"
             for row in engine.logger._rows
         ))
-        self.assertEqual(engine.stats["cases_completed"], 0)
+        self.assertEqual(engine.stats["cases_completed"], 1)
         self.assertEqual(resource.release_calls, [("r1", WORK)])
-        # The one busy slot now belongs to the routed A_Next work item.  Abort
-        # itself caused no second release after suspend.
-        self.assertEqual(resource._busy["r1"], 1)
+        # A_Next is an automatic atomic transition. It neither occupies the
+        # released slot nor causes a second release after the W_ suspension.
+        self.assertEqual(resource._busy["r1"], 0)
+        self.assertEqual(resource.stats()["automatic_atomic_transitions"], 1)
 
     def test_withdraw_removes_queued_item_before_start(self):
         engine, resource, _ = _run(
@@ -482,7 +519,8 @@ class LifecycleStateMachineTests(unittest.TestCase):
             ["schedule", "withdraw"],
         )
         self.assertFalse(any(w.activity == WORK for w in resource._waiting))
-        self.assertEqual(engine.stats["cases_completed"], 0)
+        self.assertEqual(engine.stats["cases_completed"], 1)
+        self.assertEqual(resource.stats()["automatic_atomic_transitions"], 1)
 
     def test_stale_withdrawal_timer_after_allocation_is_noop(self):
         engine, _, _ = _run(
