@@ -13,6 +13,35 @@ schedule → start → (suspend → resume)* → complete | ate_abort
 Only `W_` work items enter this state machine. Atomic `A_`/`O_` activities keep
 their synthetic start plus fallback duration and do not churn.
 
+This default applies to the standalone `simulation.main` CLI. The experiment
+runner defaults to active mode, and the 04 evaluation notebooks set
+`lifecycle_mode="active"` explicitly. Their results therefore do exercise
+suspend/resume behavior; changing the standalone default is not required for
+those experiments.
+
+## Parameter coverage and atomic activities
+
+The active input artifact covers all eight routed `W_` activities in each of
+the processing-time, session-end, suspend-end, and resume-gap tables. The
+generic `0.5` lifecycle fallback is therefore not expected to run in the active
+evaluation configuration. Withdrawal hazards exist for four of the eight
+activities; an absent hazard means that the item cannot withdraw while queued.
+
+The older static duration table has fitted distributions for six `W_`
+activities. Its fallback table contains the other two rare `W_` activities and
+18 `A_`/`O_` activities. In active mode, all eight `W_` activities use the
+versioned active-session fits, but the 18 atomic activities still use assumed
+fallback durations. These assumptions affect event spacing, resource
+occupation, and queueing even though BPIC-17 offers no start/complete pairs from
+which to estimate them directly.
+
+Evaluation therefore reports two views: all-activity resource KPIs and W_-only
+KPIs with the same availability denominator. It also runs a paired lower-bound
+sensitivity with `--atomic-duration-scale 0`. This removes A_/O_ busy duration
+but retains permission checks, calendars, assignment, and event order. The
+default scale is `1`; the zero case is a robustness check, not the preferred
+model.
+
 ## Why active service time is separate
 
 The historical `start → complete` span is mostly suspended waiting, not hands-on
@@ -93,6 +122,10 @@ The legacy wrapper remains `.venv/bin/python setup_models.py`.
 .venv/bin/python -m simulation.main --lifecycle-mode active --mode distribution
 .venv/bin/python -m simulation.main --lifecycle-mode active --mode ml_model
 .venv/bin/python -m simulation.main --lifecycle-mode active --mode ml_probabilistic
+
+# Lower-bound sensitivity for atomic A_/O_ durations.
+.venv/bin/python -m simulation.main --lifecycle-mode active --mode distribution \
+  --atomic-duration-scale 0
 ```
 
 k-batching uses expected elapsed duration in legacy mode and expected **next
@@ -115,3 +148,13 @@ resource-release point.
   corresponding visible W-task, intersects the mined continuation with legal
   successors after silent-transition closure, and records fallback counts when
   the intersection is empty.
+- `W_Shortened completion ` and `W_Personal Loan collection` have boundary
+  estimates `P(complete)=0` and `P(resume)=1` in the current active artifact.
+  They are sparsely observed. The runtime records every activation of the
+  60-session safety guard, and the evaluation notebooks reject a run if the
+  guard forces completion. Until the hazards are re-estimated with a documented
+  smoothing rule, conclusions should also report how often these routes occur.
+- The policy evaluation notebooks deliberately use the distribution sampler.
+  Point and probabilistic ML are evaluated in the Section 1.3 validation
+  notebook, but they are not exercised by the reported policy comparison. A
+  claim that the policy results use ML durations would therefore be incorrect.
