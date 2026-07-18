@@ -186,21 +186,76 @@ Eigenschaft des Signavio-Modells, nicht der Erzwingung.
 
 | KPI | Basic | Adv. `probs` | Adv. `visit` | Adv. `rules` | Real Log |
 |---|---:|---:|---:|---:|---:|
-| Fully-fitting traces | 0,00 % | 95,47 % | 95,47 % | **99,55 %** | 68,84 % |
-| Ø Trace-Fitness | 0,240 | 0,997 | 0,997 | 1,000 | 0,976 |
-| Precision | 0,678 | **0,748** | **0,748** | 0,536 | 0,520 |
-| Branching TVD | 0,422 | **0,091** | **0,091** | 0,125 | 0,006 |
+| Fully-fitting traces | 0,00 % | 95,47 % | 95,47 % | **99,18 %** | 68,84 % |
+| Ø Trace-Fitness | 0,240 | 0,997 | 0,997 | 0,999 | 0,976 |
+| Precision | 0,678 | **0,748** | **0,748** | 0,577 | 0,520 |
+| Branching TVD | 0,422 | **0,091** | **0,091** | 0,126 | 0,006 |
 | Top-20-Varianten | 0/20 | 17/20 | 17/20 | 17/20 | 20/20 |
-| Ø Case-Länge (real 15,1) | 16,11 | 12,77 | 12,77 | 13,54 | 15,08 |
-| Case-Länge rel. Fehler | 0,068 | 0,154 | 0,154 | **0,103** | ~0 |
+| Ø Case-Länge (real 15,1) | 16,11 | 12,77 | 12,77 | 13,22 | 15,08 |
+| Case-Länge rel. Fehler | 0,068 | 0,154 | 0,154 | **0,124** | ~0 |
 | Case-Dauer rel. Fehler | 0,985 | **0,693** | **0,693** | 0,736 | ~0 |
-| Completion-Rate | 0,990 | 0,507 | 0,507 | **0,545** | 0,633 |
-| **Netz formal abgeschlossen** | — | **1777 (72,4 %)** | **1777 (72,4 %)** | **1883 (71,3 %)** | — |
+| Completion-Rate | 0,990 | 0,507 | 0,507 | 0,504 | 0,633 |
+| **Netz formal abgeschlossen** | — | **1777/2453 (72,4 %)** | **1777/2453 (72,4 %)** | **1794/2440 (73,5 %)** | — |
 
 Veränderung ggü. der Abend-Tabelle (Advanced): Fully-fitting 93,81 → 95,47 %,
 Precision 0,721 → 0,748, TVD 0,107 → 0,091, Case-Dauer-Fehler 0,714 → 0,693.
 Schlechter: Case-Länge 0,118 → 0,154. Completion praktisch unverändert
 (0,507 → 0,5066).
+
+**`rules`-Spalte mit den auf reparierter Replay neu trainierten
+Decision-Trees** (davor: siehe N4 unten — das war noch der alte Bias-Stand).
+Ggü. den alten `rules`-Zahlen (Fitness 99,55 %, Precision 0,536, TVD 0,125,
+Completion 0,545): Precision jetzt 0,577 (leicht besser), Completion 0,504
+(leicht schlechter, war zuvor der beste Wert unter den drei Modi — jetzt ist
+es `probs`/`visit`). Kein Modus dominiert mehr in jeder Kennzahl; die
+Unterschiede zwischen den drei Ergebniszeilen sind klein genug, dass sie
+eher als "im Rahmen des Rauschens einer einzigen geseedeten Simulation"
+denn als robuste Rangfolge zu lesen sind.
+
+### N4 — `rules`-Trainingsdaten hatten denselben Bias, jetzt behoben
+
+`train_decision_rules.py` hatte exakt dasselbe Muster wie `mine_dp_probs.py`
+vor N1: Replay brach beim ersten abweichenden Schritt ab
+(`fits = False; break`), Decision Points nach dem Abbruch bekamen keine
+Trainingsbeispiele. Fix: dieselbe Repair-Logik, jetzt in einem gemeinsamen
+Modul `simulation/petri_replay.py` statt dupliziert (der 1-sicher-Clamp ist
+ein subtiles Invariant — zwei Kopien, die auseinanderlaufen, hätten den
+Tau-Closure-Blowup aus N1 zurückgebracht).
+
+**Wirkung auf das Retraining** (volles Log, 31 509 Cases):
+
+| | vorher | nachher |
+|---|---:|---:|
+| Trainierte Decision Points | 16 | **69** |
+| Entscheidungsinstanzen gesamt | (nicht erfasst) | 362 026 |
+| Ø Test-Accuracy | 0,690 | 0,560 |
+| Ø Majority-Baseline | 0,643 | 0,547 |
+| Ø Macro-Precision | 0,375 | 0,259 |
+| Ø Macro-Recall | 0,403 | 0,319 |
+| Ø ROC-AUC (OvR, macro) | 0,635 | 0,577 |
+
+**Das sieht schlechter aus, ist aber kein Rückschritt.** 53 zusätzliche
+Decision Points erreichen jetzt die Mindeststichprobe (30) und werden
+trainiert — diese sind naturgemäß schwerer vorherzusagen, weil sie vorher
+zu datenarm waren, um überhaupt aufzutauchen. Auf den 16 Decision Points,
+die in beiden Ständen trainiert wurden, bleibt die Accuracy stabil
+(−0,066 bis +0,029 Veränderung, kein systematischer Abfall). Für den
+Report: **Die neue Zahl ist die ehrlichere** — sie misst Vorhersagequalität
+über die tatsächliche Populationsverteilung der Decision Points, nicht nur
+über die modellkonforme Teilmenge.
+
+> **Korrektur für den Report-Absatz "of 16 trained decision points, one is
+> perfectly separable (AUC 1.0)...":** Bezog sich auf den alten, biased
+> Trainingsstand — mit 69 Decision Points ist "of 16" nicht mehr korrekt.
+> Geprüft: Der AUC-1,0-Punkt selbst bleibt bestehen und ist weiterhin
+> derselbe (`A_Complete | O_Create Offer` — hat das Angebot begonnen,
+> RequestedAmount > 0), nur die Grundgesamtheit ist jetzt 69 statt 16.
+> Vorschlag: "of 69 trained decision points, one remains perfectly
+> separable (AUC 1.0 — has an offer been created yet)". Der Satz zur
+> kollabierenden Mehrheitsklasse (Accuracy 0,89 vs. Baseline 0,96,
+> Macro-Precision 0,22) bezieht sich auf einen einzelnen Decision Point und
+> müsste gegen `output/models/decision_rules_metrics.json` neu verifiziert
+> werden, falls der exakte Zahlenwert im Report zitiert wird.
 
 ### N3 — Wichtig: `probs` und `visit` sind nicht mehr unterscheidbar
 
@@ -396,16 +451,16 @@ END-Entscheidung und Terminal-Regel.
   Restliche Limitation: Der abweichende Schritt selbst wird nicht gezählt,
   und 2 730 Events betreffen 4 Aktivitäten ohne Transition im BPMN (Log-Moves,
   s. N1) — die DP-Tabelle sagt also nichts über deren Kontext aus.
-- **`train_decision_rules.py` hat denselben Bias ungefixt:** dessen
-  `replay_log()` bricht weiterhin beim ersten abweichenden Schritt ab
-  (`fits = False; break`), d. h. die Trainingsdaten der D5-Decision-Trees
-  (`rules`-Modus) stammen weiterhin nur aus den exakt passenden Cases. Wer
-  die `rules`-Zahlen verteidigt, muss das nennen — oder den Fix aus N1 dorthin
-  übertragen (gleiche Struktur, ~30 Zeilen).
-- Der `rules`-Modus erreicht die beste Case-Länge (0,103) und Completion
-  (0,545), aber die mit Abstand schlechteste Precision (0,536 vs. 0,748) —
-  bei gleicher Variantenabdeckung. Für den Default spricht das weiterhin
-  gegen `rules`.
+- ~~`train_decision_rules.py` hat denselben Bias ungefixt~~ **Behoben am
+  18.07., s. N4:** dieselbe Repair-Replay (jetzt gemeinsam mit N1 in
+  `simulation/petri_replay.py`), Decision-Trees neu trainiert (16 → 69
+  Decision Points).
+- Der `rules`-Modus erreicht weiterhin die beste Case-Länge (0,124 vs. 0,154
+  bei `probs`/`visit`), aber die mit Abstand schlechteste Precision (0,577
+  vs. 0,748) und leicht schlechtere TVD (0,126 vs. 0,091) — bei gleicher
+  Variantenabdeckung. Completion ist nach dem Retraining kein
+  Alleinstellungsmerkmal von `rules` mehr (0,504 vs. 0,507). Für den Default
+  spricht das weiterhin gegen `rules`.
 - **Korrektur 18.07.:** die vorherige Zeile hier war überholt/falsch.
   1.5 Advanced II (History-konditioniertes Prediction-Model pro Decision
   Point, Trainingsdaten per Log-Replay auf dem Prozessmodell identifiziert
@@ -429,7 +484,7 @@ END-Entscheidung und Terminal-Regel.
 | `output/validation/branching_probs_vs_rules/advanced_{probs,probs_terminal,visit_bigram,visit,rules}.json` | D3/D4/D5-Ablation (5 Stufen, **vor** Update 18.07. — Richtung gültig, absolute Zahlen überholt) |
 | `output/validation/process_model_comparison/ablation/` | 18.07.: BPMN-Gateway/Terminal-Outcomes/Branching-Mode isoliert (A1-Update Teil 1-3) |
 | `output/validation/horizon_censoring/drain.json` | Zensierungsnachweis — **Achtung:** unter altem 30-Tage-Setup gemessen, s. Update-Hinweis oben |
-| `output/models/decision_rules_metrics.json` | D5 (16 DP-Modelle, temporaler Split) |
+| `output/models/decision_rules_metrics.json` | D5 (**69** DP-Modelle seit N4, temporaler Split) |
 | `simulation/models/dp_branching_probs.json` | gemint: P(Label bzw. END \| DP, Besuch); **220 statt 21 Decision Points seit dem Repair-Replay (N1)**; Diagnosefelder `replay_perfect_fit_pct`, `n_cases_repaired`, `n_repair_events`, `n_unrepairable_events`; Shrinkage geprüft & verworfen, s. Update oben |
 | `output/validation/branching_probs_vs_rules/advanced_{probs,rules}.json` | aktuelle Modusvergleiche (18.07. Nachtrag). **Achtung:** `advanced_{probs_terminal,visit_bigram,visit}.json` im selben Ordner stammen aus dem alten 30-Tage-Setup und sind überholt |
 | `simulation_inputs.json` → `branching_probs_by_visit` | Besuchs-Buckets 1/2/3+ |
