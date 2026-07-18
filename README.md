@@ -442,7 +442,7 @@ PyTorch or Gymnasium.
 uv pip install --python .venv/bin/python -r requirements-drl.txt
 
 PYTHONPATH=. .venv/bin/python scripts/train_drl.py \
-  --timesteps 100000 --days 3 --device auto \
+  --timesteps 100000 --days 10 --device auto \
   --out models/drl_resource_policy
 
 PYTHONPATH=. .venv/bin/python scripts/run_experiments.py \

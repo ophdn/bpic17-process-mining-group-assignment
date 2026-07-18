@@ -41,19 +41,16 @@ In Russell et al.'s pattern catalogue, R-RBA is **Creation Pattern 2**
 design-time restriction on *who is allowed* to do a task — the actual
 choice of *which* qualified resource is deferred to runtime. We make
 that runtime choice with a uniform random pick (the project's default
-behaviour); the fancier *push selection patterns* (R-RMA random,
-R-RRA round-robin, R-SHQ shortest-queue) are not implemented — see the
-upgrade path at the end.
+behaviour). The experiment runner also implements R-RRA round-robin and
+R-SHQ shortest-load selection behind the same permission/calendar filter.
 
 ### What "role" means here
 
-The paper assumes an organisational model with explicit roles
-(manager, clerk, …). BPIC-17 has no such model, so we operationalise a
-worker's **role** as the set of activities that worker was observed
-performing in the real event log. Concretely: `RESOURCE_PERMISSIONS` is
-a hardcoded map `worker → set of activities`, mined once from the log.
-Its inverse `_ACTIVITY_TO_RESOURCES` (`activity → list of qualified
-workers`) is the candidate set R-RBA filters down to.
+The report-quality default uses the mined OrdinoR organisational model,
+including case type and time context. `permissions_observed.json` provides a
+static resource/activity alternative, while `RESOURCE_PERMISSIONS` retains the
+original hardcoded top-20 baseline. All modes receive the same case attributes;
+choosing a permission model does not remove `LoanGoal` or other case data.
 
 There's also a second pattern quietly at work — **Distribution on
 Enablement (R-DE, Pattern 19)** — which handles the "everyone's busy"
@@ -70,8 +67,8 @@ The paper assumes you always know who's busy. In our simulation that's
 
 1. **Task durations are random** — sampled from fitted distributions
    (or an ML model). We can't forecast when a worker finishes.
-2. **Each worker can juggle several tasks** (`capacity_per_resource`,
-   default 3 in `main.py`), not just one.
+2. **Capacity depends on lifecycle semantics.** Active lifecycle uses one
+   hands-on task per resource; legacy elapsed-span durations retain capacity 3.
 
 So we adapted R-RBA. The key decisions:
 
@@ -138,7 +135,7 @@ wrapping R-RBA.
 | Who can do what | `RESOURCE_PERMISSIONS` | Hardcoded map: worker → set of tasks it's "qualified" for (taken from BPIC-17 log). This *is* the R-RBA role definition. |
 | Tasks → workers (inverse) | `_ACTIVITY_TO_RESOURCES` | The reverse: task → list of qualified workers. Built once at import. |
 | How busy each worker is | `self._busy` | Live count of tasks each worker is running right now. |
-| Max tasks per worker | `self._capacity` | `capacity_per_resource` (default 3 in `main.py`). The "free slot" rule is `_busy < capacity`. |
+| Max tasks per worker | `self._capacity` | `capacity_per_resource` (active default 1; legacy default 3). The "free slot" rule is `_busy < capacity`. |
 | Waiting tasks | `self._waiting` | FIFO list of tasks that couldn't be assigned yet. Drained when a worker frees up. |
 | Random pick | `self._rng` | Seeded `random.Random(42)` for reproducible uniform picks. |
 
@@ -149,13 +146,12 @@ The worker pool is the top-20 BPIC-17 resources (by event count). Extend
 
 ## Example: who gets `W_Validate application`?
 
-All 17 workers are qualified for this task. With `capacity = 3`:
+Under active lifecycle and its unit capacity:
 
 - At the start everyone is idle (`_busy = 0`) — all 17 are candidates.
 - R-RBA + random pick draws one of the 17 uniformly. Say `User_5`.
-- A few seconds later another `W_Validate application` arrives. Still
-  all 17 idle (the first task is running but `User_5` has 2 spare slots),
-  so again a uniform draw over 17. `User_5` could even be picked again.
+- While `User_5` is running that item, they are not a candidate for a second
+  item. The next request is selected among the other qualified, on-shift staff.
 - As load builds up, some workers saturate (`_busy = capacity`) and drop
   out of the candidate list. If **all 17** ever saturate at once, the
   next task goes on `_waiting`; the moment any qualified worker
@@ -299,7 +295,7 @@ without deadlock and writes `output/event_log.csv`.
 
 R-RBA answers **"who is allowed"**. It deliberately does **not** answer
 **"which of the allowed ones"** beyond a uniform random pick — that's
-where the push *selection* patterns come in. Future work:
+where the implemented push *selection* patterns come in:
 
 - **Section 1.6 Advanced** — calendar / shift-based availability is now
   implemented: allocation gates on whether the resource is on-shift at
@@ -308,16 +304,14 @@ where the push *selection* patterns come in. Future work:
   the pre-1.6 baseline. Piled Execution respects it — an off-shift
   resource never picks up piled work, since the pile-preference branch
   is nested inside the same `_is_on_shift` guard as the regular FIFO drain.
-- **Section 1.7 Advanced** — role-discovery (e.g. OrdinoR) to replace
-  the hardcoded `RESOURCE_PERMISSIONS` with a mined organisational
-  model.
-- **Section 1.8 Advanced — push selection patterns** (replace the
-  random pick in `_allocate`):
-  - *R-RMA* (Random, pat. 15) — what's currently implemented.
+- **Section 1.7 Advanced** — the mined OrdinoR model is the default;
+  observed-static and hardcoded permissions remain comparison modes.
+- **Section 1.8 Advanced — push selection patterns**:
+  - *R-RMA* (Random, pat. 15) — baseline.
   - *R-RRA* (Round Robin, pat. 16) — take turns cycling through
     qualified workers.
-  - *R-SHQ* (Shortest Queue, pat. 17) — give the task to whoever has
-    the least on their plate right now.
+  - *R-SHQ* (Shortest Queue, pat. 17) — live busy load first, then
+    cumulative assignments to avoid degenerating under unit capacity.
 - **Detour patterns** (R-D delegation, R-E escalation, R-SD
   deallocation, R-PR/R-UR reallocation) — for handling exceptions such
   as resource unavailability mid-execution.

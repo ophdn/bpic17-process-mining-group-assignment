@@ -60,8 +60,8 @@ that heuristic:
 
 ```bash
 PYTHONPATH=. .venv/bin/python scripts/train_drl.py \
-  --timesteps 1000000 --days 3 --device mps --n-envs 4 \
-  --eval-freq 100000 --eval-episodes 2 \
+  --timesteps 1000000 --days 10 --device mps --n-envs 4 \
+  --eval-freq 100000 --eval-episodes 5 \
   --out models/drl_resource_policy_v3_1m
 ```
 
@@ -89,9 +89,10 @@ learned a postponement-heavy policy that completed 92.3 cases per evaluation
 run. The older version-2 one-million-step policy completed 245.5, while Random
 completed 268.4. A report-quality claim still requires a convergence study and
 substantially more decisions; the paper allowed up to 20 million. Training
-uses the paper's linear learning-rate decay. Validation checkpoints are ranked
-by shaped reward, but the final model must be selected using held-out business
-metrics because shaped reward and throughput can disagree.
+uses a clamped linear learning-rate decay, so PPO rollout overshoot cannot
+produce a negative learning rate. Validation saves both a reward-best model and
+a business-best model. Business-best first maximizes held-out completed cases,
+then minimizes terminal backlog, using shaped reward only as a final tie-break.
 
 ## Evaluate
 
@@ -110,6 +111,7 @@ PYTHONPATH=. .venv/bin/python scripts/run_experiments.py \
 Never evaluate on training seeds. Compare the frozen policy with the same CRN
 replication seeds as every baseline. A smoke-trained model is evidence that the
 software path works, not evidence that DRL improves resource allocation.
+For the final comparison, prefer the generated `*_business_best.zip` checkpoint.
 
 ## Files
 

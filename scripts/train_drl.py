@@ -9,7 +9,7 @@ include queue age/load, resource capacity and shifts, plus cyclical time.
 Example (from repository root)::
 
     PYTHONPATH=. .venv/bin/python scripts/train_drl.py \
-      --timesteps 100000 --days 3 --out models/drl_resource_policy
+      --timesteps 100000 --days 10 --out models/drl_resource_policy
 
 Install the optional stack first with::
 
@@ -22,7 +22,6 @@ import argparse
 import json
 import math
 from pathlib import Path
-import shutil
 
 import numpy as np
 
@@ -37,14 +36,17 @@ from simulation.components.resource import (
     capacity_for_mode,
 )
 from simulation.core.engine import SimulationEngine
-from simulation.drl import DRLDependencyError, ResourceAllocationEnv
+from simulation.drl import (
+    ClampedLinearSchedule,
+    DRLDependencyError,
+    ResourceAllocationEnv,
+)
 from simulation.main import CaseCompletionTracker
 
 from scripts.run_experiments import (
     ACTIVE_INPUTS_PATH,
     AVAILABILITY_MODEL_PATH,
     BPMN_PATH,
-    CASE_ATTRIBUTES_PATH,
     START_DATETIME,
     build_arrival_component,
     load_permission_model,
@@ -55,8 +57,8 @@ from scripts.run_experiments import (
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--timesteps", type=int, default=100_000)
-    parser.add_argument("--days", type=int, default=3,
-                        help="Simulated days per training episode.")
+    parser.add_argument("--days", type=int, default=10,
+                        help="Simulated days per training episode (default matches evaluation).")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--out", type=Path,
                         default=Path("models/drl_resource_policy"))
@@ -123,18 +125,18 @@ def parse_args():
         help="Disable the paper's linear learning-rate decay.",
     )
     parser.add_argument(
-        "--eval-freq", type=int, default=0,
+        "--eval-freq", type=int, default=100_000,
         help="Validate every N steps and retain the best checkpoint (0 disables).",
     )
-    parser.add_argument("--eval-episodes", type=int, default=2)
+    parser.add_argument("--eval-episodes", type=int, default=5)
     parser.add_argument("--eval-seed", type=int, default=1_000_000)
     parser.add_argument("--verbose", type=int, default=1, choices=[0, 1, 2])
     return parser.parse_args()
 
 
 def linear_schedule(initial_value: float):
-    """Paper-compatible linear decay from initial_value to zero."""
-    return lambda progress_remaining: float(progress_remaining) * initial_value
+    """Paper-compatible, portable linear decay from initial_value to zero."""
+    return ClampedLinearSchedule(initial_value)
 
 
 def resolve_device(requested: str) -> str:
@@ -331,6 +333,8 @@ def main():
     if min(args.batch_size, args.n_steps, args.hidden_size) <= 0:
         raise SystemExit(
             "--batch-size, --n-steps, --n-envs and --hidden-size must be positive")
+    rollout_block = args.n_steps * args.n_envs
+    scheduled_timesteps = math.ceil(args.timesteps / rollout_block) * rollout_block
     if min(
         args.postpone_penalty,
         args.completion_reward,
@@ -347,10 +351,15 @@ def main():
             or args.spt_pretrain_learning_rate <= 0):
         raise SystemExit("SPT pretraining epochs/learning rate must be positive")
     device = resolve_device(args.device)
+    if scheduled_timesteps != args.timesteps:
+        print(
+            f"Rounding --timesteps from {args.timesteps:,} to "
+            f"{scheduled_timesteps:,} so training ends on a complete PPO rollout."
+        )
 
     try:
         from sb3_contrib import MaskablePPO
-        from sb3_contrib.common.maskable.callbacks import MaskableEvalCallback
+        from stable_baselines3.common.callbacks import BaseCallback
     except ImportError as exc:
         raise SystemExit(
             "Missing optional DRL dependencies. Run: "
@@ -426,50 +435,112 @@ def main():
             seed=args.seed,
         )
         print(f"SPT warm-start mean imitation loss: {pretrain_loss:.6f}")
-    callback = None
-    best_dir = args.out.parent / f"{args.out.name}_validation"
-    if args.eval_freq:
-        from stable_baselines3.common.monitor import Monitor
+    class BusinessMetricEvalCallback(BaseCallback):
+        """Retain the checkpoint with best held-out throughput/backlog.
 
-        eval_env = Monitor(
-            ResourceAllocationEnv(
-                factory,
-                base_seed=args.eval_seed,
-                postpone_penalty=args.postpone_penalty,
-                completion_reward=args.completion_reward,
-                terminal_wip_penalty=args.terminal_wip_penalty,
-                # Every validation round sees the same distinct held-out seeds.
-                # Since its length equals n_eval_episodes, the cycle realigns at
-                # the beginning of every MaskableEvalCallback evaluation.
-                episode_seeds=range(
-                    args.eval_seed, args.eval_seed + args.eval_episodes),
+        Shaped reward remains useful for PPO diagnostics, but it can improve
+        while completed cases fall. The comparison is lexicographic: maximize
+        mean completed cases, then minimize terminal WIP, then maximize reward.
+        """
+
+        def __init__(
+            self, eval_env, eval_freq, n_eval_episodes, save_path, reward_save_path,
+        ):
+            super().__init__(verbose=1)
+            self.eval_env = eval_env
+            self.eval_freq = max(1, int(eval_freq))
+            self.n_eval_episodes = int(n_eval_episodes)
+            self.save_path = Path(save_path)
+            self.reward_save_path = Path(reward_save_path)
+            self.best_score = None
+            self.best_reward = None
+            self.best_metrics = None
+
+        def _on_step(self):
+            if self.n_calls % self.eval_freq:
+                return True
+            completions, terminal_wip, rewards = [], [], []
+            for _ in range(self.n_eval_episodes):
+                observation, _ = self.eval_env.reset()
+                truncated = terminated = False
+                episode_reward = 0.0
+                info = {}
+                while not (terminated or truncated):
+                    action, _ = self.model.predict(
+                        observation,
+                        action_masks=self.eval_env.action_masks(),
+                        deterministic=True,
+                    )
+                    observation, reward, terminated, truncated, info = (
+                        self.eval_env.step(int(action)))
+                    episode_reward += float(reward)
+                completions.append(float(info["cases_completed"]))
+                terminal_wip.append(float(info["wip"]))
+                rewards.append(episode_reward)
+            metrics = {
+                "mean_cases_completed": float(np.mean(completions)),
+                "mean_terminal_wip": float(np.mean(terminal_wip)),
+                "mean_reward": float(np.mean(rewards)),
+            }
+            score = (
+                metrics["mean_cases_completed"],
+                -metrics["mean_terminal_wip"],
+                metrics["mean_reward"],
             )
+            if self.best_reward is None or metrics["mean_reward"] > self.best_reward:
+                self.best_reward = metrics["mean_reward"]
+                self.reward_save_path.parent.mkdir(parents=True, exist_ok=True)
+                self.model.save(str(self.reward_save_path))
+            if self.best_score is None or score > self.best_score:
+                self.best_score = score
+                self.best_metrics = metrics
+                self.save_path.parent.mkdir(parents=True, exist_ok=True)
+                self.model.save(str(self.save_path))
+                if self.verbose:
+                    print(
+                        "New business-best checkpoint: "
+                        f"completed={metrics['mean_cases_completed']:.1f}, "
+                        f"terminal_wip={metrics['mean_terminal_wip']:.1f}, "
+                        f"reward={metrics['mean_reward']:.3f}"
+                    )
+            return True
+
+    callback = None
+    business_callback = None
+    business_best_model_path = args.out.with_name(
+        f"{args.out.name}_business_best")
+    reward_best_model_path = args.out.with_name(
+        f"{args.out.name}_reward_best")
+    if args.eval_freq:
+        business_env = ResourceAllocationEnv(
+            factory,
+            base_seed=args.eval_seed,
+            postpone_penalty=args.postpone_penalty,
+            completion_reward=args.completion_reward,
+            terminal_wip_penalty=args.terminal_wip_penalty,
+            episode_seeds=range(
+                args.eval_seed, args.eval_seed + args.eval_episodes),
         )
-        callback = MaskableEvalCallback(
-            eval_env,
-            best_model_save_path=str(best_dir),
-            log_path=str(best_dir),
+        business_callback = BusinessMetricEvalCallback(
+            business_env,
             eval_freq=max(1, args.eval_freq // args.n_envs),
             n_eval_episodes=args.eval_episodes,
-            deterministic=True,
-            use_masking=True,
-            verbose=1,
+            save_path=business_best_model_path,
+            reward_save_path=reward_best_model_path,
         )
+        callback = business_callback
 
     model.learn(
-        total_timesteps=args.timesteps,
+        # Make the schedule denominator an exact number of PPO rollout blocks.
+        # SB3 would round up implicitly anyway; doing it explicitly prevents
+        # progress_remaining from becoming negative in the final block.
+        total_timesteps=scheduled_timesteps,
         callback=callback,
         progress_bar=False,
     )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     model.save(str(args.out))
-    best_model_path = best_dir / "best_model.zip"
-    reward_best_model_path = args.out.with_name(
-        f"{args.out.name}_reward_best"
-    ).with_suffix(".zip")
-    if best_model_path.exists():
-        shutil.copy2(best_model_path, reward_best_model_path)
     metadata = {
         "method": "MaskablePPO",
         "paper": "Middelhuis et al., Information Systems 128 (2025) 102492",
@@ -477,6 +548,7 @@ def main():
         # learned can be slightly larger than the requested CLI value.
         "timesteps": int(model.num_timesteps),
         "requested_timesteps": args.timesteps,
+        "scheduled_timesteps": scheduled_timesteps,
         "episode_days": args.days,
         "seed": args.seed,
         "scenario": args.scenario,
@@ -511,8 +583,15 @@ def main():
                 if args.eval_freq else []
             ),
             "reward_best_model": (
-                str(reward_best_model_path) if best_model_path.exists() else None
+                str(reward_best_model_path.with_suffix(".zip"))
+                if reward_best_model_path.with_suffix(".zip").exists() else None
             ),
+            "business_best_model": (
+                str(business_best_model_path.with_suffix(".zip"))
+                if business_best_model_path.with_suffix(".zip").exists() else None
+            ),
+            "business_best_metrics": (
+                business_callback.best_metrics if business_callback else None),
         },
         "hyperparameters": {
             "network": [args.hidden_size, args.hidden_size],
@@ -520,7 +599,7 @@ def main():
             "batch_size": args.batch_size,
             "learning_rate": args.learning_rate,
             "learning_rate_schedule": (
-                "constant" if args.constant_learning_rate else "linear"
+                "constant" if args.constant_learning_rate else "clamped_linear"
             ),
             "gamma": args.gamma,
             "clip_range": args.clip_range,

@@ -8,17 +8,26 @@ from datetime import datetime
 import unittest
 
 import numpy as np
+import pytest
 
 from simulation.components.permissions import StaticPermissions
 from simulation.components.resource import ResourceComponent
 from simulation.core.engine import SimulationEngine
 from simulation.core.events import EventType, SimEvent
+from simulation.drl import ClampedLinearSchedule
 
 try:
     import gymnasium  # noqa: F401
     HAVE_GYMNASIUM = True
 except ImportError:
     HAVE_GYMNASIUM = False
+
+
+def test_linear_schedule_clamps_rollout_overshoot():
+    schedule = ClampedLinearSchedule(3e-5)
+    assert schedule(1.0) == pytest.approx(3e-5)
+    assert schedule(0.5) == pytest.approx(1.5e-5)
+    assert schedule(-0.024) == 0.0
 
 
 class TestDRLResourceAllocation(unittest.TestCase):

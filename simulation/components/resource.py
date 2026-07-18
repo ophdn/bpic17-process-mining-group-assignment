@@ -405,6 +405,7 @@ class ResourceComponent:
         drl_external_control: bool = False,
         drl_observation_version: Optional[int] = None,
         drl_action_version: Optional[int] = None,
+        branching_mode: str = "probs",
     ):
         modes = {
             "piled": piled, "batching_k": batching_k is not None,
@@ -428,6 +429,7 @@ class ResourceComponent:
         self._capacity = capacity_per_resource
         self._rng = random.Random(seed)
         self._piled = piled
+        self._allocation_counts: Dict[str, int] = {}
 
         # Pull-side selection discipline (Russell et al. pull patterns,
         # simulated): when a resource frees up, IT picks which waiting item
@@ -495,9 +497,10 @@ class ResourceComponent:
         # choice; a probability-discounted weight is future work.
         self._parksong = parksong
         self._predictor = None
+        self._case_activity_visits: Dict[str, Dict[str, int]] = {}
         if parksong:
             from ..policies_advanced import NextActivityPredictor
-            self._predictor = NextActivityPredictor()
+            self._predictor = NextActivityPredictor(branching_mode=branching_mode)
         # case_id -> (current activity, its payload) while in service.
         self._active_cases: Dict[str, tuple] = {}
 
@@ -721,6 +724,19 @@ class ResourceComponent:
             self._arm_shift_wake(engine)
             return
 
+        if self._pull is not None:
+            # A pull discipline never assigns the arriving item directly.
+            # It first enters the shared queue, then every currently free
+            # resource chooses its preferred compatible item from that queue.
+            if not self._qualified(engine, event):
+                self._unpermitted += 1
+                self._begin(engine, event, None)
+                return
+            self._waiting.append(event)
+            self._pull_drain(engine)
+            self._arm_shift_wake(engine)
+            return
+
         resource = self._allocate(engine, event)
 
         if resource is not None:
@@ -796,6 +812,37 @@ class ResourceComponent:
             resource=None,
             payload=payload,
         ))
+
+    def _pull_best_index(self, engine, resource: str) -> Optional[int]:
+        """Return the queue index this resource prefers under the pull rule."""
+        best_i = None
+        best_key = None
+        for i, waiting in enumerate(self._waiting):
+            ct, when = self._context(engine, waiting)
+            if not self._permissions.permits(
+                    resource, waiting.activity, case_type=ct, when=when):
+                continue
+            if self._pull == "spt":
+                key = self._duration_model.expected_duration(
+                    waiting.activity, resource)
+            else:  # "laf"
+                key = self._case_first_seen.get(
+                    waiting.case_id, waiting.timestamp)
+            if best_key is None or key < best_key:
+                best_key, best_i = key, i
+        return best_i
+
+    def _pull_drain(self, engine, resources=None) -> None:
+        """Let free resources pull preferred items until no match remains."""
+        candidates = list(self._free_resources(engine) if resources is None else resources)
+        for resource in candidates:
+            while (self._busy.get(resource, 0) < self._capacity
+                   and self._is_on_shift(engine, resource)):
+                best_i = self._pull_best_index(engine, resource)
+                if best_i is None:
+                    break
+                waiting = self._waiting.pop(best_i)
+                self._begin(engine, waiting, resource)
 
     def on_resource_available(self, engine, event: SimEvent) -> None:
         """Something freed up capacity. Two callers:
@@ -906,24 +953,7 @@ class ResourceComponent:
                     # the system's FIFO first-permitted scan below. Strict
                     # "<" keeps the earliest-queued item on ties, so the
                     # rule is deterministic and consumes no RNG.
-                    best_i = None
-                    best_key = None
-                    for i, waiting in enumerate(self._waiting):
-                        ct, when = self._context(engine, waiting)
-                        if not self._permissions.permits(
-                                resource, waiting.activity, case_type=ct, when=when):
-                            continue
-                        if self._pull == "spt":
-                            key = self._duration_model.expected_duration(
-                                waiting.activity, resource)
-                        else:  # "laf"
-                            key = self._case_first_seen.get(
-                                waiting.case_id, waiting.timestamp)
-                        if best_key is None or key < best_key:
-                            best_key, best_i = key, i
-                    if best_i is not None:
-                        waiting = self._waiting.pop(best_i)
-                        self._begin(engine, waiting, resource)
+                    self._pull_drain(engine, [resource])
                     self._arm_shift_wake(engine)
                     return
 
@@ -936,7 +966,10 @@ class ResourceComponent:
                         break
         else:
             self._wake_at = None
-            self._drain(engine)
+            if self._pull is not None:
+                self._pull_drain(engine)
+            else:
+                self._drain(engine)
 
         self._arm_shift_wake(engine)
 
@@ -1286,6 +1319,7 @@ class ResourceComponent:
         phantom successor is planned for it. No-op outside parksong mode."""
         if self._parksong and event.case_id is not None:
             self._active_cases.pop(event.case_id, None)
+            self._case_activity_visits.pop(event.case_id, None)
 
     def _epoch_flush(self, engine) -> None:
         """One allocation epoch for the advanced policies (see constructor
@@ -1315,7 +1349,8 @@ class ResourceComponent:
         phantom_penalty: List[float] = []
         if self._parksong:
             for case_id, (activity, payload, begun_at) in self._active_cases.items():
-                pred = self._predictor.predict(activity)
+                visit = self._case_activity_visits.get(case_id, {}).get(activity, 1)
+                pred = self._predictor.predict(activity, visit=visit)
                 if pred is None:
                     continue
                 nxt, p_next = pred
@@ -1594,6 +1629,7 @@ class ResourceComponent:
                 return
             token["state"] = "allocated"
 
+        resuming = isinstance(request.payload, dict) and request.payload.get("resuming")
         if self._parksong and request.case_id is not None:
             # D1 bookkeeping: this case is now in service on this activity —
             # its predicted successor becomes a phantom item at the next
@@ -1603,9 +1639,14 @@ class ResourceComponent:
             # dropped on CASE_COMPLETE.
             self._active_cases[request.case_id] = (
                 request.activity, request.payload, engine.now)
+            if not resuming:
+                visits = self._case_activity_visits.setdefault(request.case_id, {})
+                visits[request.activity] = visits.get(request.activity, 0) + 1
 
         if resource is not None:
             self._busy[resource] = self._busy.get(resource, 0) + 1
+            self._allocation_counts[resource] = (
+                self._allocation_counts.get(resource, 0) + 1)
             if self._drl:
                 self._drl_active_activities.setdefault(resource, []).append(
                     request.activity
@@ -1615,7 +1656,6 @@ class ResourceComponent:
         self._wait_total += waited
         self._wait_count += 1
 
-        resuming = isinstance(request.payload, dict) and request.payload.get("resuming")
         engine.schedule(SimEvent(
             timestamp=engine.now,
             priority=5,
@@ -1654,7 +1694,11 @@ class ResourceComponent:
         ]
         if not available:
             return None
-        state = AllocationState(busy=self._busy, capacity=self._capacity)
+        state = AllocationState(
+            busy=self._busy,
+            capacity=self._capacity,
+            allocations=self._allocation_counts,
+        )
         return self._policy.select(event.activity, available, state)
 
     # ------------------------------------------------------------------
@@ -1671,6 +1715,7 @@ class ResourceComponent:
             "unpermitted_activities": self._unpermitted,
             "drl_assignments": self._drl_assignments,
             "drl_postponements": self._drl_postponements,
+            "allocations_per_resource": dict(self._allocation_counts),
         }
 
     def release(self, engine, resource: str, activity: Optional[str] = None) -> None:

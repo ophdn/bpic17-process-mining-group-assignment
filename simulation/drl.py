@@ -25,6 +25,25 @@ class DRLDependencyError(RuntimeError):
     """Raised when the optional training/inference stack is unavailable."""
 
 
+class ClampedLinearSchedule:
+    """Serializable linear learning-rate decay that never becomes negative.
+
+    Stable-Baselines may finish a complete rollout after ``total_timesteps``.
+    Its reported progress can consequently dip below zero. Keeping this class
+    in an importable module also avoids serializing a ``__main__`` lambda into
+    the model archive, which was fragile across Python versions/platforms.
+    """
+
+    def __init__(self, initial_value: float):
+        self.initial_value = float(initial_value)
+        if self.initial_value < 0:
+            raise ValueError("initial learning rate must be non-negative")
+
+    def __call__(self, progress_remaining: float) -> float:
+        progress = min(1.0, max(0.0, float(progress_remaining)))
+        return progress * self.initial_value
+
+
 def _gymnasium():
     try:
         import gymnasium as gym
