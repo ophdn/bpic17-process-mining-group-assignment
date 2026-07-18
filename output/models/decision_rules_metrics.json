@@ -1,9 +1,11 @@
 {
   "real_log_replay_on_bpmn": {
-    "n_fitting": 18196,
-    "n_nonfitting": 13313,
-    "fit_pct": 57.75,
-    "note": "share of real BPIC-17 cases whose full trace replays on the BPMN/Petri net \u2014 key evidence for the process-model source decision (Section 1.4)"
+    "n_perfect": 18196,
+    "n_repaired": 13313,
+    "n_repair_events": 28173,
+    "n_unrepairable_events": 2730,
+    "perfect_fit_pct": 57.75,
+    "note": "perfect_fit_pct = share of real BPIC-17 cases whose full trace replays on the BPMN/Petri net with no repair \u2014 key evidence for the process-model source decision (Section 1.4). Training examples now come from all cases, not only these: deviations are repaired (missing-token replay) so decision points after a deviation are not fitted on the compliant subpopulation alone. n_unrepairable_events counts events whose activity has no transition in the net at all (4 real activities are missing from the model)."
   },
   "split": "temporal_80_20 (lecture 05 slide 37)",
   "decision_points": {
@@ -25,39 +27,40 @@
         "A_Concept",
         "W_Handle leads"
       ],
-      "n_samples": 20405,
+      "n_samples": 20423,
       "split": "temporal_80_20",
-      "test_accuracy": 0.8282,
-      "test_precision_macro": 0.4141,
+      "test_accuracy": 0.8277,
+      "test_precision_macro": 0.4138,
       "test_recall_macro": 0.5,
-      "test_roc_auc_ovr_macro": 0.6357,
-      "majority_baseline_accuracy": 0.83
+      "test_roc_auc_ovr_macro": 0.6345,
+      "majority_baseline_accuracy": 0.8293
     },
     "A_Complete | O_Create Offer": {
       "classes": [
         "A_Complete",
         "O_Create Offer"
       ],
-      "n_samples": 49832,
+      "n_samples": 49924,
       "split": "temporal_80_20",
       "test_accuracy": 1.0,
       "test_precision_macro": 1.0,
       "test_recall_macro": 1.0,
       "test_roc_auc_ovr_macro": 1.0,
-      "majority_baseline_accuracy": 0.6315
+      "majority_baseline_accuracy": 0.6317
     },
     "A_Complete | O_Create Offer | O_Sent (mail and online)": {
       "classes": [
+        "A_Complete",
         "O_Create Offer",
         "O_Sent (mail and online)"
       ],
-      "n_samples": 33860,
+      "n_samples": 34384,
       "split": "temporal_80_20",
-      "test_accuracy": 0.8949,
-      "test_precision_macro": 0.4474,
-      "test_recall_macro": 0.5,
-      "test_roc_auc_ovr_macro": 0.6584,
-      "majority_baseline_accuracy": 0.8964
+      "test_accuracy": 0.8827,
+      "test_precision_macro": 0.2942,
+      "test_recall_macro": 0.3333,
+      "test_roc_auc_ovr_macro": 0.6837,
+      "majority_baseline_accuracy": 0.8847
     },
     "A_Complete | O_Create Offer | O_Sent (mail and online) | W_Complete application": {
       "classes": [
@@ -65,29 +68,34 @@
         "O_Sent (mail and online)",
         "W_Complete application"
       ],
-      "n_samples": 33122,
+      "n_samples": 33196,
       "split": "temporal_80_20",
-      "test_accuracy": 0.5623,
-      "test_precision_macro": 0.3306,
-      "test_recall_macro": 0.3344,
-      "test_roc_auc_ovr_macro": 0.5947,
-      "majority_baseline_accuracy": 0.5535
+      "test_accuracy": 0.562,
+      "test_precision_macro": 0.3305,
+      "test_recall_macro": 0.3343,
+      "test_roc_auc_ovr_macro": 0.5945,
+      "majority_baseline_accuracy": 0.5529
     },
     "A_Cancelled | A_Denied | A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Create Offer | O_Returned | O_Sent (mail and online) | W_Call incomplete files | W_Complete application | W_Validate application": {
       "classes": [
         "A_Cancelled",
         "A_Denied",
+        "A_Incomplete",
         "A_Validating",
+        "O_Accepted",
         "O_Create Offer",
-        "O_Sent (mail and online)"
+        "O_Returned",
+        "O_Sent (mail and online)",
+        "W_Call incomplete files",
+        "W_Validate application"
       ],
-      "n_samples": 15505,
+      "n_samples": 15749,
       "split": "temporal_80_20",
-      "test_accuracy": 0.6653,
-      "test_precision_macro": 0.2444,
-      "test_recall_macro": 0.2971,
-      "test_roc_auc_ovr_macro": 0.747,
-      "majority_baseline_accuracy": 0.6038
+      "test_accuracy": 0.6654,
+      "test_precision_macro": 0.1744,
+      "test_recall_macro": 0.2122,
+      "test_roc_auc_ovr_macro": 0.7204,
+      "majority_baseline_accuracy": 0.6025
     },
     "A_Cancelled | A_Denied | A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Create Offer | O_Returned | W_Call incomplete files | W_Validate application": {
       "classes": [
@@ -96,13 +104,13 @@
         "A_Validating",
         "O_Create Offer"
       ],
-      "n_samples": 17997,
+      "n_samples": 18110,
       "split": "temporal_80_20",
-      "test_accuracy": 0.6839,
-      "test_precision_macro": 0.3509,
-      "test_recall_macro": 0.4134,
-      "test_roc_auc_ovr_macro": 0.7677,
-      "majority_baseline_accuracy": 0.593
+      "test_accuracy": 0.6844,
+      "test_precision_macro": 0.351,
+      "test_recall_macro": 0.4137,
+      "test_roc_auc_ovr_macro": 0.7651,
+      "majority_baseline_accuracy": 0.5946
     },
     "A_Denied | A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Returned | W_Call incomplete files | W_Validate application": {
       "classes": [
@@ -111,28 +119,30 @@
         "O_Returned",
         "W_Validate application"
       ],
-      "n_samples": 20104,
+      "n_samples": 20293,
       "split": "temporal_80_20",
-      "test_accuracy": 0.8908,
-      "test_precision_macro": 0.2227,
+      "test_accuracy": 0.8884,
+      "test_precision_macro": 0.2221,
       "test_recall_macro": 0.25,
-      "test_roc_auc_ovr_macro": 0.6258,
-      "majority_baseline_accuracy": 0.9577
+      "test_roc_auc_ovr_macro": 0.5967,
+      "majority_baseline_accuracy": 0.9547
     },
     "A_Denied | A_Incomplete | A_Pending | A_Validating | O_Accepted | W_Call incomplete files | W_Validate application": {
       "classes": [
         "A_Denied",
         "A_Incomplete",
+        "A_Validating",
         "O_Accepted",
+        "W_Call incomplete files",
         "W_Validate application"
       ],
-      "n_samples": 18796,
+      "n_samples": 19030,
       "split": "temporal_80_20",
-      "test_accuracy": 0.434,
-      "test_precision_macro": 0.3296,
-      "test_recall_macro": 0.3672,
-      "test_roc_auc_ovr_macro": 0.6959,
-      "majority_baseline_accuracy": 0.3557
+      "test_accuracy": 0.4241,
+      "test_precision_macro": 0.3273,
+      "test_recall_macro": 0.3665,
+      "test_roc_auc_ovr_macro": 0.6099,
+      "majority_baseline_accuracy": 0.356
     },
     "A_Incomplete | A_Pending | A_Validating | W_Validate application": {
       "classes": [
@@ -141,13 +151,13 @@
         "A_Validating",
         "W_Validate application"
       ],
-      "n_samples": 9529,
+      "n_samples": 11310,
       "split": "temporal_80_20",
-      "test_accuracy": 0.9822,
-      "test_precision_macro": 0.2455,
-      "test_recall_macro": 0.25,
-      "test_roc_auc_ovr_macro": 0.4143,
-      "majority_baseline_accuracy": 0.9883
+      "test_accuracy": 0.916,
+      "test_precision_macro": 0.2924,
+      "test_recall_macro": 0.2573,
+      "test_roc_auc_ovr_macro": 0.5742,
+      "majority_baseline_accuracy": 0.9352
     },
     "A_Incomplete | A_Validating | W_Validate application": {
       "classes": [
@@ -155,13 +165,28 @@
         "A_Validating",
         "W_Validate application"
       ],
-      "n_samples": 19180,
+      "n_samples": 20918,
       "split": "temporal_80_20",
-      "test_accuracy": 0.4961,
-      "test_precision_macro": 0.3866,
-      "test_recall_macro": 0.3354,
-      "test_roc_auc_ovr_macro": 0.5273,
-      "majority_baseline_accuracy": 0.495
+      "test_accuracy": 0.4763,
+      "test_precision_macro": 0.3954,
+      "test_recall_macro": 0.3415,
+      "test_roc_auc_ovr_macro": 0.5379,
+      "majority_baseline_accuracy": 0.4597
+    },
+    "A_Incomplete | A_Pending | A_Validating | O_Accepted | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Accepted",
+        "W_Validate application"
+      ],
+      "n_samples": 3171,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.5921,
+      "test_precision_macro": 0.148,
+      "test_recall_macro": 0.25,
+      "test_roc_auc_ovr_macro": 0.5723,
+      "majority_baseline_accuracy": 0.5532
     },
     "A_Incomplete | A_Pending | A_Validating | O_Accepted | W_Call incomplete files | W_Validate application": {
       "classes": [
@@ -171,26 +196,199 @@
         "W_Call incomplete files",
         "W_Validate application"
       ],
-      "n_samples": 12322,
+      "n_samples": 13197,
       "split": "temporal_80_20",
-      "test_accuracy": 0.4519,
-      "test_precision_macro": 0.2366,
-      "test_recall_macro": 0.3152,
-      "test_roc_auc_ovr_macro": 0.5821,
-      "majority_baseline_accuracy": 0.3716
+      "test_accuracy": 0.4553,
+      "test_precision_macro": 0.2516,
+      "test_recall_macro": 0.3407,
+      "test_roc_auc_ovr_macro": 0.6024,
+      "majority_baseline_accuracy": 0.3552
+    },
+    "A_Complete | O_Cancelled | O_Create Offer | O_Sent (mail and online)": {
+      "classes": [
+        "A_Complete",
+        "O_Cancelled",
+        "O_Create Offer",
+        "O_Sent (mail and online)"
+      ],
+      "n_samples": 1061,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.4977,
+      "test_precision_macro": 0.3517,
+      "test_recall_macro": 0.3338,
+      "test_roc_auc_ovr_macro": 0.5555,
+      "majority_baseline_accuracy": 0.4705
+    },
+    "A_Complete | O_Cancelled | O_Create Offer | O_Sent (mail and online) | W_Complete application": {
+      "classes": [
+        "A_Complete",
+        "O_Sent (mail and online)",
+        "W_Complete application"
+      ],
+      "n_samples": 576,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.5,
+      "test_precision_macro": 0.312,
+      "test_recall_macro": 0.3381,
+      "test_roc_auc_ovr_macro": 0.5441,
+      "majority_baseline_accuracy": 0.4804
+    },
+    "A_Cancelled | A_Denied | A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Cancelled | O_Create Offer | O_Returned | W_Call incomplete files | W_Validate application": {
+      "classes": [
+        "A_Cancelled",
+        "A_Denied",
+        "A_Validating",
+        "O_Cancelled",
+        "O_Create Offer"
+      ],
+      "n_samples": 563,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.469,
+      "test_precision_macro": 0.3258,
+      "test_recall_macro": 0.2996,
+      "test_roc_auc_ovr_macro": 0.6682,
+      "majority_baseline_accuracy": 0.3356
+    },
+    "A_Denied | A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Cancelled | O_Returned | W_Call incomplete files | W_Validate application": {
+      "classes": [
+        "A_Denied",
+        "A_Incomplete",
+        "O_Cancelled",
+        "O_Returned",
+        "W_Validate application"
+      ],
+      "n_samples": 890,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.8708,
+      "test_precision_macro": 0.4354,
+      "test_recall_macro": 0.5,
+      "test_roc_auc_ovr_macro": 0.5468,
+      "majority_baseline_accuracy": 0.9326
+    },
+    "A_Denied | A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Cancelled | W_Call incomplete files | W_Validate application": {
+      "classes": [
+        "A_Denied",
+        "A_Incomplete",
+        "O_Accepted",
+        "O_Cancelled",
+        "W_Validate application"
+      ],
+      "n_samples": 893,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.4134,
+      "test_precision_macro": 0.4376,
+      "test_recall_macro": 0.3248,
+      "test_roc_auc_ovr_macro": 0.7341,
+      "majority_baseline_accuracy": 0.3305
+    },
+    "A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Cancelled | W_Call incomplete files | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Accepted",
+        "O_Cancelled",
+        "W_Call incomplete files",
+        "W_Validate application"
+      ],
+      "n_samples": 991,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.4573,
+      "test_precision_macro": 0.2599,
+      "test_recall_macro": 0.3144,
+      "test_roc_auc_ovr_macro": 0.6604,
+      "majority_baseline_accuracy": 0.3232
+    },
+    "A_Incomplete | A_Pending | A_Validating | O_Cancelled | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Pending",
+        "A_Validating",
+        "O_Cancelled",
+        "W_Validate application"
+      ],
+      "n_samples": 506,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.8824,
+      "test_precision_macro": 0.4954,
+      "test_recall_macro": 0.4433,
+      "test_roc_auc_ovr_macro": 0.8645,
+      "majority_baseline_accuracy": 0.7995
     },
     "O_Create Offer | O_Sent (mail and online)": {
       "classes": [
         "O_Create Offer",
         "O_Sent (mail and online)"
       ],
-      "n_samples": 4146,
+      "n_samples": 4336,
       "split": "temporal_80_20",
-      "test_accuracy": 0.9494,
-      "test_precision_macro": 0.4747,
+      "test_accuracy": 0.9355,
+      "test_precision_macro": 0.4677,
       "test_recall_macro": 0.5,
-      "test_roc_auc_ovr_macro": 0.5811,
-      "majority_baseline_accuracy": 0.9412
+      "test_roc_auc_ovr_macro": 0.6622,
+      "majority_baseline_accuracy": 0.9201
+    },
+    "A_Incomplete | A_Validating | O_Create Offer | O_Sent (mail and online) | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Create Offer",
+        "O_Sent (mail and online)",
+        "W_Validate application"
+      ],
+      "n_samples": 2173,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.3034,
+      "test_precision_macro": 0.1161,
+      "test_recall_macro": 0.2072,
+      "test_roc_auc_ovr_macro": 0.5554,
+      "majority_baseline_accuracy": 0.3188
+    },
+    "A_Incomplete | A_Validating | O_Create Offer | O_Sent (mail and online) | W_Complete application | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Create Offer",
+        "O_Sent (mail and online)",
+        "W_Validate application"
+      ],
+      "n_samples": 1026,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.568,
+      "test_precision_macro": 0.142,
+      "test_recall_macro": 0.25,
+      "test_roc_auc_ovr_macro": 0.5848,
+      "majority_baseline_accuracy": 0.5122
+    },
+    "A_Incomplete | A_Validating | O_Cancelled | O_Create Offer | O_Sent (mail and online) | W_Complete application | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Cancelled",
+        "O_Create Offer",
+        "W_Validate application"
+      ],
+      "n_samples": 325,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.5846,
+      "test_precision_macro": 0.1923,
+      "test_recall_macro": 0.223,
+      "test_roc_auc_ovr_macro": 0.521,
+      "majority_baseline_accuracy": 0.55
+    },
+    "A_Incomplete | A_Validating | O_Cancelled | O_Sent (mail and online) | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Cancelled",
+        "W_Validate application"
+      ],
+      "n_samples": 471,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.7053,
+      "test_precision_macro": 0.1411,
+      "test_recall_macro": 0.2,
+      "test_roc_auc_ovr_macro": 0.5999,
+      "majority_baseline_accuracy": 0.7154
     },
     "A_Incomplete | A_Validating | O_Returned | W_Validate application": {
       "classes": [
@@ -199,28 +397,484 @@
         "O_Returned",
         "W_Validate application"
       ],
-      "n_samples": 2352,
+      "n_samples": 2533,
       "split": "temporal_80_20",
-      "test_accuracy": 0.4904,
-      "test_precision_macro": 0.1226,
+      "test_accuracy": 0.4832,
+      "test_precision_macro": 0.1208,
       "test_recall_macro": 0.25,
-      "test_roc_auc_ovr_macro": 0.5479,
-      "majority_baseline_accuracy": 0.4716
+      "test_roc_auc_ovr_macro": 0.5166,
+      "majority_baseline_accuracy": 0.4714
     },
-    "A_Incomplete | A_Pending | A_Validating | O_Accepted | W_Validate application": {
+    "A_Incomplete | A_Validating | O_Cancelled | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Cancelled",
+        "W_Validate application"
+      ],
+      "n_samples": 2395,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.4739,
+      "test_precision_macro": 0.202,
+      "test_recall_macro": 0.2626,
+      "test_roc_auc_ovr_macro": 0.5488,
+      "majority_baseline_accuracy": 0.5752
+    },
+    "A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Create Offer | O_Sent (mail and online) | W_Call incomplete files | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Accepted",
+        "O_Create Offer",
+        "O_Sent (mail and online)",
+        "W_Call incomplete files",
+        "W_Validate application"
+      ],
+      "n_samples": 1003,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.3035,
+      "test_precision_macro": 0.1205,
+      "test_recall_macro": 0.1639,
+      "test_roc_auc_ovr_macro": 0.5348,
+      "majority_baseline_accuracy": 0.3042
+    },
+    "A_Incomplete | A_Pending | A_Validating | O_Sent (mail and online) | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Pending",
+        "A_Validating",
+        "W_Validate application"
+      ],
+      "n_samples": 534,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.9252,
+      "test_precision_macro": 0.2313,
+      "test_recall_macro": 0.25,
+      "test_roc_auc_ovr_macro": 0.5945,
+      "majority_baseline_accuracy": 0.9297
+    },
+    "A_Incomplete | A_Pending | A_Validating | O_Create Offer | O_Sent (mail and online) | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Pending",
+        "A_Validating",
+        "O_Create Offer",
+        "O_Sent (mail and online)",
+        "W_Validate application"
+      ],
+      "n_samples": 258,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.3654,
+      "test_precision_macro": 0.0609,
+      "test_recall_macro": 0.1667,
+      "test_roc_auc_ovr_macro": 0.6515,
+      "majority_baseline_accuracy": 0.3883
+    },
+    "A_Incomplete | A_Pending | A_Validating | O_Create Offer | O_Sent (mail and online) | W_Complete application | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Pending",
+        "A_Validating",
+        "O_Create Offer",
+        "W_Validate application"
+      ],
+      "n_samples": 50,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.3,
+      "test_precision_macro": 0.1238,
+      "test_recall_macro": 0.25,
+      "test_roc_auc_ovr_macro": 0.3931,
+      "majority_baseline_accuracy": 0.375
+    },
+    "A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Cancelled | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Accepted",
+        "O_Cancelled",
+        "W_Validate application"
+      ],
+      "n_samples": 168,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.5,
+      "test_precision_macro": 0.1,
+      "test_recall_macro": 0.2,
+      "test_roc_auc_ovr_macro": 0.5814,
+      "majority_baseline_accuracy": 0.5149
+    },
+    "O_Cancelled | O_Create Offer | O_Sent (mail and online)": {
+      "classes": [
+        "O_Cancelled",
+        "O_Create Offer",
+        "O_Sent (mail and online)"
+      ],
+      "n_samples": 1031,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.5894,
+      "test_precision_macro": 0.3617,
+      "test_recall_macro": 0.404,
+      "test_roc_auc_ovr_macro": 0.6346,
+      "majority_baseline_accuracy": 0.5218
+    },
+    "A_Cancelled | A_Denied | A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Cancelled | O_Create Offer | O_Returned | O_Sent (mail and online) | W_Call incomplete files | W_Complete application | W_Validate application": {
+      "classes": [
+        "A_Cancelled",
+        "A_Denied",
+        "A_Validating",
+        "O_Cancelled",
+        "O_Create Offer",
+        "O_Sent (mail and online)",
+        "W_Call incomplete files"
+      ],
+      "n_samples": 1354,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.5129,
+      "test_precision_macro": 0.2061,
+      "test_recall_macro": 0.2223,
+      "test_roc_auc_ovr_macro": 0.5384,
+      "majority_baseline_accuracy": 0.5272
+    },
+    "A_Incomplete | A_Validating | O_Cancelled | O_Create Offer | O_Sent (mail and online) | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Cancelled",
+        "O_Create Offer",
+        "O_Sent (mail and online)",
+        "W_Validate application"
+      ],
+      "n_samples": 713,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.6154,
+      "test_precision_macro": 0.1071,
+      "test_recall_macro": 0.1594,
+      "test_roc_auc_ovr_macro": 0.5528,
+      "majority_baseline_accuracy": 0.6263
+    },
+    "A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Create Offer | O_Sent (mail and online) | W_Complete application | W_Validate application": {
       "classes": [
         "A_Incomplete",
         "A_Validating",
         "O_Accepted",
         "W_Validate application"
       ],
-      "n_samples": 1427,
+      "n_samples": 78,
       "split": "temporal_80_20",
-      "test_accuracy": 0.5629,
-      "test_precision_macro": 0.1407,
+      "test_accuracy": 0.6875,
+      "test_precision_macro": 0.1719,
       "test_recall_macro": 0.25,
-      "test_roc_auc_ovr_macro": 0.5671,
-      "majority_baseline_accuracy": 0.5539
+      "test_roc_auc_ovr_macro": 0.4247,
+      "majority_baseline_accuracy": 0.6935
+    },
+    "A_Cancelled | A_Denied | A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Create Offer | O_Returned | O_Sent (mail and online) | W_Call incomplete files | W_Validate application": {
+      "classes": [
+        "A_Cancelled",
+        "A_Denied",
+        "A_Validating",
+        "O_Create Offer",
+        "O_Sent (mail and online)"
+      ],
+      "n_samples": 324,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.7077,
+      "test_precision_macro": 0.3342,
+      "test_recall_macro": 0.3505,
+      "test_roc_auc_ovr_macro": 0.6624,
+      "majority_baseline_accuracy": 0.5985
+    },
+    "A_Denied | A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Returned | O_Sent (mail and online) | W_Call incomplete files | W_Validate application": {
+      "classes": [
+        "A_Denied",
+        "A_Incomplete",
+        "O_Returned",
+        "W_Validate application"
+      ],
+      "n_samples": 211,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.6047,
+      "test_precision_macro": 0.2796,
+      "test_recall_macro": 0.2923,
+      "test_roc_auc_ovr_macro": 0.5885,
+      "majority_baseline_accuracy": 0.631
+    },
+    "A_Denied | A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Sent (mail and online) | W_Call incomplete files | W_Validate application": {
+      "classes": [
+        "A_Denied",
+        "A_Incomplete",
+        "O_Accepted",
+        "W_Validate application"
+      ],
+      "n_samples": 128,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.3077,
+      "test_precision_macro": 0.2274,
+      "test_recall_macro": 0.2327,
+      "test_roc_auc_ovr_macro": 0.5069,
+      "majority_baseline_accuracy": 0.451
+    },
+    "A_Incomplete | A_Validating | O_Sent (mail and online) | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Sent (mail and online)",
+        "W_Validate application"
+      ],
+      "n_samples": 755,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.4437,
+      "test_precision_macro": 0.2294,
+      "test_recall_macro": 0.3243,
+      "test_roc_auc_ovr_macro": 0.4897,
+      "majority_baseline_accuracy": 0.4189
+    },
+    "A_Cancelled | A_Denied | A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Cancelled | O_Create Offer | O_Returned | O_Sent (mail and online) | W_Call incomplete files | W_Validate application": {
+      "classes": [
+        "A_Validating",
+        "O_Create Offer",
+        "O_Sent (mail and online)"
+      ],
+      "n_samples": 45,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.5556,
+      "test_precision_macro": 0.1389,
+      "test_recall_macro": 0.25,
+      "test_roc_auc_ovr_macro": 0.5,
+      "majority_baseline_accuracy": 0.7222
+    },
+    "A_Validating | O_Cancelled | O_Create Offer | O_Returned | O_Sent (mail and online)": {
+      "classes": [
+        "A_Validating",
+        "O_Cancelled",
+        "O_Create Offer",
+        "O_Returned",
+        "O_Sent (mail and online)"
+      ],
+      "n_samples": 78,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.3125,
+      "test_precision_macro": 0.1042,
+      "test_recall_macro": 0.3333,
+      "test_roc_auc_ovr_macro": 0.4617,
+      "majority_baseline_accuracy": 0.6613
+    },
+    "A_Validating | O_Cancelled | O_Create Offer | O_Returned | O_Sent (mail and online) | W_Complete application": {
+      "classes": [
+        "A_Validating",
+        "O_Cancelled",
+        "O_Create Offer",
+        "O_Returned",
+        "O_Sent (mail and online)"
+      ],
+      "n_samples": 131,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.4074,
+      "test_precision_macro": 0.2,
+      "test_recall_macro": 0.26,
+      "test_roc_auc_ovr_macro": 0.697,
+      "majority_baseline_accuracy": 0.375
+    },
+    "A_Incomplete | A_Validating | O_Cancelled | O_Create Offer | O_Sent (mail and online) | W_Complete application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Cancelled",
+        "O_Sent (mail and online)"
+      ],
+      "n_samples": 39,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.75,
+      "test_precision_macro": 0.375,
+      "test_recall_macro": 0.5,
+      "test_roc_auc_ovr_macro": 0.5,
+      "majority_baseline_accuracy": 0.5484
+    },
+    "A_Incomplete | A_Validating | O_Returned | O_Sent (mail and online) | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Returned",
+        "W_Validate application"
+      ],
+      "n_samples": 206,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.5238,
+      "test_precision_macro": 0.1746,
+      "test_recall_macro": 0.3333,
+      "test_roc_auc_ovr_macro": 0.6033,
+      "majority_baseline_accuracy": 0.4329
+    },
+    "A_Incomplete | A_Validating | O_Cancelled | O_Returned | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Cancelled",
+        "O_Returned",
+        "W_Validate application"
+      ],
+      "n_samples": 170,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.2647,
+      "test_precision_macro": 0.1324,
+      "test_recall_macro": 0.375,
+      "test_roc_auc_ovr_macro": 0.5714,
+      "majority_baseline_accuracy": 0.3603
+    },
+    "A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Create Offer | O_Sent (mail and online) | W_Call incomplete files | W_Complete application | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Accepted",
+        "O_Create Offer",
+        "W_Call incomplete files",
+        "W_Validate application"
+      ],
+      "n_samples": 457,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.4348,
+      "test_precision_macro": 0.1556,
+      "test_recall_macro": 0.1689,
+      "test_roc_auc_ovr_macro": 0.573,
+      "majority_baseline_accuracy": 0.4493
+    },
+    "A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Sent (mail and online) | W_Call incomplete files | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Accepted",
+        "W_Call incomplete files",
+        "W_Validate application"
+      ],
+      "n_samples": 151,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.3226,
+      "test_precision_macro": 0.1869,
+      "test_recall_macro": 0.2769,
+      "test_roc_auc_ovr_macro": 0.4909,
+      "majority_baseline_accuracy": 0.3167
+    },
+    "A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Create Offer | O_Sent (mail and online) | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Accepted",
+        "O_Sent (mail and online)",
+        "W_Validate application"
+      ],
+      "n_samples": 134,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.7778,
+      "test_precision_macro": 0.1944,
+      "test_recall_macro": 0.25,
+      "test_roc_auc_ovr_macro": 0.4814,
+      "majority_baseline_accuracy": 0.6262
+    },
+    "A_Incomplete | A_Validating | O_Create Offer | O_Sent (mail and online)": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Create Offer",
+        "O_Sent (mail and online)"
+      ],
+      "n_samples": 128,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.5385,
+      "test_precision_macro": 0.1346,
+      "test_recall_macro": 0.25,
+      "test_roc_auc_ovr_macro": 0.5301,
+      "majority_baseline_accuracy": 0.5
+    },
+    "A_Incomplete | A_Validating | O_Cancelled | O_Sent (mail and online)": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Cancelled"
+      ],
+      "n_samples": 50,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.3,
+      "test_precision_macro": 0.2222,
+      "test_recall_macro": 0.2778,
+      "test_roc_auc_ovr_macro": 0.4722,
+      "majority_baseline_accuracy": 0.575
+    },
+    "A_Validating | O_Create Offer | O_Returned | O_Sent (mail and online)": {
+      "classes": [
+        "A_Validating",
+        "O_Create Offer",
+        "O_Returned",
+        "O_Sent (mail and online)"
+      ],
+      "n_samples": 107,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.7727,
+      "test_precision_macro": 0.1932,
+      "test_recall_macro": 0.25,
+      "test_roc_auc_ovr_macro": 0.3444,
+      "majority_baseline_accuracy": 0.6706
+    },
+    "A_Validating | O_Create Offer | O_Returned | O_Sent (mail and online) | W_Complete application": {
+      "classes": [
+        "A_Validating",
+        "O_Create Offer",
+        "O_Returned",
+        "O_Sent (mail and online)"
+      ],
+      "n_samples": 99,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.45,
+      "test_precision_macro": 0.2889,
+      "test_recall_macro": 0.4259,
+      "test_roc_auc_ovr_macro": 0.6193,
+      "majority_baseline_accuracy": 0.3671
+    },
+    "A_Incomplete | A_Validating | O_Cancelled | O_Create Offer | O_Sent (mail and online)": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Cancelled",
+        "O_Create Offer",
+        "O_Sent (mail and online)"
+      ],
+      "n_samples": 106,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.6818,
+      "test_precision_macro": 0.2273,
+      "test_recall_macro": 0.3333,
+      "test_roc_auc_ovr_macro": 0.331,
+      "majority_baseline_accuracy": 0.6786
+    },
+    "A_Incomplete | A_Validating | O_Create Offer | O_Returned | O_Sent (mail and online) | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Create Offer",
+        "O_Returned",
+        "O_Sent (mail and online)",
+        "W_Validate application"
+      ],
+      "n_samples": 57,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.5833,
+      "test_precision_macro": 0.2333,
+      "test_recall_macro": 0.2593,
+      "test_roc_auc_ovr_macro": 0.3889,
+      "majority_baseline_accuracy": 0.3778
+    },
+    "A_Incomplete | A_Validating | O_Create Offer | O_Returned | O_Sent (mail and online) | W_Complete application | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Create Offer",
+        "O_Returned",
+        "W_Validate application"
+      ],
+      "n_samples": 53,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.4545,
+      "test_precision_macro": 0.0909,
+      "test_recall_macro": 0.2,
+      "test_roc_auc_ovr_macro": 0.5,
+      "majority_baseline_accuracy": 0.3571
     },
     "A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Returned | W_Call incomplete files | W_Validate application": {
       "classes": [
@@ -230,13 +884,208 @@
         "W_Call incomplete files",
         "W_Validate application"
       ],
-      "n_samples": 97,
+      "n_samples": 110,
       "split": "temporal_80_20",
-      "test_accuracy": 0.35,
-      "test_precision_macro": 0.1641,
+      "test_accuracy": 0.3182,
+      "test_precision_macro": 0.1591,
       "test_recall_macro": 0.1654,
-      "test_roc_auc_ovr_macro": 0.4476,
-      "majority_baseline_accuracy": 0.4026
+      "test_roc_auc_ovr_macro": 0.4654,
+      "majority_baseline_accuracy": 0.375
+    },
+    "A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Returned | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Accepted",
+        "O_Returned",
+        "W_Validate application"
+      ],
+      "n_samples": 89,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.5556,
+      "test_precision_macro": 0.1389,
+      "test_recall_macro": 0.25,
+      "test_roc_auc_ovr_macro": 0.4069,
+      "majority_baseline_accuracy": 0.5352
+    },
+    "A_Denied | A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Cancelled | O_Returned | O_Sent (mail and online) | W_Call incomplete files | W_Validate application": {
+      "classes": [
+        "O_Cancelled",
+        "O_Returned",
+        "W_Validate application"
+      ],
+      "n_samples": 41,
+      "split": "temporal_80_20",
+      "test_accuracy": 1.0,
+      "test_precision_macro": 1.0,
+      "test_recall_macro": 1.0,
+      "test_roc_auc_ovr_macro": null,
+      "majority_baseline_accuracy": 0.8438
+    },
+    "A_Denied | A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Cancelled | O_Sent (mail and online) | W_Call incomplete files | W_Validate application": {
+      "classes": [
+        "A_Denied",
+        "A_Incomplete",
+        "O_Accepted",
+        "O_Cancelled",
+        "W_Validate application"
+      ],
+      "n_samples": 46,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.1,
+      "test_precision_macro": 0.02,
+      "test_recall_macro": 0.2,
+      "test_roc_auc_ovr_macro": 0.5,
+      "majority_baseline_accuracy": 0.3889
+    },
+    "A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Cancelled | O_Create Offer | O_Sent (mail and online) | W_Call incomplete files | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Accepted",
+        "O_Cancelled",
+        "O_Create Offer",
+        "O_Sent (mail and online)",
+        "W_Call incomplete files",
+        "W_Validate application"
+      ],
+      "n_samples": 149,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.3667,
+      "test_precision_macro": 0.111,
+      "test_recall_macro": 0.2143,
+      "test_roc_auc_ovr_macro": 0.7231,
+      "majority_baseline_accuracy": 0.3025
+    },
+    "A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Cancelled | O_Create Offer | O_Sent (mail and online) | W_Call incomplete files | W_Complete application | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Accepted",
+        "O_Cancelled",
+        "O_Create Offer",
+        "W_Call incomplete files",
+        "W_Validate application"
+      ],
+      "n_samples": 84,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.5294,
+      "test_precision_macro": 0.1442,
+      "test_recall_macro": 0.2037,
+      "test_roc_auc_ovr_macro": 0.5466,
+      "majority_baseline_accuracy": 0.4179
+    },
+    "A_Denied | A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Create Offer | O_Sent (mail and online) | W_Call incomplete files | W_Validate application": {
+      "classes": [
+        "A_Denied",
+        "A_Incomplete",
+        "O_Accepted",
+        "O_Create Offer",
+        "O_Sent (mail and online)",
+        "W_Validate application"
+      ],
+      "n_samples": 52,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.5455,
+      "test_precision_macro": 0.1364,
+      "test_recall_macro": 0.25,
+      "test_roc_auc_ovr_macro": 0.549,
+      "majority_baseline_accuracy": 0.6585
+    },
+    "A_Incomplete | A_Pending | A_Validating | O_Cancelled | O_Sent (mail and online) | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Pending",
+        "A_Validating",
+        "W_Validate application"
+      ],
+      "n_samples": 81,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.7059,
+      "test_precision_macro": 0.1765,
+      "test_recall_macro": 0.25,
+      "test_roc_auc_ovr_macro": 0.7094,
+      "majority_baseline_accuracy": 0.8281
+    },
+    "A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Cancelled | O_Sent (mail and online) | W_Call incomplete files | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Accepted",
+        "O_Cancelled",
+        "W_Call incomplete files",
+        "W_Validate application"
+      ],
+      "n_samples": 67,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.2857,
+      "test_precision_macro": 0.0556,
+      "test_recall_macro": 0.1667,
+      "test_roc_auc_ovr_macro": 0.6279,
+      "majority_baseline_accuracy": 0.2453
+    },
+    "A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Sent (mail and online) | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Accepted",
+        "W_Validate application"
+      ],
+      "n_samples": 81,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.5882,
+      "test_precision_macro": 0.1961,
+      "test_recall_macro": 0.3333,
+      "test_roc_auc_ovr_macro": 0.6952,
+      "majority_baseline_accuracy": 0.5625
+    },
+    "A_Incomplete | A_Validating | O_Create Offer | O_Sent (mail and online) | W_Complete application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Validating",
+        "O_Create Offer",
+        "O_Sent (mail and online)"
+      ],
+      "n_samples": 31,
+      "split": "temporal_80_20",
+      "test_accuracy": 1.0,
+      "test_precision_macro": 1.0,
+      "test_recall_macro": 1.0,
+      "test_roc_auc_ovr_macro": null,
+      "majority_baseline_accuracy": 0.5833
+    },
+    "A_Incomplete | A_Pending | A_Validating | O_Cancelled | O_Create Offer | O_Sent (mail and online) | W_Validate application": {
+      "classes": [
+        "A_Incomplete",
+        "A_Pending",
+        "A_Validating",
+        "O_Cancelled",
+        "O_Sent (mail and online)",
+        "W_Validate application"
+      ],
+      "n_samples": 41,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.3333,
+      "test_precision_macro": 0.0667,
+      "test_recall_macro": 0.2,
+      "test_roc_auc_ovr_macro": 0.5,
+      "majority_baseline_accuracy": 0.3438
+    },
+    "A_Denied | A_Incomplete | A_Pending | A_Validating | O_Accepted | O_Create Offer | O_Sent (mail and online) | W_Call incomplete files | W_Complete application | W_Validate application": {
+      "classes": [
+        "A_Denied",
+        "A_Incomplete",
+        "O_Accepted",
+        "O_Create Offer",
+        "W_Validate application"
+      ],
+      "n_samples": 31,
+      "split": "temporal_80_20",
+      "test_accuracy": 0.0,
+      "test_precision_macro": 0.0,
+      "test_recall_macro": 0.0,
+      "test_roc_auc_ovr_macro": 0.5,
+      "majority_baseline_accuracy": 0.5833
     }
   }
 }

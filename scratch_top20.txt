@@ -1,0 +1,20 @@
+1 6.99 A_Create Application → A_Submitted → A_Concept → A_Accepted → O_Create Offer → O_Created → O_Sent (mail and online) → W_Complete application → A_Complete → A_Cancelled → O_Cancelled
+2 6.06 A_Create Application → A_Submitted → A_Concept → A_Accepted → O_Create Offer → O_Created → O_Sent (mail and online) → A_Complete → A_Cancelled → O_Cancelled
+3 5.01 A_Create Application → A_Concept → A_Accepted → O_Create Offer → O_Created → O_Sent (mail and online) → W_Complete application → A_Complete → A_Cancelled → O_Cancelled
+4 3.08 A_Create Application → A_Concept → A_Accepted → O_Create Offer → O_Created → O_Sent (mail and online) → W_Complete application → A_Complete → A_Validating → O_Returned → O_Accepted → A_Pending
+5 2.14 A_Create Application → A_Submitted → A_Concept → A_Accepted → O_Create Offer → O_Created → O_Sent (mail and online) → A_Complete → A_Validating → O_Returned → O_Accepted → A_Pending
+6 1.96 A_Create Application → A_Submitted → A_Concept → A_Accepted → O_Create Offer → O_Created → O_Sent (mail and online) → W_Complete application → A_Complete → A_Validating → O_Returned → O_Accepted → A_Pending
+7 1.54 A_Create Application → A_Submitted → A_Concept → A_Accepted → O_Create Offer → O_Created → O_Sent (mail and online) → A_Complete → A_Validating → O_Returned → A_Incomplete → O_Accepted → A_Pending
+8 1.49 A_Create Application → A_Submitted → W_Handle leads → A_Concept → A_Accepted → O_Create Offer → O_Created → O_Sent (mail and online) → A_Complete → A_Cancelled → O_Cancelled
+9 1.42 A_Create Application → A_Submitted → W_Handle leads → A_Concept → A_Accepted → O_Create Offer → O_Created → O_Sent (mail and online) → W_Complete application → A_Complete → A_Cancelled → O_Cancelled
+10 1.39 A_Create Application → A_Submitted → A_Concept → A_Accepted → O_Create Offer → O_Created → O_Sent (mail and online) → A_Complete → A_Validating → O_Returned → A_Incomplete → A_Validating → O_Accepted → A_Pending
+11 1.36 A_Create Application → A_Concept → A_Accepted → O_Create Offer → O_Created → O_Sent (mail and online) → W_Complete application → A_Complete → A_Validating → O_Returned → A_Incomplete → O_Accepted → A_Pending
+12 1.31 A_Create Application → A_Submitted → A_Concept → A_Accepted → O_Create Offer → O_Created → O_Sent (mail and online) → W_Complete application → A_Complete → A_Validating → O_Returned → A_Incomplete → O_Accepted → A_Pending
+13 1.27 A_Create Application → A_Concept → A_Accepted → O_Create Offer → O_Created → O_Sent (mail and online) → W_Complete application → A_Complete → A_Validating → O_Returned → A_Incomplete → A_Validating → O_Accepted → A_Pending
+14 1.26 A_Create Application → A_Concept → A_Accepted → O_Create Offer → O_Created → O_Sent (mail and online) → W_Complete application → A_Complete → A_Validating → O_Returned → O_Accepted → A_Pending → W_Validate application
+15 1.23 A_Create Application → A_Concept → A_Accepted → O_Create Offer → O_Created → O_Sent (mail and online) → A_Complete → A_Validating → O_Returned → O_Accepted → A_Pending
+16 1.13 A_Create Application → A_Submitted → A_Concept → A_Accepted → O_Create Offer → O_Created → O_Sent (mail and online) → W_Complete application → A_Complete → A_Validating → O_Returned → A_Incomplete → A_Validating → O_Accepted → A_Pending
+17 1.06 A_Create Application → A_Submitted → A_Concept → A_Accepted → O_Create Offer → O_Created → O_Create Offer → O_Created → O_Sent (mail and online) → O_Sent (mail and online) → W_Complete application → A_Complete → A_Cancelled → O_Cancelled → O_Cancelled
+18 0.91 A_Create Application → A_Concept → A_Accepted → O_Create Offer → O_Created → O_Sent (mail and online) → A_Complete → A_Cancelled → O_Cancelled
+19 0.73 A_Create Application → A_Concept → A_Accepted → O_Create Offer → O_Created → O_Sent (mail and online) → W_Complete application → A_Complete → A_Validating → O_Returned → W_Validate application → A_Incomplete → A_Validating → O_Accepted → A_Pending → W_Validate application
+20 0.71 A_Create Application → A_Submitted → A_Concept → A_Accepted → O_Create Offer → O_Created → O_Sent (mail and online) → A_Complete → A_Validating → O_Returned → A_Denied → O_Refused
