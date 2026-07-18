@@ -169,6 +169,7 @@ class PetriNetProcessComponent(ProcessComponent):
         branching_mode: str = "probs",
         decision_rules_path: Optional[str] = None,
         enforce_terminal_outcomes: bool = True,
+        dp_table: str = "full",
         **kwargs,
     ):
         """
@@ -180,6 +181,10 @@ class PetriNetProcessComponent(ProcessComponent):
         enforce_terminal_outcomes : whether firing an activity in
             TERMINAL_OUTCOMES force-ends the case (see comment above that
             constant). Ablation toggle, default True.
+        dp_table : {"full", "end_only", "off"} — how much of the replay-mined
+            decision-point table (Section 1.5 Advanced II) this run may use.
+            Ablation toggle, default "full". "off" is what makes
+            branching_mode="rules" a standalone Advanced I measurement.
 
         Everything else (seed, mode, model_path, start_datetime,
         resource_component, crn, ...) is forwarded to ProcessComponent rather
@@ -198,21 +203,32 @@ class PetriNetProcessComponent(ProcessComponent):
         self._markings: Dict[str, Marking] = {}
         self._fm_reach_cache: Dict[tuple, bool] = {}
 
+        if dp_table not in ("full", "end_only", "off"):
+            raise ValueError(
+                f"dp_table must be 'full', 'end_only' or 'off', got {dp_table!r}")
         self.branching_mode = branching_mode
         self.enforce_terminal_outcomes = enforce_terminal_outcomes
+        self.dp_table = dp_table
 
         # The replay-mined decision-point table also carries the END choice,
         # which is part of Petri-net completion rather than a branching-mode-
         # specific heuristic. Load it for every mode when present; "visit" and
         # "rules" additionally consume the visit-conditioned activity table.
+        #
+        # dp_table isolates the two roles for ablation (Section 1.5): "full"
+        # is production, "end_only" keeps the mined END decision but lets the
+        # branching mode own every branch choice, "off" removes the mined
+        # table entirely — the only configuration in which "rules" is a
+        # standalone Advanced I mechanism with no Advanced II data behind it.
         self._branching_by_visit: Dict[str, dict] = {}
         self._dp_probs: Dict[str, dict] = {}
         self._dp_visit_counts: Dict[str, Dict[str, int]] = {}
-        try:
-            with open(DP_PROBS_PATH, encoding="utf-8") as f:
-                self._dp_probs = json.load(f).get("dp_probs", {})
-        except FileNotFoundError:
-            pass
+        if dp_table != "off":
+            try:
+                with open(DP_PROBS_PATH, encoding="utf-8") as f:
+                    self._dp_probs = json.load(f).get("dp_probs", {})
+            except FileNotFoundError:
+                pass
         if branching_mode in ("visit", "rules"):
             try:
                 with open(INPUTS_PATH, encoding="utf-8") as f:
@@ -772,7 +788,7 @@ class PetriNetProcessComponent(ProcessComponent):
                 return rules_choice
 
         preferred = None
-        if dp_dist:
+        if dp_dist and self.dp_table == "full":
             preferred = {k: v for k, v in dp_dist.items() if k != END_LABEL}
         if not preferred:
             preferred = self._visit_conditioned_probs(case_id, current_activity)

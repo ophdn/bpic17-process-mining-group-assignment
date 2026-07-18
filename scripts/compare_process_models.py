@@ -101,6 +101,7 @@ def run_sim(use_advanced: bool, bpmn_path: Path = BPMN_PATH,
             branching_mode: str = "probs",
             lifecycle_mode: str = "legacy",
             enforce_terminal_outcomes: bool = True,
+            dp_table: str = "full",
             permissions: str = "orgmodel") -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     """Returns (completed-cases DataFrame, unfiltered DataFrame, run stats
     incl. completion rate). The unfiltered frame is needed for
@@ -146,6 +147,7 @@ def run_sim(use_advanced: bool, bpmn_path: Path = BPMN_PATH,
             bpmn_path=str(bpmn_path), branching_mode=branching_mode,
             decision_rules_path=str(REPO_ROOT / "simulation" / "models" / "decision_rules.joblib"),
             enforce_terminal_outcomes=enforce_terminal_outcomes,
+            dp_table=dp_table,
             **kwargs)
     else:
         process = ProcessComponent(**kwargs)
@@ -205,6 +207,13 @@ def main():
                         help="Ablation toggle (advanced config only): 'on' (default) "
                              "force-ends a case as soon as A_Pending/A_Denied/A_Cancelled "
                              "fires; 'off' relies solely on final_marking/__END__/loop_guard.")
+    parser.add_argument("--dp-table", default="full",
+                        choices=["full", "end_only", "off"],
+                        help="Ablation toggle (advanced config only): how much of the "
+                             "replay-mined decision-point table (1.5 Advanced II) the run "
+                             "may use. 'full' (default) production; 'end_only' keeps just "
+                             "the mined END decision; 'off' removes it entirely — use with "
+                             "--branching-mode rules to measure Advanced I standalone.")
     parser.add_argument("--permissions", default="orgmodel",
                         choices=["orgmodel", "observed", "hardcoded"],
                         help="Section 1.7 resource permission model (see simulation/"
@@ -231,6 +240,7 @@ def main():
                                         branching_mode=args.branching_mode,
                                         lifecycle_mode=args.lifecycle_mode,
                                         enforce_terminal_outcomes=args.terminal_outcomes == "on",
+                                        dp_table=args.dp_table,
                                         permissions=args.permissions)
         results[label] = metrics.evaluate(df, reference, net, im, fm, df_all=df_all)
         results[label]["run_stats"] = run_stats
@@ -239,6 +249,7 @@ def main():
             "bpmn": str(args.bpmn.name),
             "branching_mode": args.branching_mode if label == "advanced" else "probs",
             "terminal_outcomes": args.terminal_outcomes if label == "advanced" else "n/a",
+            "dp_table": args.dp_table if label == "advanced" else "n/a",
             "permissions": args.permissions,
             "processing_time_mode": "distribution",
             "lifecycle_mode": args.lifecycle_mode,
