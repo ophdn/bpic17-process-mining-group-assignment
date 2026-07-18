@@ -72,7 +72,6 @@ class SimulationEngine:
         # --- State ---
         self._now: float = 0.0          # Current simulation clock
         self._queue: List[SimEvent] = []  # Global priority queue (min-heap)
-        self._event_counter: int = 0    # Monotonic counter; breaks timestamp ties
 
         # --- Handlers ---
         # Map EventType -> list of callables that handle it
@@ -138,10 +137,10 @@ class SimulationEngine:
         Push *event* onto the global priority queue.
 
         Events with the same timestamp are ordered by ``event.priority``
-        (lower fires first), then by insertion order.
+        (lower fires first). Exact ties on (timestamp, priority) fall back
+        to heap order — deterministic for a fixed insertion sequence (so
+        seeded runs stay reproducible), but not guaranteed FIFO.
         """
-        # Use a stable counter so equal (timestamp, priority) events
-        # preserve FIFO order.
         heapq.heappush(self._queue, event)
         if self.verbose:
             print(f"  [SCHEDULE] {event}")
