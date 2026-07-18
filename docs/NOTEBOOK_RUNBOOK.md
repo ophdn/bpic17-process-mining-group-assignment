@@ -7,10 +7,11 @@ suite. For the detailed evaluation-only workflow, DRL compatibility checks, and
 exact run counts, see `docs/EVALUATION_DEEP_RUNBOOK.md`.
 
 The active processing-time model, fitted lifecycle inputs, and controlled
-lifecycle-validation results are committed. Collaborators who only need the
-current model and evaluation evidence can install the environment in Section 1
-and continue directly with Section 5; Sections 2--4 are maintainer steps for an
-intentional regeneration.
+lifecycle-validation results are committed. The DRL ZIP is distributed
+separately and must be placed at the path named in Section 5. Collaborators who
+have that archive and only need the current model and evaluation evidence can
+install the environment in Section 1 and continue directly with Section 5;
+Sections 2--4 are maintainer steps for an intentional regeneration.
 
 ## 1. Prepare and register the Python environment
 
@@ -18,6 +19,7 @@ intentional regeneration.
 cd /Users/danielsich/dev/Ent/bpic17-process-mining-group-assignment
 source venv/bin/activate
 python -m pip install -r requirements.txt
+python -m pip install -r requirements-drl.txt
 python -m ipykernel install --user --name bpic17-venv --display-name "BPIC17 (venv)"
 python -c "import sys; print(sys.executable)"
 ```
@@ -112,6 +114,12 @@ Kernel and Run All**. Run them in this exact order:
 1. `notebooks/03_processing_times.ipynb`
 2. `notebooks/03_process_times.ipynb`
 3. `notebooks/04_evaluation_60.ipynb` — evaluation and staffing study
+
+The 60-day notebook evaluates the complete configured policy grid, including
+the supplied DRL archive at
+`models/drl_resource_policy_rocm_v3_100k.zip`. It fails before starting the
+long simulations if the ZIP, optional DRL packages, or current OrgModel
+observation/action compatibility check is missing.
 
 For a terminal-driven run, use the same order:
 

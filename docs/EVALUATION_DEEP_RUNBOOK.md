@@ -77,18 +77,20 @@ Otherwise, retrain the DRL policy under the current simulator. Evaluating an old
 resource-assigned policy after removing `A_`/`O_` work from its decision process
 would be an out-of-distribution comparison.
 
-The archive records PPO seed 1 but does not contain a complete list of training
-and checkpoint-validation episode seeds. Since the current evaluation uses
-seeds 1--4, DRL must not be added to that grid until the trainer supplies the
-seed metadata. A final DRL comparison must use evaluation seeds unseen during
-both training and checkpoint selection, and all baseline policies must be rerun
-with exactly those same seeds for Common Random Numbers.
+The archive records PPO seed 1 and four parallel environments but does not
+contain a complete list of training and checkpoint-validation episode seeds.
+The 60-day notebook therefore uses seeds 4,000,001--4,000,004 for every policy,
+above the four worker-seed bands implied by the current trainer. This avoids the
+recorded worker bases and preserves Common Random Numbers across the complete
+grid. It is still not a substitute for the missing companion metadata: the
+trainer should confirm the complete training and checkpoint-selection seed
+sets before the DRL result is described as a fully held-out estimate.
 
 ## 3. Install and smoke-test DRL support
 
-The DRL packages are optional and are not installed in the current `venv` by
-the base requirements. Install them only if the supplied model passes the
-semantic and seed checks above:
+The DRL packages are optional dependencies and are not installed by the base
+requirements. The 60-day notebook now evaluates DRL, so install them before
+running it:
 
 ```bash
 python -m pip install -r requirements-drl.txt
@@ -142,29 +144,35 @@ reads or validates their outputs.
 
 ## 5. Number of simulation runs
 
-The current 60-day notebook evaluates three policies with four paired seeds:
+The 60-day notebook evaluates all eight fixed runner policies and the two
+configured parameter sweeps with four paired seeds. The finite grid is:
+
+```text
+random, roundrobin, shortestqueue, piled, pullspt, pulllaf, parksong, drl,
+kbatch1, kbatch5, kbatch10, krm0.5, krm1, krm2
+```
+
+`kbatchN` and `krmD` accept further positive values, so “all” means every fixed
+runner policy plus the documented study values, not every mathematically
+possible parameter value.
 
 | Component | Calculation | New simulation runs |
 |---|---:|---:|
-| Policy comparison | 3 policies × 4 seeds | 12 |
+| Policy comparison | 14 policies × 4 seeds | 56 |
 | Staffing baseline | reuses the 4 R-RMA policy runs | 0 |
 | Remove low-criticality pair | 1 scenario × 4 seeds | 4 |
 | Remove high-criticality pair | 1 scenario × 4 seeds | 4 |
-| **60-day notebook total** |  | **20** |
+| **60-day notebook total** |  | **64** |
 
 The prerequisite lifecycle comparison adds three runs, so a completely fresh
-report workflow executes 23 simulations before considering smoke tests.
-
-The current notebook does **not** include DRL. Once a semantically matching
-model and unseen seed set are available, adding DRL contributes four policy
-runs, producing 24 runs in the 60-day notebook and 27 including lifecycle
-validation. Changing the seed set invalidates every policy cache, as required
-for a paired comparison.
+report workflow executes 67 simulations before considering the optional
+one-day DRL smoke test. The new seed set and policy grid invalidate the old
+three-policy caches, as required for a paired comparison.
 
 For reference, the optional 10- and 30-day notebooks each contain 12 policy
-runs. Running all three horizons would therefore execute 44 notebook simulations
-(12 + 12 + 20), but those additional 24 runs do not support a claim currently
-made in the report.
+runs. Running all three horizons would therefore execute 88 notebook
+simulations (12 + 12 + 64), but those additional 24 short-horizon runs do not
+support a claim currently made in the report.
 
 ## 6. Expected outputs
 
