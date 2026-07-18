@@ -4,6 +4,12 @@ This runbook regenerates the processing-time evidence, the 10/30/60-day policy
 studies, and the report hand-off files. Run every command from the repository
 root. The long simulations are intentionally not part of the test suite.
 
+The active processing-time model, fitted lifecycle inputs, and controlled
+lifecycle-validation results are committed. Collaborators who only need the
+current model and report evidence can install the environment in Section 1 and
+continue directly with Section 5; Sections 2--4 are maintainer steps for an
+intentional regeneration.
+
 ## 1. Prepare and register the Python environment
 
 ```bash

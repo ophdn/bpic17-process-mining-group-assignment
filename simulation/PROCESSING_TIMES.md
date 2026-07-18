@@ -90,6 +90,11 @@ and suspend-end hazards, resume-gap residuals (including an explicit zero mass),
 terminal-outcome continuation, withdrawal timers, and validation summaries.
 Retraining active artifacts never overwrites the legacy set.
 
+The active fitted tables, training metrics, and joblib are version-controlled.
+A fresh checkout can therefore run the active `distribution`, `ml_model`, and
+`ml_probabilistic` configurations without the source XES log. The commands below
+are maintainer steps for an intentional refit, not normal setup.
+
 ## Regenerate and train
 
 From the repository root:
