@@ -1,22 +1,32 @@
 {
   "selected_basic_sampler": "Distribution",
   "active_time_mean_relative_error": {
-    "Distribution": 0.1401,
-    "Point ML": 0.7532,
-    "Probabilistic ML": 0.3867
+    "Distribution": 0.1635,
+    "Point ML": 0.7874,
+    "Probabilistic ML": 0.398
+  },
+  "case_duration_relative_error": {
+    "Distribution": 0.0157,
+    "Point ML": 0.0102,
+    "Probabilistic ML": 0.0119
+  },
+  "completion_share": {
+    "Distribution": 1.0,
+    "Point ML": 1.0,
+    "Probabilistic ML": 1.0
   },
   "completed_active_minutes_range": [
-    1.637347754894785,
-    9.94791772665444
+    2.20999598829835,
+    14.964346960967452
   ],
   "completed_non_active_hours_range": [
-    6.235992567366014,
-    6.37471332111505
+    18.480870902576385,
+    19.373579109861648
   ],
   "historical_same_resource_resume_rate": 0.175,
   "simulated_same_resource_resume_rate_range": [
-    0.16526362428001773,
-    0.17492327926348092
+    0.10503672612801679,
+    0.17298826487845767
   ],
   "boundary_hazard_activities": [
     "W_Shortened completion ",
