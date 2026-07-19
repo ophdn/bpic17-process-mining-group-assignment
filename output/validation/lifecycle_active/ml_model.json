@@ -39,7 +39,7 @@
       "simulation/components/arrival_mdn.py": "6b9b472343002ef425b002dcdfd18cc124f6fa80d923640e5425526ab6953756",
       "simulation/components/arrival_mdn_weights.npz": "e8e1dd684e574dc6605d6c2778bd2571126762c0e5b262c3430ed992a6360246",
       "simulation/components/petri_process.py": "e94ad8be7c8ab7981d31012998f3a259ee13691f4f77a1c111c0ab03f4108f3b",
-      "simulation/components/permissions.py": "a7530bdddb70236b43311fed0c80765f678d8ab025021da33f2dc436b7ffaf43",
+      "simulation/components/permissions.py": "430ac660dae7cfe2abed65054d9c6aa5e51b25cc9b2a146e799a1b018b190576",
       "simulation/components/resource.py": "01de3a92602a65086567f35ebd8701fc0382032bc8f57086fa479d5f61ecc3c4",
       "simulation/components/process.py": "36773afa56be106f55787d05e9e87bba23c44326ebd693e4cfc59be3b0f8f2de",
       "simulation/core/engine.py": "c6b59677966396e3120493c8b8b495940d3f7d1fdbb931407d425060752ba884",
