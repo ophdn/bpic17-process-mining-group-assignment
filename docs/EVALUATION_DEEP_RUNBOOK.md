@@ -5,13 +5,12 @@ report cites only the 60-day experiment in `notebooks/04_evaluation_60.ipynb`.
 The 10- and 30-day notebooks are retained as optional development diagnostics;
 they are not prerequisites and should not be run for the report workflow.
 
-## 1. What must be rerun now
+## 1. Preflight and required reruns
 
-The simulator now treats `A_` and `O_` records as automatic zero-time state
-changes. The committed lifecycle-validation artifact still describes the old
-`atomic_duration_scale=1` configuration and has stale provenance. Therefore,
-run the controlled lifecycle comparison once before opening the evaluation
-notebook:
+The committed lifecycle-validation artifact now describes the corrected active
+lifecycle, including automatic zero-time `A_`/`O_` transitions, inter-activity
+waiting, and the calibrated case-duration envelope. Validate it before opening
+the evaluation notebook:
 
 ```bash
 cd /Users/danielsich/dev/Ent/bpic17-process-mining-group-assignment
@@ -19,22 +18,31 @@ source venv/bin/activate
 export MPLCONFIGDIR=/tmp/bpic17-mpl
 mkdir -p "$MPLCONFIGDIR"
 
-python -m pip install -r requirements.txt
-python -m pytest -q
-python scripts/run_lifecycle_validation.py
-```
-
-This generates three 60-day validation runs: `distribution`, `ml_model`, and
-`ml_probabilistic`. The evaluation notebook uses the `distribution` artifact,
-but the script regenerates the complete controlled comparison. The processing
-time model does not need to be retrained, and the two Section 1.3 notebooks do
-not need to be rerun merely to execute the evaluation.
-
-Confirm that the required artifact now matches the checkout:
-
-```bash
 python -c 'import json; from pathlib import Path; from scripts.eval_lifecycle import validate_lifecycle_validation_artifact; p=Path("output/validation/lifecycle_active/distribution.json"); validate_lifecycle_validation_artifact(json.loads(p.read_text()), "distribution"); print("Lifecycle validation is current")'
 ```
+
+If that check fails, run `python scripts/run_lifecycle_validation.py`. This
+generates three 60-day validation runs: `distribution`, `ml_model`, and
+`ml_probabilistic`. The evaluation notebook uses the `distribution` artifact,
+but the script regenerates the complete controlled comparison.
+
+No processing-time, arrival, or decision model needs retraining for the 60-day
+evaluation. The active-session processing-time target and artifacts are
+unchanged, the arrival MDN is unchanged, and the notebook deliberately uses
+visit-aware branching instead of the decision-rule model. The DRL exception is
+documented below.
+
+The notebook reports two different time windows on purpose:
+
+- Cycle time uses arrivals that complete during the 180-day drain, with at
+  least 99% completion required to control right-censoring.
+- Operational throughput counts completions by the end of the 60-day arrival
+  window. Do not use the drained completion count as throughput; it is expected
+  to converge to the number of arrivals.
+- Occupation, fairness, activity-switching, and staffing criticality use the
+  same fixed 60-day operational window. The drain is excluded from their
+  denominator so policies with different final completion times remain
+  comparable.
 
 ## 2. The supplied DRL archive
 
@@ -69,13 +77,15 @@ and the existing `models/drl_resource_policy*.json` files describe different
 observation spaces, action spaces, or network widths. Do not associate those
 JSON files with this archive.
 
-More importantly, the ZIP alone does not record whether training used the new
-automatic `A_`/`O_` semantics. Use the model in the report only if its trainer
-can confirm that it was trained from commit `7a2551f` or an equivalent checkout
-where `atomic_duration_scale=0` and `A_`/`O_` activities bypass resources.
-Otherwise, retrain the DRL policy under the current simulator. Evaluating an old
-resource-assigned policy after removing `A_`/`O_` work from its decision process
-would be an out-of-distribution comparison.
+More importantly, the ZIP alone does not record its training checkout. The
+current simulator not only makes `A_`/`O_` transitions automatic but also uses
+corrected active-lifecycle timing, including inter-activity waiting and a
+calibrated duration envelope. These changes alter queue and workload states
+seen by the policy. Therefore, the existing archive may be evaluated only as a
+structurally compatible frozen legacy policy. Retrain DRL under the current
+simulator before using its result to claim the performance of an optimized
+learned policy. Until then, keep the DRL row in an exploratory comparison and
+exclude it from conclusions about which trained policy is best.
 
 The archive records PPO seed 1 and four parallel environments but does not
 contain a complete list of training and checkpoint-validation episode seeds.
@@ -164,10 +174,11 @@ possible parameter value.
 | Remove high-criticality pair | 1 scenario × 4 seeds | 4 |
 | **60-day notebook total** |  | **64** |
 
-The prerequisite lifecycle comparison adds three runs, so a completely fresh
-report workflow executes 67 simulations before considering the optional
-one-day DRL smoke test. The new seed set and policy grid invalidate the old
-three-policy caches, as required for a paired comparison.
+Regenerating a stale prerequisite lifecycle comparison adds three runs, so a
+completely fresh report workflow executes 67 simulations before considering
+the optional one-day DRL smoke test. With a current validated artifact, the
+notebook itself executes 64 simulations. The metric schema and complete policy
+grid invalidate the old caches, as required for a paired comparison.
 
 For reference, the optional 10- and 30-day notebooks each contain 12 policy
 runs. Running all three horizons would therefore execute 88 notebook
@@ -188,7 +199,9 @@ The 60-day notebook writes:
 - `output/evaluation_60/staffing_paired_deltas.csv`
 - `output/report_inputs/evaluation_60d_report_values.json`
 - `visualization/04_60_policy_tradeoff.pdf`
+- `visualization/04_60_policy_tradeoff.svg`
 - `visualization/04_60_staffing_impact.pdf`
+- `visualization/04_60_staffing_impact.svg`
 
 The final cell must print `All provenance and result sanity checks passed.`
 Only then are the tables and figures internally consistent with the current
