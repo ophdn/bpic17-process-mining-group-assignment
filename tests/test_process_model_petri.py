@@ -49,6 +49,10 @@ def _component_with_linear_net(enforce_terminal_outcomes: bool = False) -> Petri
         "allow_end_without_dp": 0,
         "end_label_choices": 0,
         "closed_at_final_marking": 0,
+        "branch_source_rules": 0,
+        "branch_source_dp": 0,
+        "branch_source_visit": 0,
+        "branch_source_global": 0,
         "end_reasons": {
             "final_marking": 0,
             "end_label": 0,

@@ -261,6 +261,10 @@ class PetriNetProcessComponent(ProcessComponent):
             "allow_end_without_dp": 0,
             "end_label_choices": 0,
             "closed_at_final_marking": 0,
+            "branch_source_rules": 0,
+            "branch_source_dp": 0,
+            "branch_source_visit": 0,
+            "branch_source_global": 0,
             "end_reasons": {
                 "final_marking": 0,
                 "end_label": 0,
@@ -496,6 +500,10 @@ class PetriNetProcessComponent(ProcessComponent):
             "end_label_choices": self._debug["end_label_choices"],
             "end_reasons": dict(self._debug["end_reasons"]),
             "closed_at_final_marking": self._debug["closed_at_final_marking"],
+            "branch_source_rules": self._debug["branch_source_rules"],
+            "branch_source_dp": self._debug["branch_source_dp"],
+            "branch_source_visit": self._debug["branch_source_visit"],
+            "branch_source_global": self._debug["branch_source_global"],
         }
 
     def _payload(self, case_id: str) -> dict:
@@ -782,15 +790,24 @@ class PetriNetProcessComponent(ProcessComponent):
         if self.branching_mode == "rules" and len(labels) > 1:
             rules_choice = self._rules_weighted_choice(case_id, labels, rng)
             if rules_choice is not None:
+                self._debug["branch_source_rules"] += 1
                 return rules_choice
 
+        # Which cascade layer actually supplied the distribution (report,
+        # Section 1.5): the branch_source_* counters are pure observation for
+        # the validation JSONs and never influence the draw.
         preferred = None
         if dp_dist and self.dp_table == "full":
             preferred = {k: v for k, v in dp_dist.items() if k != END_LABEL}
+            if preferred:
+                self._debug["branch_source_dp"] += 1
         if not preferred:
             preferred = self._visit_conditioned_probs(case_id, current_activity)
+            if preferred:
+                self._debug["branch_source_visit"] += 1
         if not preferred:
             preferred = dict(BRANCHING_PROBS.get(current_activity, []))
+            self._debug["branch_source_global"] += 1
         weights = [preferred.get(label, RESIDUAL_WEIGHT) for label in labels]
 
         total = sum(weights)
