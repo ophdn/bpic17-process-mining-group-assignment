@@ -220,6 +220,20 @@ class OrgModelPermissions:
                     if r not in seen:
                         seen.add(r)
                         out.append(r)
+
+            # A sampled case type can be present in the source log while a rare
+            # case/activity combination is absent from the mined OrgModel. The
+            # process model can still generate that combination. Without a
+            # fallback it has no candidate on any weekday and is forced to run
+            # unassigned. Back off only when the *entire* case/activity pair is
+            # unseen; if the pair exists on another weekday, an empty result is a
+            # real temporal restriction and must continue to queue.
+            case_activity_known = case_type is None or any(
+                _matches(cap_ct, case_type)
+                for _, cap_ct, _ in entries
+            )
+            if not out and not case_activity_known:
+                out = list(self._candidates_cached(activity, None, tt)[0])
         hit = (out, frozenset(out))
         self._cand_cache[key] = hit
         return hit
