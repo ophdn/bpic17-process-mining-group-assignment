@@ -120,29 +120,35 @@ DP_VISIT_BUCKET_MAX = 5  # buckets "1".."4", "5+" — keep in sync with mine_dp_
 # data-driven *choice* mined from where real traces stop (mine_dp_probs.py).
 END_LABEL = "__END__"
 
-# The application's terminal outcome milestones. A_Cancelled and A_Denied
-# end the business case after their deterministic administrative follow-up.
-# A_Pending is intentionally NOT terminal: the mined log continues from it to
-# W_Validate application in 48.29% of occurrences and to another work item in
-# another 0.86%. Treating it as terminal was a major downward cycle-time bias.
-# The Signavio net keeps loop tokens alive past the true terminal outcomes, so
-# markings and its final marking is often NOT tau-reachable there, so
-# neither marking==fm nor the mined __END__ choice can stop such cases —
-# measured effect without the remaining domain-level rule was runaway loops.
+# The application's outcome milestones. In the real log every case fires
+# exactly one of these (per-case frequencies: A_Pending 0.55 + A_Cancelled
+# 0.33 + A_Denied 0.12 = 1.00). A_Pending is the soft spot of treating them
+# as terminal: 59.7% of cases end right at their first A_Pending, but 20.5%
+# continue to O_Cancelled and 19.8% re-enter the validation loop, so ending
+# there biases cycle time downward. It stays terminal anyway — the Signavio
+# net keeps loop tokens alive past these markings and its final marking is
+# often NOT tau-reachable there, so neither marking==fm nor the mined __END__
+# choice can stop such cases (measured effect: cases fired "O_Accepted,
+# A_Pending" and then cycled the validation loop for 50+ further events), and
+# the Section 1.5 branching evaluation and report tables are calibrated under
+# this rule. Domain-level termination rule: once the outcome is decided, the
+# case is over.
 #
 # Gated by `enforce_terminal_outcomes` (default True): the comparison KPIs
 # replay completed traces against this exact net, so ending a case before the
 # final marking makes every such trace non-fitting even if each fired step
 # was locally legal — trading completion rate for control-flow precision.
 # Kept as an ablation toggle (see docs/ROADMAP.md) rather than removed.
-TERMINAL_OUTCOMES = {"A_Denied", "A_Cancelled"}
+TERMINAL_OUTCOMES = {"A_Pending", "A_Denied", "A_Cancelled"}
 
 # Two of the three outcomes have a single, deterministic real-world follow-up
 # that fires almost immediately after in the real log (A_Cancelled ->
 # O_Cancelled p=0.9959, A_Denied -> O_Refused p=0.9965, simulation_inputs.json
 # branching_probs) and is the ONLY legal Petri transition at the marking
 # reached right after they fire (verified via BFS over the converted net --
-# docs/ROADMAP.md, A1-Update Teil 3). Firing the follow-up before ending: measured
+# docs/ROADMAP.md, A1-Update Teil 3). A_Pending has no such single successor
+# (its continuation is genuinely branchy, back into the validation loop) so
+# it keeps ending immediately. Firing the follow-up before ending: measured
 # to raise percentage_of_fitting_traces from 35.4% to 93.2% on a like-for-like
 # run (docs/ROADMAP.md, A1-Update Teil 5) since the logged trace now reaches
 # (or gets tau-close to) the net's real final marking instead of stopping one
