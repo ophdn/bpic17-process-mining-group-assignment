@@ -35,7 +35,7 @@ left as future work.
 from __future__ import annotations
 
 import math
-from typing import Mapping, Optional
+from typing import Dict, Mapping, Optional, Tuple
 
 import numpy as np
 
@@ -116,6 +116,12 @@ class ExpectedDurationModel:
         )
         self._artifact: Optional[dict] = None
         self._unavailable = False
+        # Allocation policies currently call this API without per-case context.
+        # In that mode the model features are a pure function of (activity,
+        # resource), yet an assignment epoch may ask for the same pair thousands
+        # of times.  Cache only that context-free path; callers supplying context
+        # can legitimately receive a different prediction for every request.
+        self._context_free_cache: Dict[Tuple[str, Optional[str]], float] = {}
 
     def _ensure(self) -> None:
         if self._artifact is not None or self._unavailable:
@@ -153,6 +159,21 @@ class ExpectedDurationModel:
     def expected_duration(
         self, activity: str, resource: Optional[str] = None,
         context: Optional[dict] = None,
+    ) -> float:
+        if context is not None:
+            return self._expected_duration_uncached(activity, resource, context)
+
+        key = (activity, resource)
+        cached = self._context_free_cache.get(key)
+        if cached is not None:
+            return cached
+
+        duration = self._expected_duration_uncached(activity, resource, None)
+        self._context_free_cache[key] = duration
+        return duration
+
+    def _expected_duration_uncached(
+        self, activity: str, resource: Optional[str], context: Optional[dict],
     ) -> float:
         self._ensure()
         if self._unavailable:
