@@ -75,3 +75,19 @@ def test_warmup_must_leave_a_nonempty_evaluation_window():
     }
     with pytest.raises(ValueError, match="smaller than --days"):
         apply_warmup(pd.DataFrame(), meta, warmup_days=2)
+
+
+def test_cycle_time_uses_explicit_case_completion_after_last_activity():
+    arrival = START_DATETIME
+    last_activity = arrival + timedelta(days=2)
+    case_complete = arrival + timedelta(days=9)
+    df = pd.DataFrame(_session(
+        "case-1", "work-1", arrival + timedelta(days=1), last_activity))
+
+    result = opt_metrics.average_cycle_time(
+        df,
+        arrival_times={"case-1": arrival},
+        completion_times={"case-1": case_complete},
+    )
+
+    assert result["avg_cycle_time_s"] == pytest.approx(9 * 86400.0)

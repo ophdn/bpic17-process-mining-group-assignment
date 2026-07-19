@@ -43,6 +43,8 @@ from scripts.run_experiments import evaluation_provenance_hashes  # noqa: E402
 
 TERMINALS = {"complete", "ate_abort", "withdraw"}
 LIFECYCLE_VALIDATION_SCHEMA_VERSION = 1
+MAX_CASE_DURATION_REL_ERROR = 0.20
+MIN_DRAINED_COMPLETION_SHARE = 0.99
 LIFECYCLE_VALIDATION_EXTRA_PROVENANCE_PATHS = (
     "scripts/eval_lifecycle.py",
     "scripts/metrics.py",
@@ -54,6 +56,9 @@ REPORT_LIFECYCLE_CONFIGURATION = {
     "policy": "random",
     "seed": 1,
     "horizon_days": 60,
+    "arrival_window_days": 60,
+    "drain_days": 180,
+    "engine_horizon_days": 240,
     "scenario": "normal",
     "crn": True,
     "process_model": "advanced",
@@ -99,6 +104,19 @@ def validate_lifecycle_validation_artifact(
     for key, value in expected.items():
         if configuration.get(key) != value:
             problems.append(f"{key}={configuration.get(key)!r}, expected {value!r}")
+    case_stats = artifact.get("general_metrics", {}).get("case_stats", {})
+    duration_error = case_stats.get("case_duration_rel_err")
+    if duration_error is None or duration_error > MAX_CASE_DURATION_REL_ERROR:
+        problems.append(
+            f"case_duration_rel_err={duration_error!r}, expected <= "
+            f"{MAX_CASE_DURATION_REL_ERROR}"
+        )
+    completion_share = configuration.get("completion_share")
+    if completion_share is None or completion_share < MIN_DRAINED_COMPLETION_SHARE:
+        problems.append(
+            f"completion_share={completion_share!r}, expected >= "
+            f"{MIN_DRAINED_COMPLETION_SHARE} after drain"
+        )
     if problems:
         raise ValueError(
             "Lifecycle validation artifact is incompatible; run "
@@ -243,6 +261,7 @@ def evaluate_dataframe(
     completed: set[str],
     reference_path: Path,
     run_configuration: Mapping,
+    case_duration_seconds: Mapping[str, float] | None = None,
 ) -> dict:
     """Evaluate one run and attach a reproducible report-artifact contract."""
     df_all = df_all.copy()
@@ -259,9 +278,17 @@ def evaluate_dataframe(
             "validation_schema_version": LIFECYCLE_VALIDATION_SCHEMA_VERSION,
             "provenance_sha256": lifecycle_validation_provenance_hashes(),
             "completed_cases": len(completed),
+            "started_cases": int(df_all["case:concept:name"].nunique()),
+            "completion_share": (
+                len(completed) / df_all["case:concept:name"].nunique()
+                if df_all["case:concept:name"].nunique() else None
+            ),
             "logged_rows": int(len(df_all)),
         },
-        "general_metrics": metrics.evaluate(df, reference, df_all=df_all),
+        "general_metrics": metrics.evaluate(
+            df, reference, df_all=df_all,
+            case_duration_seconds=case_duration_seconds,
+        ),
         "lifecycle": lifecycle_evidence(df),
     }
 

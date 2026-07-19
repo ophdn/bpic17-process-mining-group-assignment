@@ -255,6 +255,24 @@ class LifecycleStateMachineTests(unittest.TestCase):
         ]
         self.assertEqual(structure(first), structure(last))
 
+    def test_resume_reenters_resource_queue_with_a_fresh_token(self):
+        engine, resource, _ = _run(
+            duration=100.0,
+            durations=(10.0, 20.0),
+            gaps={1: 5.0},
+            session_draws={0: 0.9, 1: 0.1},
+            suspend_draws={1: 0.1},
+            withdraw_delay=60.0,
+        )
+
+        rows = _work_rows(engine)
+        self.assertEqual(
+            [row["lifecycle:transition"] for row in rows],
+            ["schedule", "start", "suspend", "resume", "complete"],
+        )
+        self.assertEqual(engine.stats["cases_completed"], 1)
+        self.assertEqual(resource._waiting, [])
+
     def test_basic_and_petri_paths_share_lifecycle_structure(self):
         common = dict(
             duration=100.0,
@@ -397,6 +415,35 @@ class LifecycleStateMachineTests(unittest.TestCase):
 
         self.assertEqual(len(engine._queue), 1)
         self.assertEqual(engine._queue[0].timestamp, 0.0)
+
+    def test_inter_activity_delay_advances_case_without_claiming_resource(self):
+        engine = SimulationEngine(
+            sim_duration=100.0,
+            start_datetime=datetime(2016, 1, 1),
+            lifecycle_mode="active",
+        )
+        params = _params()
+        params.inter_activity_delays = {"A_First": {NEXT: ("norm", (30.0, 0.0))}}
+        params.inter_activity_delay_zero_probs = {"A_First": {NEXT: 0.0}}
+        params.inter_activity_delay_caps = {"A_First": {NEXT: 30.0}}
+        process = ProcessComponent(
+            seed=7,
+            lifecycle_mode="active",
+            lifecycle_params=params,
+        )
+        process._repeat_counts["c1"] = {}
+        process._ctx["c1"] = {
+            "start_t": 0.0, "position": 1,
+            "prev_act": "A_First", "attrs": {},
+        }
+
+        process._fire_start(engine, "c1", NEXT)
+
+        self.assertEqual(len(engine._queue), 1)
+        request = engine._queue[0]
+        self.assertEqual(request.event_type, EventType.ACTIVITY_REQUEST)
+        self.assertEqual(request.timestamp, 30.0)
+        self.assertIsNone(request.resource)
 
     def test_automatic_atomic_request_bypasses_resource_allocation(self):
         engine = SimulationEngine(

@@ -71,10 +71,14 @@ class MDNArrivalComponent:
         start_datetime: datetime = datetime(2016, 1, 1),
         scale_factor: float = 1.0,
         weights_path=None,
+        stop_time: Optional[float] = None,
     ):
         self._rng = np.random.default_rng(seed)
         self._start = start_datetime
         self._scale_factor = scale_factor
+        if stop_time is not None and stop_time < 0:
+            raise ValueError("stop_time must be non-negative")
+        self._stop_time = stop_time
         self._case_counter = 0
         self._load_weights(weights_path or _DEFAULT_WEIGHTS)
 
@@ -146,10 +150,13 @@ class MDNArrivalComponent:
         return seconds / self._scale_factor
 
     def _schedule_next(self, engine, current_time: float) -> None:
-        self._case_counter += 1
         inter_arrival = self._sample_inter_arrival(current_time)
+        timestamp = current_time + inter_arrival
+        if self._stop_time is not None and timestamp > self._stop_time:
+            return
+        self._case_counter += 1
         engine.schedule(SimEvent(
-            timestamp=current_time + inter_arrival,
+            timestamp=timestamp,
             priority=10,
             event_type=EventType.CASE_ARRIVAL,
             case_id=f"case_{self._case_counter:06d}",

@@ -313,7 +313,9 @@ def scenario_arrival_kwargs(scenario: str) -> dict:
     return {}
 
 
-def build_arrival_component(seed: int, scenario: str):
+def build_arrival_component(
+    seed: int, scenario: str, *, stop_time: Optional[float] = None,
+):
     """Mirror simulation/main.py's Section-1.2 arrival wiring.
 
     This runner used to hardcode the parametric ArrivalComponent and never
@@ -332,8 +334,10 @@ def build_arrival_component(seed: int, scenario: str):
     if USE_MDN_ARRIVALS:
         return MDNArrivalComponent(
             seed=seed, start_datetime=START_DATETIME,
+            stop_time=stop_time,
             **scenario_arrival_kwargs(scenario))
-    return ArrivalComponent(seed=seed, **scenario_arrival_kwargs(scenario))
+    return ArrivalComponent(
+        seed=seed, stop_time=stop_time, **scenario_arrival_kwargs(scenario))
 
 
 def load_permission_model(kind: str, seed: int):
@@ -555,6 +559,7 @@ def run_once(
     capacity: Optional[int] = None,
     atomic_duration_scale: float = 0.0,
     drl_model_path: Optional[str] = None,
+    drain_days: int = 0,
 ) -> tuple[pd.DataFrame, dict]:
     """Build and run one (policy, seed, scenario) simulation.
 
@@ -590,12 +595,16 @@ def run_once(
             f"got {processing_time_mode!r}")
     if atomic_duration_scale < 0:
         raise ValueError("atomic_duration_scale must be >= 0")
+    if drain_days < 0:
+        raise ValueError("drain_days must be >= 0")
     if process_model == "basic" and branching_mode != "probs":
         raise ValueError(
             f"branching_mode={branching_mode!r} requires process_model='advanced'; "
             "use branching_mode='probs' with the basic process")
 
-    duration = days * 86400
+    total_days = days + drain_days
+    duration = total_days * 86400
+    arrival_stop_time = days * 86400 if drain_days else None
 
     # Effective roster seed = base + run seed (see docstring). Capture the
     # resolved capacity too, so the run's provenance records what actually ran
@@ -626,7 +635,8 @@ def run_once(
     engine = SimulationEngine(
         sim_duration=duration, start_datetime=START_DATETIME, verbose=False,
         lifecycle_mode=lifecycle_mode)
-    arrivals = build_arrival_component(seed, scenario)
+    arrivals = build_arrival_component(
+        seed, scenario, stop_time=arrival_stop_time)
     resources = build_resource_component(policy, seed, calendar, excluded,
                                          permission_model=perms,
                                          lifecycle_mode=lifecycle_mode,
@@ -665,6 +675,7 @@ def run_once(
 
     arrivals.bootstrap(engine)
     engine.run()
+    pending_events = list(engine._queue)
 
     df = pd.DataFrame(engine.logger._rows)
     if not df.empty:
@@ -679,10 +690,10 @@ def run_once(
         for cid, t in completion_recorder.timestamps.items()
     }
     availability_seconds = availability_seconds_per_resource(
-        calendar, START_DATETIME, days, active_resource_pool,
+        calendar, START_DATETIME, total_days, active_resource_pool,
     )
     availability_intervals = availability_intervals_per_resource(
-        calendar, START_DATETIME, days, active_resource_pool,
+        calendar, START_DATETIME, total_days, active_resource_pool,
     )
     lifecycle_diagnostics = opt_metrics.lifecycle_diagnostics(
         df,
@@ -696,6 +707,23 @@ def run_once(
     system_resources = set(getattr(calendar, "system", set()))
     human_resources = active_resource_pool - system_resources
 
+    evaluation_end = START_DATETIME + timedelta(days=total_days)
+    if drain_days and completion_times and len(completion_times) == len(arrival_times):
+        evaluation_end = max(completion_times.values())
+        # The drain horizon is only a safety ceiling. Once every admitted case
+        # has completed, resource denominators must stop at the last completion
+        # too; otherwise a 180-day empty tail would make occupation look far too
+        # low even though cycle-time censoring was fixed correctly.
+        availability_intervals = _clip_availability_intervals(
+            availability_intervals, START_DATETIME, evaluation_end)
+        availability_seconds = {
+            resource: sum(
+                (span_end - span_start).total_seconds()
+                for span_start, span_end in spans
+            )
+            for resource, spans in availability_intervals.items()
+        }
+
     meta = {
         "arrival_times": arrival_times,
         "completion_times": completion_times,
@@ -703,18 +731,29 @@ def run_once(
         "availability_seconds": availability_seconds,
         "availability_intervals": availability_intervals,
         "engine_stats": dict(engine.stats),
+        "pending_events_at_end": len(pending_events),
+        "next_pending_event_s": (
+            min(event.timestamp for event in pending_events)
+            if pending_events else None
+        ),
+        "process_stats": (
+            process.debug_stats() if hasattr(process, "debug_stats") else {}
+        ),
         "resource_stats": resources.stats(),
         "lifecycle_diagnostics": lifecycle_diagnostics,
         "activity_type_exposure": activity_type_exposure,
         "resource_subset": human_resources,
         "evaluation_window": (
-            START_DATETIME, START_DATETIME + timedelta(days=days)),
+            START_DATETIME, evaluation_end),
         "lifecycle_mode": lifecycle_mode,
         "processing_time_mode": processing_time_mode,
         "configuration": {
             "policy": policy,
             "seed": seed,
             "horizon_days": days,
+            "arrival_window_days": days,
+            "drain_days": drain_days,
+            "engine_horizon_days": total_days,
             "scenario": scenario,
             "crn": crn,
             "process_model": process_model,
@@ -983,6 +1022,11 @@ def parse_args():
                         f"kbatch1,kbatch2,kbatch5,kbatch10,kbatch20 for a k-sweep).")
     p.add_argument("--seeds", type=int, default=10, help="Number of seeds (uses 1..N).")
     p.add_argument("--days", type=int, default=30, help="Simulation horizon in days.")
+    p.add_argument(
+        "--drain-days", type=int, default=0,
+        help="Stop arrivals after --days, then continue the engine for this many "
+             "days so cycle time is not conditioned on fast horizon survivors.",
+    )
     p.add_argument("--warmup-days", type=float, default=0.0,
                    help="Exclude cases arriving before this cutoff (see --report-wip).")
     p.add_argument("--scenario", default="normal", choices=sorted(KNOWN_SCENARIOS))
@@ -1055,6 +1099,9 @@ def main():
     if args.atomic_duration_scale < 0:
         print("--atomic-duration-scale must be >= 0.", file=sys.stderr)
         sys.exit(1)
+    if args.drain_days < 0:
+        print("--drain-days must be >= 0.", file=sys.stderr)
+        sys.exit(1)
     # Explicit N wins; --no-roster disables; otherwise the default is ON.
     roster_seed = None if args.no_roster else (
         args.roster_seed if args.roster_seed is not None else DEFAULT_ROSTER_SEED)
@@ -1101,6 +1148,7 @@ def main():
         "policies": policies,
         "seeds": seeds,
         "days": args.days,
+        "drain_days": args.drain_days,
         "warmup_days": args.warmup_days,
         "scenario": args.scenario,
         "process_model": args.process_model,
@@ -1153,6 +1201,7 @@ def main():
                 capacity=args.capacity,
                 atomic_duration_scale=args.atomic_duration_scale,
                 drl_model_path=args.drl_model,
+                drain_days=args.drain_days,
             )
             resource_df = df
             df, meta = apply_warmup(df, meta, args.warmup_days)
@@ -1167,6 +1216,7 @@ def main():
                 m = opt_metrics.evaluate(
                     df,
                     arrival_times=meta["arrival_times"],
+                    completion_times=meta["completion_times"],
                     availability_seconds=meta["availability_seconds"],
                     availability_intervals=meta["availability_intervals"],
                     fairness_weights=meta["availability_seconds"],

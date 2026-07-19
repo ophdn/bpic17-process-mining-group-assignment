@@ -21,7 +21,11 @@ class LifecycleMetricTests(unittest.TestCase):
                 "processing_time_mode": "distribution",
                 "validation_schema_version": LIFECYCLE_VALIDATION_SCHEMA_VERSION,
                 "provenance_sha256": lifecycle_validation_provenance_hashes(),
-            }
+                "completion_share": 1.0,
+            },
+            "general_metrics": {
+                "case_stats": {"case_duration_rel_err": 0.1},
+            },
         }
         validate_lifecycle_validation_artifact(artifact, "distribution")
 

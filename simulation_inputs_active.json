@@ -4120,8 +4120,8 @@
       "W_Assess potential fraud": {
         "distribution": "expon",
         "params": [
-          105825.471,
-          0.0
+          0.0,
+          105825.471
         ],
         "mean_s": 105825.471,
         "std_s": 100425.00911659111,
@@ -4150,25 +4150,6 @@
           "__CASE_END__": 0.0054
         }
       },
-      "W_Call incomplete files": {
-        "complete": {
-          "A_Validating": 0.7644,
-          "O_Cancelled": 0.0064,
-          "W_Assess potential fraud": 0.0025,
-          "A_Denied": 0.0007,
-          "__CASE_END__": 0.2259
-        },
-        "ate_abort": {
-          "A_Validating": 0.7317,
-          "O_Cancelled": 0.0695,
-          "W_Call after offers": 0.0002,
-          "O_Accepted": 0.0,
-          "W_Assess potential fraud": 0.0001,
-          "A_Denied": 0.0001,
-          "A_Incomplete": 0.0001,
-          "__CASE_END__": 0.1982
-        }
-      },
       "W_Validate application": {
         "complete": {
           "A_Incomplete": 0.6803,
@@ -4190,6 +4171,25 @@
           "O_Accepted": 0.0002,
           "W_Validate application": 0.0003,
           "__CASE_END__": 0.3724
+        }
+      },
+      "W_Call incomplete files": {
+        "complete": {
+          "A_Validating": 0.7644,
+          "O_Cancelled": 0.0064,
+          "W_Assess potential fraud": 0.0025,
+          "A_Denied": 0.0007,
+          "__CASE_END__": 0.2259
+        },
+        "ate_abort": {
+          "A_Validating": 0.7317,
+          "O_Cancelled": 0.0695,
+          "W_Call after offers": 0.0002,
+          "O_Accepted": 0.0,
+          "W_Assess potential fraud": 0.0001,
+          "A_Denied": 0.0001,
+          "A_Incomplete": 0.0001,
+          "__CASE_END__": 0.1982
         }
       },
       "W_Handle leads": {
@@ -4256,6 +4256,2157 @@
         }
       }
     },
+    "inter_activity_delays": {
+      "basis": "current terminal -> next schedule/start/milestone",
+      "source_traces": 31509,
+      "fallback": {
+        "distribution": "lognorm",
+        "params": [
+          5.5978,
+          0.0,
+          3.1342
+        ],
+        "mean_s": 83717.59,
+        "std_s": 397156.21,
+        "n": 424781,
+        "n_delays": 550865,
+        "zero_prob": 0.228884,
+        "overall_mean_s": 64556.0,
+        "p99_s": 2645254.27
+      },
+      "transitions": {
+        "A_Accepted": {
+          "O_Create Offer": {
+            "distribution": "lognorm",
+            "params": [
+              1.4537,
+              0.0,
+              229.0789
+            ],
+            "mean_s": 9422.88,
+            "std_s": 88879.27,
+            "n": 31501,
+            "n_delays": 31501,
+            "zero_prob": 0.0,
+            "overall_mean_s": 9422.88,
+            "p99_s": 233780.29
+          },
+          "W_Complete application": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 8,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          }
+        },
+        "A_Cancelled": {
+          "O_Cancelled": {
+            "distribution": "lognorm",
+            "params": [
+              0.5476,
+              0.0,
+              0.0333
+            ],
+            "mean_s": 0.04,
+            "std_s": 0.08,
+            "n": 10270,
+            "n_delays": 10270,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.04,
+            "p99_s": 0.24
+          },
+          "W_Call after offers": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 103,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          },
+          "W_Call incomplete files": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 41,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          },
+          "W_Complete application": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 14,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          },
+          "W_Validate application": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 3,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          }
+        },
+        "A_Complete": {
+          "A_Cancelled": {
+            "distribution": "weibull_min",
+            "params": [
+              2.8557,
+              0.0,
+              2517699.102
+            ],
+            "mean_s": 2347726.86,
+            "std_s": 763765.95,
+            "n": 7150,
+            "n_delays": 7150,
+            "zero_prob": 0.0,
+            "overall_mean_s": 2347726.86,
+            "p99_s": 2674723.35
+          },
+          "A_Denied": {
+            "distribution": "gamma",
+            "params": [
+              0.3762,
+              0.0,
+              905399.8256
+            ],
+            "mean_s": 340600.41,
+            "std_s": 511286.41,
+            "n": 92,
+            "n_delays": 92,
+            "zero_prob": 0.0,
+            "overall_mean_s": 340600.41,
+            "p99_s": 2256303.06
+          },
+          "O_Cancelled": {
+            "distribution": "lognorm",
+            "params": [
+              4.1983,
+              0.0,
+              797.4846
+            ],
+            "mean_s": 156325.64,
+            "std_s": 361852.16,
+            "n": 457,
+            "n_delays": 457,
+            "zero_prob": 0.0,
+            "overall_mean_s": 156325.64,
+            "p99_s": 1590718.96
+          },
+          "O_Create Offer": {
+            "distribution": "gamma",
+            "params": [
+              0.3721,
+              0.0,
+              1603820.8576
+            ],
+            "mean_s": 596735.64,
+            "std_s": 684604.31,
+            "n": 3906,
+            "n_delays": 3906,
+            "zero_prob": 0.0,
+            "overall_mean_s": 596735.64,
+            "p99_s": 2507929.89
+          },
+          "O_Sent (mail and online)": {
+            "distribution": "lognorm",
+            "params": [
+              1.7363,
+              0.0,
+              42.2008
+            ],
+            "mean_s": 8561.22,
+            "std_s": 53405.69,
+            "n": 41,
+            "n_delays": 41,
+            "zero_prob": 0.0,
+            "overall_mean_s": 8561.22,
+            "p99_s": 209061.94
+          },
+          "O_Sent (online only)": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              50.791000000000004
+            ],
+            "mean_s": 50.791000000000004,
+            "std_s": 13.576,
+            "n_delays": 2,
+            "zero_prob": 0.0,
+            "overall_mean_s": 50.79,
+            "p99_s": 64.1
+          },
+          "W_Call after offers": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 19714,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          }
+        },
+        "A_Concept": {
+          "A_Accepted": {
+            "distribution": "gamma",
+            "params": [
+              0.327,
+              0.0,
+              374583.5623
+            ],
+            "mean_s": 122489.73,
+            "std_s": 221008.56,
+            "n": 31495,
+            "n_delays": 31495,
+            "zero_prob": 0.0,
+            "overall_mean_s": 122489.73,
+            "p99_s": 1195657.25
+          },
+          "W_Complete application": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.012
+            ],
+            "mean_s": 0.012,
+            "std_s": 0.001,
+            "n_delays": 14,
+            "zero_prob": 0.857143,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.01
+          }
+        },
+        "A_Create Application": {
+          "A_Concept": {
+            "distribution": "lognorm",
+            "params": [
+              1.019,
+              0.0,
+              0.0132
+            ],
+            "mean_s": 0.02,
+            "std_s": 0.05,
+            "n": 11086,
+            "n_delays": 11086,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.02,
+            "p99_s": 0.14
+          },
+          "A_Submitted": {
+            "distribution": "lognorm",
+            "params": [
+              1.3884,
+              0.0,
+              0.1219
+            ],
+            "mean_s": 0.34,
+            "std_s": 0.5,
+            "n": 20423,
+            "n_delays": 20423,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.34,
+            "p99_s": 1.37
+          }
+        },
+        "A_Denied": {
+          "O_Refused": {
+            "distribution": "lognorm",
+            "params": [
+              0.5194,
+              0.0,
+              0.0383
+            ],
+            "mean_s": 0.05,
+            "std_s": 0.07,
+            "n": 3720,
+            "n_delays": 3720,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.05,
+            "p99_s": 0.2
+          },
+          "W_Call after offers": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 9,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          },
+          "W_Call incomplete files": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 10,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          },
+          "W_Complete application": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 11,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          },
+          "W_Validate application": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 2,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          }
+        },
+        "A_Incomplete": {
+          "A_Cancelled": {
+            "distribution": "gamma",
+            "params": [
+              0.4518,
+              0.0,
+              2615853.4551
+            ],
+            "mean_s": 1181914.71,
+            "std_s": 1462905.27,
+            "n": 737,
+            "n_delays": 737,
+            "zero_prob": 0.0,
+            "overall_mean_s": 1181914.71,
+            "p99_s": 6059051.34
+          },
+          "A_Denied": {
+            "distribution": "weibull_min",
+            "params": [
+              0.4952,
+              0.0,
+              66746.446
+            ],
+            "mean_s": 155026.59,
+            "std_s": 397487.37,
+            "n": 187,
+            "n_delays": 187,
+            "zero_prob": 0.0,
+            "overall_mean_s": 155026.59,
+            "p99_s": 1985039.21
+          },
+          "O_Accepted": {
+            "distribution": "gamma",
+            "params": [
+              0.5839,
+              0.0,
+              870587.0463
+            ],
+            "mean_s": 508345.09,
+            "std_s": 537427.22,
+            "n": 4780,
+            "n_delays": 4780,
+            "zero_prob": 0.0,
+            "overall_mean_s": 508345.09,
+            "p99_s": 1802101.89
+          },
+          "O_Cancelled": {
+            "distribution": "lognorm",
+            "params": [
+              2.0956,
+              0.0,
+              57693.523
+            ],
+            "mean_s": 388366.13,
+            "std_s": 845909.94,
+            "n": 97,
+            "n_delays": 97,
+            "zero_prob": 0.0,
+            "overall_mean_s": 388366.13,
+            "p99_s": 2621904.88
+          },
+          "O_Create Offer": {
+            "distribution": "lognorm",
+            "params": [
+              1.7675,
+              0.0,
+              26234.0045
+            ],
+            "mean_s": 160910.29,
+            "std_s": 537801.69,
+            "n": 1704,
+            "n_delays": 1704,
+            "zero_prob": 0.0,
+            "overall_mean_s": 160910.29,
+            "p99_s": 2276407.56
+          },
+          "O_Returned": {
+            "distribution": "lognorm",
+            "params": [
+              4.141,
+              0.0,
+              689.9201
+            ],
+            "mean_s": 111883.67,
+            "std_s": 275614.83,
+            "n": 1168,
+            "n_delays": 1168,
+            "zero_prob": 0.0,
+            "overall_mean_s": 111883.67,
+            "p99_s": 1408714.1
+          },
+          "O_Sent (mail and online)": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              94148.96250000001
+            ],
+            "mean_s": 94148.96250000001,
+            "std_s": 136157.34543650068,
+            "n_delays": 4,
+            "zero_prob": 0.0,
+            "overall_mean_s": 94148.96,
+            "p99_s": 320632.67
+          },
+          "O_Sent (online only)": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              5709.8922
+            ],
+            "mean_s": 5709.89,
+            "std_s": 4341.57,
+            "n": 6,
+            "n_delays": 6,
+            "zero_prob": 0.0,
+            "overall_mean_s": 5709.89,
+            "p99_s": 12000.27
+          },
+          "W_Call incomplete files": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 14343,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          }
+        },
+        "A_Pending": {
+          "W_Call after offers": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 2,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          },
+          "W_Call incomplete files": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 4935,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          },
+          "W_Validate application": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 12291,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          }
+        },
+        "A_Submitted": {
+          "W_Handle leads": {
+            "distribution": "lognorm",
+            "params": [
+              0.4895,
+              0.0,
+              0.3036
+            ],
+            "mean_s": 0.35,
+            "std_s": 0.5,
+            "n": 20423,
+            "n_delays": 20423,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.35,
+            "p99_s": 1.17
+          }
+        },
+        "A_Validating": {
+          "A_Cancelled": {
+            "distribution": "gamma",
+            "params": [
+              0.3357,
+              0.0,
+              440837.2744
+            ],
+            "mean_s": 148005.48,
+            "std_s": 175238.17,
+            "n": 34,
+            "n_delays": 34,
+            "zero_prob": 0.0,
+            "overall_mean_s": 148005.48,
+            "p99_s": 560353.94
+          },
+          "A_Denied": {
+            "distribution": "gamma",
+            "params": [
+              0.5814,
+              0.0,
+              275852.7412
+            ],
+            "mean_s": 160384.44,
+            "std_s": 185498.69,
+            "n": 1081,
+            "n_delays": 1081,
+            "zero_prob": 0.0,
+            "overall_mean_s": 160384.44,
+            "p99_s": 759263.36
+          },
+          "O_Accepted": {
+            "distribution": "weibull_min",
+            "params": [
+              0.5766,
+              0.0,
+              50781.2836
+            ],
+            "mean_s": 79453.51,
+            "std_s": 127671.72,
+            "n": 7134,
+            "n_delays": 7134,
+            "zero_prob": 0.0,
+            "overall_mean_s": 79453.51,
+            "p99_s": 595752.43
+          },
+          "O_Cancelled": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              108601.9753
+            ],
+            "mean_s": 108601.98,
+            "std_s": 114574.77,
+            "n": 7,
+            "n_delays": 7,
+            "zero_prob": 0.0,
+            "overall_mean_s": 108601.98,
+            "p99_s": 349585.24
+          },
+          "O_Create Offer": {
+            "distribution": "gamma",
+            "params": [
+              0.4704,
+              0.0,
+              322569.2072
+            ],
+            "mean_s": 151746.61,
+            "std_s": 215938.57,
+            "n": 51,
+            "n_delays": 51,
+            "zero_prob": 0.0,
+            "overall_mean_s": 151746.61,
+            "p99_s": 920551.66
+          },
+          "O_Returned": {
+            "distribution": "lognorm",
+            "params": [
+              1.9429,
+              0.0,
+              28.2821
+            ],
+            "mean_s": 3569.26,
+            "std_s": 32124.03,
+            "n": 21536,
+            "n_delays": 21536,
+            "zero_prob": 0.0,
+            "overall_mean_s": 3569.26,
+            "p99_s": 91750.49
+          },
+          "O_Sent (online only)": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              438.537
+            ],
+            "mean_s": 438.537,
+            "std_s": 0.0,
+            "n_delays": 1,
+            "zero_prob": 0.0,
+            "overall_mean_s": 438.54,
+            "p99_s": 438.54
+          },
+          "W_Validate application": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 8969,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          }
+        },
+        "O_Accepted": {
+          "A_Pending": {
+            "distribution": "lognorm",
+            "params": [
+              0.7455,
+              0.0,
+              0.005
+            ],
+            "mean_s": 0.01,
+            "std_s": 0.03,
+            "n": 17228,
+            "n_delays": 17228,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.01,
+            "p99_s": 0.08
+          }
+        },
+        "O_Cancelled": {
+          "A_Cancelled": {
+            "distribution": "gamma",
+            "params": [
+              0.1429,
+              0.0,
+              6628869.6021
+            ],
+            "mean_s": 947260.25,
+            "std_s": 1215381.25,
+            "n": 250,
+            "n_delays": 250,
+            "zero_prob": 0.0,
+            "overall_mean_s": 947260.25,
+            "p99_s": 2675782.9
+          },
+          "A_Denied": {
+            "distribution": "lognorm",
+            "params": [
+              2.8772,
+              0.0,
+              215.1061
+            ],
+            "mean_s": 84355.68,
+            "std_s": 418669.81,
+            "n": 32,
+            "n_delays": 32,
+            "zero_prob": 0.0,
+            "overall_mean_s": 84355.68,
+            "p99_s": 1736123.58
+          },
+          "O_Accepted": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              76268.51
+            ],
+            "mean_s": 76268.51,
+            "std_s": 0.0,
+            "n_delays": 1,
+            "zero_prob": 0.0,
+            "overall_mean_s": 76268.51,
+            "p99_s": 76268.51
+          },
+          "O_Cancelled": {
+            "distribution": "lognorm",
+            "params": [
+              0.9791,
+              0.0,
+              0.0102
+            ],
+            "mean_s": 1104.13,
+            "std_s": 40369.14,
+            "n": 4429,
+            "n_delays": 4429,
+            "zero_prob": 0.0,
+            "overall_mean_s": 1104.13,
+            "p99_s": 0.14
+          },
+          "O_Create Offer": {
+            "distribution": "lognorm",
+            "params": [
+              2.8512,
+              0.0,
+              176.6518
+            ],
+            "mean_s": 73698.84,
+            "std_s": 317660.17,
+            "n": 751,
+            "n_delays": 751,
+            "zero_prob": 0.0,
+            "overall_mean_s": 73698.84,
+            "p99_s": 1905650.3
+          },
+          "O_Returned": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              555352.8684
+            ],
+            "mean_s": 555352.87,
+            "std_s": 471113.52,
+            "n": 5,
+            "n_delays": 5,
+            "zero_prob": 0.0,
+            "overall_mean_s": 555352.87,
+            "p99_s": 1270197.23
+          },
+          "O_Sent (mail and online)": {
+            "distribution": "lognorm",
+            "params": [
+              1.2962,
+              0.0,
+              22.9219
+            ],
+            "mean_s": 2122.95,
+            "std_s": 31250.79,
+            "n": 338,
+            "n_delays": 338,
+            "zero_prob": 0.0,
+            "overall_mean_s": 2122.95,
+            "p99_s": 1277.46
+          },
+          "O_Sent (online only)": {
+            "distribution": "lognorm",
+            "params": [
+              1.0508,
+              0.0,
+              24.4281
+            ],
+            "mean_s": 48.83,
+            "std_s": 70.45,
+            "n": 11,
+            "n_delays": 11,
+            "zero_prob": 0.0,
+            "overall_mean_s": 48.83,
+            "p99_s": 236.71
+          },
+          "W_Call after offers": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 9539,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          },
+          "W_Call incomplete files": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 908,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          },
+          "W_Complete application": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 97,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          },
+          "W_Validate application": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 100,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          }
+        },
+        "O_Create Offer": {
+          "O_Created": {
+            "distribution": "lognorm",
+            "params": [
+              0.4379,
+              0.0,
+              0.9633
+            ],
+            "mean_s": 1.06,
+            "std_s": 0.55,
+            "n": 42995,
+            "n_delays": 42995,
+            "zero_prob": 0.0,
+            "overall_mean_s": 1.06,
+            "p99_s": 2.36
+          }
+        },
+        "O_Created": {
+          "A_Cancelled": {
+            "distribution": "lognorm",
+            "params": [
+              4.1085,
+              0.0,
+              8838.2295
+            ],
+            "mean_s": 569324.83,
+            "std_s": 912957.86,
+            "n": 119,
+            "n_delays": 119,
+            "zero_prob": 0.0,
+            "overall_mean_s": 569324.83,
+            "p99_s": 2727892.97
+          },
+          "A_Denied": {
+            "distribution": "lognorm",
+            "params": [
+              1.8966,
+              0.0,
+              919.1067
+            ],
+            "mean_s": 10616.2,
+            "std_s": 32315.13,
+            "n": 26,
+            "n_delays": 26,
+            "zero_prob": 0.0,
+            "overall_mean_s": 10616.2,
+            "p99_s": 132636.92
+          },
+          "O_Cancelled": {
+            "distribution": "lognorm",
+            "params": [
+              1.9267,
+              0.0,
+              57.9218
+            ],
+            "mean_s": 8939.78,
+            "std_s": 101329.64,
+            "n": 760,
+            "n_delays": 760,
+            "zero_prob": 0.0,
+            "overall_mean_s": 8939.78,
+            "p99_s": 132322.58
+          },
+          "O_Create Offer": {
+            "distribution": "lognorm",
+            "params": [
+              1.1093,
+              0.0,
+              39.0754
+            ],
+            "mean_s": 4910.24,
+            "std_s": 93180.37,
+            "n": 3913,
+            "n_delays": 3913,
+            "zero_prob": 0.0,
+            "overall_mean_s": 4910.24,
+            "p99_s": 746.35
+          },
+          "O_Sent (mail and online)": {
+            "distribution": "lognorm",
+            "params": [
+              1.3337,
+              0.0,
+              34.1303
+            ],
+            "mean_s": 1580.6,
+            "std_s": 26219.6,
+            "n": 36212,
+            "n_delays": 36212,
+            "zero_prob": 0.0,
+            "overall_mean_s": 1580.6,
+            "p99_s": 1376.79
+          },
+          "O_Sent (online only)": {
+            "distribution": "lognorm",
+            "params": [
+              1.2357,
+              0.0,
+              25.7448
+            ],
+            "mean_s": 1912.42,
+            "std_s": 29680.1,
+            "n": 1920,
+            "n_delays": 1920,
+            "zero_prob": 0.0,
+            "overall_mean_s": 1912.42,
+            "p99_s": 4268.13
+          },
+          "W_Call after offers": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 25,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          },
+          "W_Call incomplete files": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 11,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          },
+          "W_Validate application": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 9,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          }
+        },
+        "O_Refused": {
+          "O_Refused": {
+            "distribution": "lognorm",
+            "params": [
+              0.5297,
+              0.0,
+              0.0097
+            ],
+            "mean_s": 0.01,
+            "std_s": 0.02,
+            "n": 975,
+            "n_delays": 975,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.01,
+            "p99_s": 0.07
+          },
+          "W_Assess potential fraud": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 102,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          },
+          "W_Call after offers": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 109,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          },
+          "W_Call incomplete files": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 195,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          },
+          "W_Complete application": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 25,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          },
+          "W_Validate application": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 3289,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          }
+        },
+        "O_Returned": {
+          "A_Cancelled": {
+            "distribution": "gamma",
+            "params": [
+              0.4926,
+              0.0,
+              1253567.4708
+            ],
+            "mean_s": 617473.28,
+            "std_s": 894270.62,
+            "n": 73,
+            "n_delays": 73,
+            "zero_prob": 0.0,
+            "overall_mean_s": 617473.28,
+            "p99_s": 3459054.03
+          },
+          "A_Denied": {
+            "distribution": "weibull_min",
+            "params": [
+              1.0497,
+              0.0,
+              251979.4514
+            ],
+            "mean_s": 247927.35,
+            "std_s": 193937.98,
+            "n": 2158,
+            "n_delays": 2158,
+            "zero_prob": 0.0,
+            "overall_mean_s": 247927.35,
+            "p99_s": 692386.31
+          },
+          "O_Accepted": {
+            "distribution": "gamma",
+            "params": [
+              0.4861,
+              0.0,
+              362981.2215
+            ],
+            "mean_s": 176457.15,
+            "std_s": 197950.33,
+            "n": 5279,
+            "n_delays": 5279,
+            "zero_prob": 0.0,
+            "overall_mean_s": 176457.15,
+            "p99_s": 775379.11
+          },
+          "O_Cancelled": {
+            "distribution": "lognorm",
+            "params": [
+              3.6847,
+              0.0,
+              13631.7472
+            ],
+            "mean_s": 605877.3,
+            "std_s": 1135891.37,
+            "n": 11,
+            "n_delays": 11,
+            "zero_prob": 0.0,
+            "overall_mean_s": 605877.3,
+            "p99_s": 3017611.32
+          },
+          "O_Create Offer": {
+            "distribution": "lognorm",
+            "params": [
+              1.732,
+              0.0,
+              52881.1892
+            ],
+            "mean_s": 189868.74,
+            "std_s": 475708.98,
+            "n": 101,
+            "n_delays": 101,
+            "zero_prob": 0.0,
+            "overall_mean_s": 189868.74,
+            "p99_s": 941453.28
+          },
+          "O_Returned": {
+            "distribution": "gamma",
+            "params": [
+              0.2686,
+              0.0,
+              370360.3602
+            ],
+            "mean_s": 99483.21,
+            "std_s": 137502.85,
+            "n": 65,
+            "n_delays": 65,
+            "zero_prob": 0.0,
+            "overall_mean_s": 99483.21,
+            "p99_s": 457034.83
+          },
+          "W_Call after offers": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 1,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          },
+          "W_Call incomplete files": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 1450,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          },
+          "W_Validate application": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 14165,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          }
+        },
+        "O_Sent (mail and online)": {
+          "A_Cancelled": {
+            "distribution": "weibull_min",
+            "params": [
+              2.4764,
+              0.0,
+              2555723.9279
+            ],
+            "mean_s": 2378025.71,
+            "std_s": 808455.13,
+            "n": 999,
+            "n_delays": 999,
+            "zero_prob": 0.0,
+            "overall_mean_s": 2378025.71,
+            "p99_s": 3190580.5
+          },
+          "A_Denied": {
+            "distribution": "gamma",
+            "params": [
+              0.4216,
+              0.0,
+              993584.1221
+            ],
+            "mean_s": 418884.0,
+            "std_s": 512102.62,
+            "n": 14,
+            "n_delays": 14,
+            "zero_prob": 0.0,
+            "overall_mean_s": 418884.0,
+            "p99_s": 1543895.52
+          },
+          "O_Accepted": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              598803.32925
+            ],
+            "mean_s": 598803.32925,
+            "std_s": 365535.80748032435,
+            "n_delays": 4,
+            "zero_prob": 0.0,
+            "overall_mean_s": 598803.33,
+            "p99_s": 1164677.44
+          },
+          "O_Cancelled": {
+            "distribution": "lognorm",
+            "params": [
+              3.1221,
+              0.0,
+              56.0263
+            ],
+            "mean_s": 56285.67,
+            "std_s": 250301.36,
+            "n": 384,
+            "n_delays": 384,
+            "zero_prob": 0.0,
+            "overall_mean_s": 56285.67,
+            "p99_s": 1462530.47
+          },
+          "O_Create Offer": {
+            "distribution": "gamma",
+            "params": [
+              0.4076,
+              0.0,
+              1408565.1564
+            ],
+            "mean_s": 574068.36,
+            "std_s": 695371.19,
+            "n": 659,
+            "n_delays": 659,
+            "zero_prob": 0.0,
+            "overall_mean_s": 574068.36,
+            "p99_s": 2502606.64
+          },
+          "O_Returned": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              445915.6238
+            ],
+            "mean_s": 445915.62,
+            "std_s": 401250.29,
+            "n": 251,
+            "n_delays": 251,
+            "zero_prob": 0.0,
+            "overall_mean_s": 445915.62,
+            "p99_s": 1675490.83
+          },
+          "O_Sent (mail and online)": {
+            "distribution": "lognorm",
+            "params": [
+              0.8535,
+              0.0,
+              0.0027
+            ],
+            "mean_s": 0.07,
+            "std_s": 2.5,
+            "n": 3111,
+            "n_delays": 3111,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.07,
+            "p99_s": 0.05
+          },
+          "O_Sent (online only)": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              40.76
+            ],
+            "mean_s": 40.76,
+            "std_s": 0.0,
+            "n_delays": 1,
+            "zero_prob": 0.0,
+            "overall_mean_s": 40.76,
+            "p99_s": 40.76
+          },
+          "W_Call after offers": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 2795,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          },
+          "W_Call incomplete files": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 515,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          },
+          "W_Complete application": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 30912,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          },
+          "W_Validate application": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 42,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          }
+        },
+        "O_Sent (online only)": {
+          "A_Cancelled": {
+            "distribution": "weibull_min",
+            "params": [
+              1.1936,
+              0.0,
+              2212176.3889
+            ],
+            "mean_s": 2135365.11,
+            "std_s": 1220561.94,
+            "n": 133,
+            "n_delays": 133,
+            "zero_prob": 0.0,
+            "overall_mean_s": 2135365.11,
+            "p99_s": 5626924.12
+          },
+          "A_Denied": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              30350.7126
+            ],
+            "mean_s": 30350.71,
+            "std_s": 30566.75,
+            "n": 5,
+            "n_delays": 5,
+            "zero_prob": 0.0,
+            "overall_mean_s": 30350.71,
+            "p99_s": 71970.68
+          },
+          "O_Accepted": {
+            "distribution": "lognorm",
+            "params": [
+              1.6304,
+              0.0,
+              108930.9356
+            ],
+            "mean_s": 359201.02,
+            "std_s": 642768.29,
+            "n": 8,
+            "n_delays": 8,
+            "zero_prob": 0.0,
+            "overall_mean_s": 359201.02,
+            "p99_s": 1922748.1
+          },
+          "O_Cancelled": {
+            "distribution": "lognorm",
+            "params": [
+              4.087,
+              0.0,
+              259.4194
+            ],
+            "mean_s": 202083.08,
+            "std_s": 534796.04,
+            "n": 31,
+            "n_delays": 31,
+            "zero_prob": 0.0,
+            "overall_mean_s": 202083.08,
+            "p99_s": 2172065.71
+          },
+          "O_Create Offer": {
+            "distribution": "gamma",
+            "params": [
+              0.269,
+              0.0,
+              1535745.8773
+            ],
+            "mean_s": 413179.01,
+            "std_s": 621098.63,
+            "n": 151,
+            "n_delays": 151,
+            "zero_prob": 0.0,
+            "overall_mean_s": 413179.01,
+            "p99_s": 2540455.89
+          },
+          "O_Returned": {
+            "distribution": "gamma",
+            "params": [
+              0.5328,
+              0.0,
+              381114.218
+            ],
+            "mean_s": 203048.85,
+            "std_s": 255554.75,
+            "n": 272,
+            "n_delays": 272,
+            "zero_prob": 0.0,
+            "overall_mean_s": 203048.85,
+            "p99_s": 1232167.85
+          },
+          "O_Sent (mail and online)": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              12.99
+            ],
+            "mean_s": 12.99,
+            "std_s": 0.0,
+            "n_delays": 1,
+            "zero_prob": 0.0,
+            "overall_mean_s": 12.99,
+            "p99_s": 12.99
+          },
+          "O_Sent (online only)": {
+            "distribution": "lognorm",
+            "params": [
+              0.81,
+              0.0,
+              0.0024
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.01,
+            "n": 85,
+            "n_delays": 85,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.05
+          },
+          "W_Call after offers": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 251,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          },
+          "W_Call incomplete files": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 605,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          },
+          "W_Complete application": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 450,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          },
+          "W_Validate application": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.0
+            ],
+            "mean_s": 0.0,
+            "std_s": 0.0,
+            "n_delays": 22,
+            "zero_prob": 1.0,
+            "overall_mean_s": 0.0,
+            "p99_s": 0.0
+          }
+        },
+        "W_Assess potential fraud": {
+          "A_Accepted": {
+            "distribution": "gamma",
+            "params": [
+              0.4439,
+              0.0,
+              182192.8556
+            ],
+            "mean_s": 80883.51,
+            "std_s": 99382.66,
+            "n": 7,
+            "n_delays": 7,
+            "zero_prob": 0.0,
+            "overall_mean_s": 80883.51,
+            "p99_s": 275343.81
+          },
+          "A_Cancelled": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              3195876.051
+            ],
+            "mean_s": 3195876.051,
+            "std_s": 3192769.511,
+            "n_delays": 2,
+            "zero_prob": 0.0,
+            "overall_mean_s": 3195876.05,
+            "p99_s": 6324790.17
+          },
+          "A_Denied": {
+            "distribution": "lognorm",
+            "params": [
+              2.1203,
+              0.0,
+              6619.9196
+            ],
+            "mean_s": 55968.57,
+            "std_s": 148522.88,
+            "n": 54,
+            "n_delays": 54,
+            "zero_prob": 0.0,
+            "overall_mean_s": 55968.57,
+            "p99_s": 686620.54
+          },
+          "O_Accepted": {
+            "distribution": "lognorm",
+            "params": [
+              1.8298,
+              0.0,
+              4062.1589
+            ],
+            "mean_s": 24275.78,
+            "std_s": 61742.12,
+            "n": 17,
+            "n_delays": 17,
+            "zero_prob": 0.0,
+            "overall_mean_s": 24275.78,
+            "p99_s": 229075.47
+          },
+          "O_Create Offer": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              29968.4345
+            ],
+            "mean_s": 29968.4345,
+            "std_s": 17814.805080615846,
+            "n_delays": 4,
+            "zero_prob": 0.0,
+            "overall_mean_s": 29968.43,
+            "p99_s": 59457.24
+          },
+          "O_Returned": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              68.487
+            ],
+            "mean_s": 68.487,
+            "std_s": 0.0,
+            "n_delays": 1,
+            "zero_prob": 0.0,
+            "overall_mean_s": 68.49,
+            "p99_s": 68.49
+          },
+          "W_Assess potential fraud": {
+            "distribution": "lognorm",
+            "params": [
+              0.314,
+              0.0,
+              0.0062
+            ],
+            "mean_s": 0.01,
+            "std_s": 0.0,
+            "n": 8,
+            "n_delays": 8,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.01,
+            "p99_s": 0.01
+          },
+          "W_Call after offers": {
+            "distribution": "lognorm",
+            "params": [
+              0.3589,
+              0.0,
+              0.0072
+            ],
+            "mean_s": 0.01,
+            "std_s": 0.0,
+            "n": 8,
+            "n_delays": 8,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.01,
+            "p99_s": 0.02
+          },
+          "W_Complete application": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.006
+            ],
+            "mean_s": 0.006,
+            "std_s": 0.0,
+            "n_delays": 1,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.01,
+            "p99_s": 0.01
+          },
+          "W_Handle leads": {
+            "distribution": "lognorm",
+            "params": [
+              0.4505,
+              0.0,
+              0.0084
+            ],
+            "mean_s": 0.01,
+            "std_s": 0.0,
+            "n": 22,
+            "n_delays": 22,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.01,
+            "p99_s": 0.02
+          },
+          "W_Validate application": {
+            "distribution": "lognorm",
+            "params": [
+              0.6093,
+              0.0,
+              0.01
+            ],
+            "mean_s": 0.01,
+            "std_s": 0.01,
+            "n": 101,
+            "n_delays": 101,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.01,
+            "p99_s": 0.07
+          }
+        },
+        "W_Call after offers": {
+          "A_Cancelled": {
+            "distribution": "weibull_min",
+            "params": [
+              4.01,
+              0.0,
+              2270263.046
+            ],
+            "mean_s": 2137188.21,
+            "std_s": 586691.64,
+            "n": 934,
+            "n_delays": 934,
+            "zero_prob": 0.0,
+            "overall_mean_s": 2137188.21,
+            "p99_s": 2420735.6
+          },
+          "A_Denied": {
+            "distribution": "gamma",
+            "params": [
+              0.2551,
+              0.0,
+              2230585.2328
+            ],
+            "mean_s": 569097.91,
+            "std_s": 793983.85,
+            "n": 18,
+            "n_delays": 18,
+            "zero_prob": 0.0,
+            "overall_mean_s": 569097.91,
+            "p99_s": 2448676.26
+          },
+          "A_Validating": {
+            "distribution": "lognorm",
+            "params": [
+              0.2082,
+              0.0,
+              0.9045
+            ],
+            "mean_s": 0.93,
+            "std_s": 0.54,
+            "n": 21880,
+            "n_delays": 21880,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.93,
+            "p99_s": 1.62
+          },
+          "O_Cancelled": {
+            "distribution": "gamma",
+            "params": [
+              0.4426,
+              0.0,
+              1945901.9264
+            ],
+            "mean_s": 861201.74,
+            "std_s": 708100.54,
+            "n": 17,
+            "n_delays": 17,
+            "zero_prob": 0.0,
+            "overall_mean_s": 861201.74,
+            "p99_s": 2098045.84
+          },
+          "O_Create Offer": {
+            "distribution": "gamma",
+            "params": [
+              0.8326,
+              0.0,
+              865721.7916
+            ],
+            "mean_s": 720815.91,
+            "std_s": 685788.74,
+            "n": 250,
+            "n_delays": 250,
+            "zero_prob": 0.0,
+            "overall_mean_s": 720815.91,
+            "p99_s": 2266165.08
+          },
+          "W_Assess potential fraud": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.006666666666666667
+            ],
+            "mean_s": 0.006666666666666667,
+            "std_s": 0.0016996731711975946,
+            "n_delays": 3,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.01,
+            "p99_s": 0.01
+          },
+          "W_Call after offers": {
+            "distribution": "lognorm",
+            "params": [
+              0.2853,
+              0.0,
+              0.0067
+            ],
+            "mean_s": 0.01,
+            "std_s": 0.01,
+            "n": 2043,
+            "n_delays": 2043,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.01,
+            "p99_s": 0.02
+          }
+        },
+        "W_Call incomplete files": {
+          "A_Denied": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              494957.74725
+            ],
+            "mean_s": 494957.74725,
+            "std_s": 564516.7793565268,
+            "n_delays": 4,
+            "zero_prob": 0.0,
+            "overall_mean_s": 494957.75,
+            "p99_s": 1354718.7
+          },
+          "A_Incomplete": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.009000000000000001
+            ],
+            "mean_s": 0.009000000000000001,
+            "std_s": 0.0008164965809277262,
+            "n_delays": 3,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.01,
+            "p99_s": 0.01
+          },
+          "A_Validating": {
+            "distribution": "lognorm",
+            "params": [
+              0.3209,
+              0.0,
+              0.0833
+            ],
+            "mean_s": 0.09,
+            "std_s": 0.13,
+            "n": 16929,
+            "n_delays": 16929,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.09,
+            "p99_s": 0.25
+          },
+          "O_Accepted": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              1807.678
+            ],
+            "mean_s": 1807.678,
+            "std_s": 0.0,
+            "n_delays": 1,
+            "zero_prob": 0.0,
+            "overall_mean_s": 1807.68,
+            "p99_s": 1807.68
+          },
+          "O_Cancelled": {
+            "distribution": "lognorm",
+            "params": [
+              0.4863,
+              0.0,
+              0.0122
+            ],
+            "mean_s": 0.01,
+            "std_s": 0.02,
+            "n": 1423,
+            "n_delays": 1423,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.01,
+            "p99_s": 0.07
+          },
+          "W_Assess potential fraud": {
+            "distribution": "lognorm",
+            "params": [
+              0.4095,
+              0.0,
+              0.0073
+            ],
+            "mean_s": 0.01,
+            "std_s": 0.0,
+            "n": 10,
+            "n_delays": 10,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.01,
+            "p99_s": 0.02
+          },
+          "W_Call after offers": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.009
+            ],
+            "mean_s": 0.009,
+            "std_s": 0.0052440442408507575,
+            "n_delays": 4,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.01,
+            "p99_s": 0.02
+          }
+        },
+        "W_Complete application": {
+          "A_Accepted": {
+            "distribution": "lognorm",
+            "params": [
+              2.2569,
+              0.0,
+              16524.6924
+            ],
+            "mean_s": 113199.29,
+            "std_s": 158916.31,
+            "n": 7,
+            "n_delays": 7,
+            "zero_prob": 0.0,
+            "overall_mean_s": 113199.29,
+            "p99_s": 375666.49
+          },
+          "A_Complete": {
+            "distribution": "lognorm",
+            "params": [
+              0.5733,
+              0.0,
+              0.0154
+            ],
+            "mean_s": 0.02,
+            "std_s": 0.02,
+            "n": 31362,
+            "n_delays": 31362,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.02,
+            "p99_s": 0.11
+          },
+          "A_Denied": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              11.147
+            ],
+            "mean_s": 11.147,
+            "std_s": 0.0,
+            "n_delays": 1,
+            "zero_prob": 0.0,
+            "overall_mean_s": 11.15,
+            "p99_s": 11.15
+          },
+          "O_Create Offer": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              81664.685
+            ],
+            "mean_s": 81664.685,
+            "std_s": 121828.95432860819,
+            "n_delays": 4,
+            "zero_prob": 0.0,
+            "overall_mean_s": 81664.68,
+            "p99_s": 283717.63
+          },
+          "W_Assess potential fraud": {
+            "distribution": "lognorm",
+            "params": [
+              0.4571,
+              0.0,
+              0.0071
+            ],
+            "mean_s": 0.01,
+            "std_s": 0.0,
+            "n": 12,
+            "n_delays": 12,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.01,
+            "p99_s": 0.02
+          }
+        },
+        "W_Handle leads": {
+          "A_Concept": {
+            "distribution": "lognorm",
+            "params": [
+              0.5177,
+              0.0,
+              0.0155
+            ],
+            "mean_s": 0.02,
+            "std_s": 0.03,
+            "n": 20423,
+            "n_delays": 20423,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.02,
+            "p99_s": 0.1
+          },
+          "W_Assess potential fraud": {
+            "distribution": "lognorm",
+            "params": [
+              0.7809,
+              0.0,
+              0.0094
+            ],
+            "mean_s": 0.01,
+            "std_s": 0.02,
+            "n": 22,
+            "n_delays": 22,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.01,
+            "p99_s": 0.09
+          },
+          "W_Handle leads": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              0.005
+            ],
+            "mean_s": 0.005,
+            "std_s": 0.0,
+            "n_delays": 1,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.01,
+            "p99_s": 0.01
+          }
+        },
+        "W_Validate application": {
+          "A_Denied": {
+            "distribution": "weibull_min",
+            "params": [
+              0.713,
+              0.0,
+              580770.1044
+            ],
+            "mean_s": 728809.01,
+            "std_s": 1134077.74,
+            "n": 81,
+            "n_delays": 81,
+            "zero_prob": 0.0,
+            "overall_mean_s": 728809.01,
+            "p99_s": 5170317.23
+          },
+          "A_Incomplete": {
+            "distribution": "lognorm",
+            "params": [
+              0.5672,
+              0.0,
+              0.0138
+            ],
+            "mean_s": 0.02,
+            "std_s": 0.02,
+            "n": 23052,
+            "n_delays": 23052,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.02,
+            "p99_s": 0.1
+          },
+          "A_Validating": {
+            "distribution": "lognorm",
+            "params": [
+              0.1381,
+              0.0,
+              0.073
+            ],
+            "mean_s": 0.07,
+            "std_s": 0.01,
+            "n": 7,
+            "n_delays": 7,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.07,
+            "p99_s": 0.09
+          },
+          "O_Accepted": {
+            "distribution": "expon",
+            "params": [
+              0.0,
+              109913.41500000001
+            ],
+            "mean_s": 109913.41500000001,
+            "std_s": 104158.31831828438,
+            "n_delays": 4,
+            "zero_prob": 0.0,
+            "overall_mean_s": 109913.42,
+            "p99_s": 243247.7
+          },
+          "O_Cancelled": {
+            "distribution": "lognorm",
+            "params": [
+              0.4552,
+              0.0,
+              0.0126
+            ],
+            "mean_s": 0.02,
+            "std_s": 0.07,
+            "n": 3012,
+            "n_delays": 3012,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.02,
+            "p99_s": 0.06
+          },
+          "O_Returned": {
+            "distribution": "lognorm",
+            "params": [
+              1.2949,
+              0.0,
+              1078.3155
+            ],
+            "mean_s": 2544.42,
+            "std_s": 3273.71,
+            "n": 7,
+            "n_delays": 7,
+            "zero_prob": 0.0,
+            "overall_mean_s": 2544.42,
+            "p99_s": 9112.7
+          },
+          "W_Assess potential fraud": {
+            "distribution": "lognorm",
+            "params": [
+              0.5457,
+              0.0,
+              0.0087
+            ],
+            "mean_s": 0.01,
+            "std_s": 0.01,
+            "n": 170,
+            "n_delays": 170,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.01,
+            "p99_s": 0.04
+          },
+          "W_Validate application": {
+            "distribution": "lognorm",
+            "params": [
+              0.4831,
+              0.0,
+              0.0081
+            ],
+            "mean_s": 0.01,
+            "std_s": 0.01,
+            "n": 16,
+            "n_delays": 16,
+            "zero_prob": 0.0,
+            "overall_mean_s": 0.01,
+            "p99_s": 0.03
+          }
+        }
+      }
+    },
     "suspends_per_instance": {
       "W_Handle leads": {
         "mean": 0.0684,
@@ -4306,6 +6457,23 @@
         "n_instances": 327
       }
     },
-    "direct_abort_from_running": {}
+    "direct_abort_from_running": {},
+    "case_duration_envelope": {
+      "distribution": "weibull_min",
+      "params": [
+        1.736,
+        0.0,
+        2115060.1245
+      ],
+      "mean_s": 1887828.47,
+      "std_s": 1117588.58,
+      "n": 31509,
+      "n_delays": 31509,
+      "zero_prob": 0.0,
+      "overall_mean_s": 1887828.47,
+      "p99_s": 5110085.87,
+      "runtime_scale": 0.724763,
+      "basis": "first-to-last observed event; lower bound for omitted parallel business waits"
+    }
   }
 }

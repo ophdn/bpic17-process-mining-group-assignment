@@ -100,9 +100,8 @@ def test_nonfinal_outcome_activity_does_not_complete_case_early_when_not_enforce
     assert component.debug_stats()["end_reasons"]["terminal_outcome"] == 0
 
 
-def test_terminal_outcome_activity_completes_case_when_enforced():
-    """With enforce_terminal_outcomes=True (the A1 fix / default), firing an
-    outcome activity like A_Pending force-ends the case immediately."""
+def test_pending_continues_even_when_terminal_outcomes_are_enforced():
+    """A_Pending is an intermediate milestone, not a terminal outcome."""
     engine = SimulationEngine(sim_duration=10, start_datetime=datetime(2016, 1, 1))
     component = _component_with_linear_net(enforce_terminal_outcomes=True)
 
@@ -113,9 +112,9 @@ def test_terminal_outcome_activity_completes_case_when_enforced():
     )
 
     scheduled = [(event.event_type, event.activity) for event in engine._queue]
-    assert (EventType.CASE_COMPLETE, None) in scheduled
-    assert (EventType.ACTIVITY_REQUEST, "A_Validating") not in scheduled
-    assert component.debug_stats()["end_reasons"]["terminal_outcome"] == 1
+    assert (EventType.CASE_COMPLETE, None) not in scheduled
+    assert (EventType.ACTIVITY_REQUEST, "A_Validating") in scheduled
+    assert component.debug_stats()["end_reasons"]["terminal_outcome"] == 0
 
 
 def _component_with_forced_followup_net(enforce_terminal_outcomes: bool = True) -> PetriNetProcessComponent:

@@ -38,9 +38,13 @@ class ArrivalComponent:
 
     HANDLES = {EventType.CASE_ARRIVAL: None}  # patched below
 
-    def __init__(self, seed: Optional[int] = 42, scale_factor: float = 1.0):
+    def __init__(self, seed: Optional[int] = 42, scale_factor: float = 1.0,
+                 stop_time: Optional[float] = None):
         self._rng = random.Random(seed)
         self._scale_factor = scale_factor
+        if stop_time is not None and stop_time < 0:
+            raise ValueError("stop_time must be non-negative")
+        self._stop_time = stop_time
         self._case_counter = 0
 
     # ------------------------------------------------------------------
@@ -77,10 +81,13 @@ class ArrivalComponent:
         return raw / self._scale_factor
 
     def _schedule_next(self, engine, current_time: float) -> None:
-        self._case_counter += 1
         inter_arrival = self._sample_inter_arrival()
+        timestamp = current_time + inter_arrival
+        if self._stop_time is not None and timestamp > self._stop_time:
+            return
+        self._case_counter += 1
         engine.schedule(SimEvent(
-            timestamp=current_time + inter_arrival,
+            timestamp=timestamp,
             priority=10,
             event_type=EventType.CASE_ARRIVAL,
             case_id=f"case_{self._case_counter:06d}",

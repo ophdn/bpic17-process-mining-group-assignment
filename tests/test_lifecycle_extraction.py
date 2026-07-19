@@ -107,6 +107,29 @@ class LifecycleExtractionTests(unittest.TestCase):
             {"A_Next": 1.0},
         )
 
+    def test_inter_activity_wait_uses_work_item_schedule_boundary(self):
+        base = pd.Timestamp("2016-01-04T09:00:00Z")
+        rows = [
+            ("c", "A_First", 0, "complete", ""),
+            ("c", "W_Test", 10, "schedule", ""),
+            ("c", "W_Test", 12, "start", "r"),
+            ("c", "W_Test", 20, "complete", "r"),
+            ("c", "A_Next", 35, "complete", ""),
+        ]
+        df = pd.DataFrame(rows, columns=[
+            "case_id", "activity", "seconds", "lifecycle", "resource"])
+        df["timestamp"] = base + pd.to_timedelta(df["seconds"], unit="s")
+        df["event_order"] = range(len(df))
+
+        lifecycle = extract_lifecycle(df, {"windows": {}, "holidays": [], "system": []})
+        delays = lifecycle["inter_activity_delays"]["transitions"]
+
+        self.assertEqual(delays["A_First"]["W_Test"]["overall_mean_s"], 10.0)
+        self.assertEqual(delays["W_Test"]["A_Next"]["overall_mean_s"], 15.0)
+        # Starting the W_ item took another two seconds historically, but that
+        # is resource queueing and must not be baked into the external timer.
+        self.assertNotEqual(delays["A_First"]["W_Test"]["overall_mean_s"], 12.0)
+
     def test_calendar_tail_uses_resume_resource_and_ignores_vacations(self):
         suspend = datetime(2016, 1, 8, 17, tzinfo=UTC)  # Friday close
         resume = datetime(2016, 1, 11, 7, tzinfo=UTC)   # Monday pre-shift

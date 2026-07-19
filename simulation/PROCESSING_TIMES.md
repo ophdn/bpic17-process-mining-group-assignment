@@ -22,7 +22,7 @@ those experiments.
 
 ## Parameter coverage and atomic activities
 
-The active input artifact covers all eight routed `W_` activities in each of
+The active input artifact covers all eight observed `W_` activities in each of
 the processing-time, session-end, suspend-end, and resume-gap tables. The
 generic `0.5` lifecycle fallback is therefore not expected to run in the active
 evaluation configuration. Withdrawal hazards exist for four of the eight
@@ -53,6 +53,8 @@ minutes, while their elapsed spans can be hours or days. In active mode:
 - suspend releases the resource to the pool;
 - a resume-ready item goes through normal permission, shift, and allocation
   checks before the logged `resume`;
+- mined terminal-to-next-activity delays advance business time without claiming
+  a resource;
 - `ate_abort` terminates the work item but continues the case;
 - an initial queued request may lose the allocation race to a mined withdrawal
   timer.
@@ -87,7 +89,10 @@ artifact in legacy mode or a legacy artifact in active mode fails loudly.
 
 The active parameter block contains active-session distributions, session-end
 and suspend-end hazards, resume-gap residuals (including an explicit zero mass),
-terminal-outcome continuation, withdrawal timers, and validation summaries.
+terminal-to-next-activity waits, terminal-outcome continuation, withdrawal
+timers, and a calibrated end-to-end duration envelope. The envelope represents
+long parallel business waits omitted by the discovered serial net; it delays
+case completion without occupying a resource.
 Retraining active artifacts never overwrites the legacy set.
 
 The active fitted tables, training metrics, and joblib are version-controlled.
@@ -104,6 +109,10 @@ From the repository root:
 # extraction; --lifecycle is shown explicitly for clarity.
 .venv/bin/python extract_log_info.py --log BPIChallenge2017.xes \
   --out simulation_inputs_active.json --lifecycle
+
+# Memory-bounded refresh of waits and the duration envelope only.
+.venv/bin/python scripts/extract_inter_activity_delays.py \
+  --log BPIChallenge2017.xes --artifact simulation_inputs_active.json
 
 # Active point + quantile artifact and versioned metrics.
 .venv/bin/python train_processing_time_model.py --log BPIChallenge2017.xes \
@@ -140,8 +149,11 @@ resource-release point.
 
 ## Modeling limits
 
-- v1 is serial: one in-flight W-item per case. This covers 99.8% of BPIC-17
-  cases; the small concurrent minority is outside fit claims.
+- The discovered runtime net is serial and omits long-lived parallel work such
+  as `W_Call after offers`. Active mode therefore samples an empirical
+  first-to-last case-duration envelope and completes at the later of that floor
+  or the simulated process/resource path. This preserves real congestion beyond
+  the floor but does not expose the omitted parallel item to allocation policy.
 - `A_` and `O_` records are treated as zero-time automatic state changes because
   BPIC-17 does not expose service intervals for them. This avoids inventing
   resource demand, but it also means that the simulator cannot represent human
@@ -168,3 +180,7 @@ resource-release point.
   Point and probabilistic ML are evaluated in the Section 1.3 validation
   notebook, but they are not exercised by the reported policy comparison. A
   claim that the policy results use ML durations would therefore be incorrect.
+- Evaluation admits arrivals for the named horizon and then drains the engine.
+  Cycle time uses explicit `CASE_COMPLETE` timestamps, and a completion share
+  below 99% fails the notebook; last activity timestamps are not a substitute
+  for completion when the duration envelope is active.

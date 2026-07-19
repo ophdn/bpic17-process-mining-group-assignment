@@ -778,26 +778,14 @@ class ProcessComponent:
 
         # Decide termination
         if self._should_terminate(case_id, activity, counts):
-            self._clear_case_state(case_id)
-            engine.schedule(SimEvent(
-                timestamp=engine.now,
-                priority=20,
-                event_type=EventType.CASE_COMPLETE,
-                case_id=case_id,
-            ))
+            self._schedule_case_completion(engine, case_id)
             return
 
         # Choose and schedule the next activity
         next_act = self._next_activity(case_id, activity, counts.get(activity, 1))
         if next_act is None:
             # No outgoing edge defined — treat as terminal
-            self._clear_case_state(case_id)
-            engine.schedule(SimEvent(
-                timestamp=engine.now,
-                priority=20,
-                event_type=EventType.CASE_COMPLETE,
-                case_id=case_id,
-            ))
+            self._schedule_case_completion(engine, case_id)
             return
 
         self._fire_start(engine, case_id, next_act)
@@ -877,6 +865,9 @@ class ProcessComponent:
     def on_activity_suspend(self, engine, event: SimEvent) -> None:
         """A running session paused: release the resource to the pool, then decide
         resume (re-request after an external wait) vs. abort (§4.4 step 2)."""
+        engine.stats["activity_suspends_handled"] = (
+            engine.stats.get("activity_suspends_handled", 0) + 1
+        )
         case_id, activity = event.case_id, event.activity
         wid = self._witem_id(event)
         w = self._witem.get(wid, {"session": 0})
@@ -894,6 +885,14 @@ class ProcessComponent:
             # resource only once it is re-allocated, §4.6).
             gap = self._sample_gap(engine, case_id, activity, session)
             payload = dict(event.payload) if isinstance(event.payload, dict) else {}
+            # The request that started this session may carry ResourceComponent's
+            # mutable queue token.  _begin() marks that token ``allocated``; if
+            # it leaks into the re-request, on_activity_request() correctly
+            # treats the request as stale and drops it.  A resumed work item is
+            # a fresh queue admission and must not inherit either competing-risk
+            # timer from its original request.
+            payload.pop("_queue_token", None)
+            payload.pop("_withdraw_delay", None)
             payload["resuming"] = True
             engine.schedule(SimEvent(
                 timestamp=engine.now + gap,
@@ -904,6 +903,9 @@ class ProcessComponent:
                 resource=None,
                 payload=payload,
             ))
+            engine.stats["activity_resumes_scheduled"] = (
+                engine.stats.get("activity_resumes_scheduled", 0) + 1
+            )
         else:
             # Abort from SUSPENDED — the resource was already released above, so
             # ACTIVITY_ABORT carries no resource and triggers no second release.
@@ -916,6 +918,9 @@ class ProcessComponent:
                 resource=None,
                 payload=event.payload,
             ))
+            engine.stats["activity_aborts_scheduled"] = (
+                engine.stats.get("activity_aborts_scheduled", 0) + 1
+            )
 
     def on_activity_abort(self, engine, event: SimEvent) -> None:
         """Work item killed (ate_abort). The case continues via mined continuation;
@@ -995,8 +1000,41 @@ class ProcessComponent:
             if zero_prob and rng.random() < zero_prob:
                 return 0.0
             dist_name, params = spec
-            return max(0.0, self._sample_scipy_like(dist_name, params, rng))
+            sampled = max(0.0, self._sample_scipy_like(dist_name, params, rng))
+            cap = self._lp.resume_gap_caps.get(activity, 0.0)
+            return min(sampled, cap) if cap > 0 else sampled
         return max(0.0, rng.expovariate(1.0 / 3600.0))
+
+    def _sample_inter_activity_delay(
+        self, case_id: str, current_activity: Optional[str],
+        next_activity: str, visit: int,
+    ) -> float:
+        """External/business wait before the next visible activity is ready.
+
+        This timer is deliberately outside ResourceComponent: it advances case
+        elapsed time without claiming a worker, changing occupation, or entering
+        an allocation policy's queue before the work is actually enabled.
+        """
+        if not self._active or not current_activity:
+            return 0.0
+        spec = self._lp.inter_activity_delays.get(
+            current_activity, {}).get(next_activity)
+        zero_prob = self._lp.inter_activity_delay_zero_probs.get(
+            current_activity, {}).get(next_activity)
+        cap = self._lp.inter_activity_delay_caps.get(
+            current_activity, {}).get(next_activity)
+        if spec is None:
+            spec = self._lp.inter_activity_delay_fallback
+            zero_prob = self._lp.inter_activity_delay_fallback_zero_prob
+            cap = self._lp.inter_activity_delay_fallback_cap
+        if spec is None:
+            return 0.0
+        rng = self._draw_rng(
+            case_id, next_activity, f"inter_delay:{current_activity}", visit)
+        if zero_prob and rng.random() < zero_prob:
+            return 0.0
+        sampled = max(0.0, self._sample_scipy_like(spec[0], spec[1], rng))
+        return min(sampled, cap) if cap and cap > 0 else sampled
 
     def _sample_withdraw_delay(self, case_id: str, activity: str, visit: int) -> Optional[float]:
         """Draw the SCHEDULED→withdraw competing-risk timer for an initial W_
@@ -1022,9 +1060,7 @@ class ProcessComponent:
         self._repeat_counts[case_id] = counts
 
         def end_case():
-            self._clear_case_state(case_id)
-            engine.schedule(SimEvent(timestamp=engine.now, priority=20,
-                                     event_type=EventType.CASE_COMPLETE, case_id=case_id))
+            self._schedule_case_completion(engine, case_id)
 
         # Runaway-case guard mirrors _should_terminate's total cap.
         if sum(counts.values()) > 150:
@@ -1065,12 +1101,56 @@ class ProcessComponent:
             if state.get("case_id") == case_id:
                 self._witem.pop(work_item_id, None)
 
+    def _schedule_case_completion(self, engine, case_id: str) -> None:
+        """Finish no earlier than the mined end-to-end lifecycle envelope.
+
+        The discovered serial net omits long-running parallel work items from
+        BPIC17 (most notably ``W_Call after offers``).  Their suspended business
+        waits must affect case elapsed time, but must not be serialized as
+        resource work or charged to an allocation policy.  The historical
+        first-to-last duration therefore acts as a stochastic lower envelope;
+        genuine simulated congestion can still push completion beyond it.
+        """
+        timestamp = engine.now
+        spec = self._lp.case_duration_envelope if self._active else None
+        ctx = self._ctx.get(case_id, {})
+        if spec is not None:
+            rng = self._draw_rng(case_id, None, "case_duration_envelope", 1)
+            sampled = max(0.0, self._sample_scipy_like(spec[0], spec[1], rng))
+            cap = self._lp.case_duration_envelope_cap
+            if cap > 0:
+                sampled = min(sampled, cap)
+            sampled *= self._lp.case_duration_envelope_scale
+            start_t = float(ctx.get("start_t", engine.now))
+            timestamp = max(timestamp, start_t + sampled)
+            delay = timestamp - engine.now
+            if delay > 0:
+                engine.stats["case_duration_envelope_delays"] = (
+                    engine.stats.get("case_duration_envelope_delays", 0) + 1
+                )
+                engine.stats["case_duration_envelope_delay_seconds"] = (
+                    engine.stats.get("case_duration_envelope_delay_seconds", 0.0)
+                    + delay
+                )
+        self._clear_case_state(case_id)
+        engine.schedule(SimEvent(
+            timestamp=timestamp,
+            priority=20,
+            event_type=EventType.CASE_COMPLETE,
+            case_id=case_id,
+        ))
+
     def _fire_start(self, engine, case_id: str, activity: str) -> None:
         # Emit a *request*, not a start. ResourceComponent is the only component
         # that turns a request into an ACTIVITY_START, and only once it actually
         # holds a resource — so the work item cannot begin (or be logged) while
         # it is still queued. See ResourceComponent for the full rationale.
         payload = self._payload(case_id)
+        ctx = self._ctx.get(case_id, {})
+        previous_activity = ctx.get("prev_act")
+        visit = self._repeat_counts.get(case_id, {}).get(activity, 0) + 1
+        readiness_delay = self._sample_inter_activity_delay(
+            case_id, previous_activity, activity, visit)
         if self._active:
             # Every request gets a deterministic work_item_id so reconstruction
             # never mis-joins atomic A_/O_ pairs; only W_ items enter the session
@@ -1091,7 +1171,7 @@ class ProcessComponent:
                     "first_resource": None, "feat_ctx": None, "first_now": None,
                 }
         engine.schedule(SimEvent(
-            timestamp=engine.now,
+            timestamp=engine.now + readiness_delay,
             priority=5,
             event_type=EventType.ACTIVITY_REQUEST,
             case_id=case_id,

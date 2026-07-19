@@ -317,14 +317,24 @@ def lifecycle_diagnostics(
 def average_cycle_time(
     df: pd.DataFrame,
     arrival_times: Optional[Mapping[str, pd.Timestamp]] = None,
+    completion_times: Optional[Mapping[str, pd.Timestamp]] = None,
 ) -> dict:
     """Mean time to finish a process instance, in seconds.
 
-    End = last event of the case. Start = the case's arrival timestamp if
+    End = the explicit CASE_COMPLETE timestamp when `completion_times` is
+    supplied, otherwise the last logged activity event. Start = the case's arrival timestamp if
     `arrival_times` is given (correct per slide 21 once pre-first-activity
     queueing exists), else the first logged event (flagged in the result).
     """
-    last = df.groupby("case:concept:name")["time:timestamp"].max()
+    if completion_times is not None:
+        present = set(df["case:concept:name"].astype(str))
+        last = pd.Series({
+            str(case_id): timestamp
+            for case_id, timestamp in completion_times.items()
+            if str(case_id) in present
+        })
+    else:
+        last = df.groupby("case:concept:name")["time:timestamp"].max()
     if arrival_times is not None:
         start = pd.Series({c: arrival_times[c] for c in last.index
                            if c in arrival_times})
@@ -710,6 +720,7 @@ def evaluate(
     availability_seconds: Optional[Mapping[str, float]] = None,
     fairness_weights: Optional[Mapping[str, float]] = None,
     completed_case_ids=None,
+    completion_times: Optional[Mapping[str, pd.Timestamp]] = None,
     resource_subset: Optional[Iterable[str]] = None,
     availability_intervals: Optional[Mapping[str, Iterable[tuple]]] = None,
     resource_df: Optional[pd.DataFrame] = None,
@@ -746,7 +757,8 @@ def evaluate(
         evaluation_window=evaluation_window,
     )
     return {
-        "cycle_time": average_cycle_time(df_completed, arrival_times),
+        "cycle_time": average_cycle_time(
+            df_completed, arrival_times, completion_times),
         "occupation": occ,
         "fairness": resource_fairness(occ["per_resource"], fairness_weights),
         "custom_metrics": {

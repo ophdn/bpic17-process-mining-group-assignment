@@ -44,7 +44,7 @@ need just one KPI.
 
 import json
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Mapping, Optional
 
 import numpy as np
 import pandas as pd
@@ -459,11 +459,23 @@ def variant_overlap(df_complete: pd.DataFrame, reference_top20: list) -> dict:
 # 6. Case length / duration
 # ---------------------------------------------------------------------
 
-def case_length_duration_errors(df_complete: pd.DataFrame, reference_basic_stats: dict) -> dict:
+def case_length_duration_errors(
+    df_complete: pd.DataFrame,
+    reference_basic_stats: dict,
+    case_duration_seconds: Optional[Mapping[str, float]] = None,
+) -> dict:
     lengths = df_complete.groupby("case:concept:name").size()
-    durations = df_complete.groupby("case:concept:name")["time:timestamp"].agg(
-        lambda x: (x.max() - x.min()).total_seconds()
-    )
+    if case_duration_seconds is not None:
+        present = set(df_complete["case:concept:name"].astype(str))
+        durations = pd.Series({
+            str(case_id): float(duration)
+            for case_id, duration in case_duration_seconds.items()
+            if str(case_id) in present
+        })
+    else:
+        durations = df_complete.groupby("case:concept:name")["time:timestamp"].agg(
+            lambda x: (x.max() - x.min()).total_seconds()
+        )
 
     ref_len = reference_basic_stats["case_length"]["mean"]
     ref_dur = reference_basic_stats["case_duration_seconds"]["mean"]
@@ -486,6 +498,7 @@ def evaluate(
     reference: dict,
     net=None, im=None, fm=None,
     df_all: Optional[pd.DataFrame] = None,
+    case_duration_seconds: Optional[Mapping[str, float]] = None,
 ) -> dict:
     """
     Run every KPI above on *df* (a raw event-log DataFrame already
@@ -520,7 +533,8 @@ def evaluate(
         "arrival_rate": arrival_rate_error(df_all, reference["arrival_rate"]),
         "arrival_profile": arrival_profile_error(df_all, reference["arrival_rate"]),
         "variants": variant_overlap(df_complete, reference["process_variants"]["top_20"]),
-        "case_stats": case_length_duration_errors(df_complete, reference["basic_stats"]),
+        "case_stats": case_length_duration_errors(
+            df_complete, reference["basic_stats"], case_duration_seconds),
     }
     if reference.get("_lifecycle_mode") == "active":
         metrics["lifecycle"] = {

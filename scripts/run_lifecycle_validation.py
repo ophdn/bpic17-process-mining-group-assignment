@@ -46,12 +46,20 @@ def main() -> None:
             roster_seed=DEFAULT_ROSTER_SEED,
             capacity=expected["capacity"],
             atomic_duration_scale=expected["atomic_duration_scale"],
+            drain_days=expected["drain_days"],
         )
         result = evaluate_dataframe(
             df,
             set(meta["completed_case_ids"]),
             ACTIVE_INPUTS_PATH,
             meta["configuration"],
+            case_duration_seconds={
+                case_id: (
+                    meta["completion_times"][case_id]
+                    - meta["arrival_times"][case_id]
+                ).total_seconds()
+                for case_id in meta["completed_case_ids"]
+            },
         )
         result["configuration"]["label"] = mode
         validate_lifecycle_validation_artifact(result, mode)
