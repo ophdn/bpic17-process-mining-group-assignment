@@ -63,27 +63,42 @@ def paired_instances(df: pd.DataFrame) -> pd.DataFrame:
     matching how the engine executes activities sequentially per case."""
     df = df.sort_values("time:timestamp")
     if "work_item_id" in df.columns and df["work_item_id"].notna().any():
-        rows = []
-        lifecycle = df.dropna(subset=["work_item_id"])
-        for wid, grp in lifecycle.groupby("work_item_id", sort=False):
-            opened = None
-            for _, row in grp.sort_values("time:timestamp").iterrows():
-                transition = row["lifecycle:transition"]
-                if transition in ("start", "resume"):
-                    opened = row
-                elif transition in ("suspend", "complete") and opened is not None:
-                    rows.append({
-                        "case_id": opened["case:concept:name"],
-                        "activity": opened["concept:name"],
-                        "resource": opened["org:resource"],
-                        "start": opened["time:timestamp"],
-                        "complete": row["time:timestamp"],
-                        "work_item_id": wid,
-                    })
-                    opened = None
-        return pd.DataFrame(rows, columns=[
+        lifecycle = df.dropna(subset=["work_item_id"]).copy()
+        opens_mask = lifecycle["lifecycle:transition"].isin(("start", "resume"))
+        closes_mask = lifecycle["lifecycle:transition"].isin(("suspend", "complete"))
+
+        # A new session starts at each start/resume.  Numbering those rows per
+        # work item lets pandas pair an opening with its first subsequent
+        # suspend/complete in vectorized form.  This is the same state machine
+        # as the former groupby+iterrows loop, but turns a multi-minute metric
+        # pass over a 60-day log into a few dataframe operations.
+        lifecycle["_session"] = opens_mask.groupby(
+            lifecycle["work_item_id"], sort=False).cumsum()
+        opens = lifecycle.loc[opens_mask, [
+            "work_item_id", "_session", "case:concept:name", "concept:name",
+            "org:resource", "time:timestamp",
+        ]].drop_duplicates(["work_item_id", "_session"], keep="last")
+        closes = lifecycle.loc[
+            closes_mask & lifecycle["_session"].gt(0),
+            ["work_item_id", "_session", "time:timestamp"],
+        ].drop_duplicates(["work_item_id", "_session"], keep="first")
+
+        paired = opens.merge(
+            closes,
+            on=["work_item_id", "_session"],
+            how="inner",
+            suffixes=("_start", "_complete"),
+            sort=False,
+        ).rename(columns={
+            "case:concept:name": "case_id",
+            "concept:name": "activity",
+            "org:resource": "resource",
+            "time:timestamp_start": "start",
+            "time:timestamp_complete": "complete",
+        })
+        return paired[[
             "case_id", "activity", "resource", "start", "complete", "work_item_id"
-        ])
+        ]]
 
     starts = df[df["lifecycle:transition"] == "start"].copy()
     completes = df[df["lifecycle:transition"] == "complete"].copy()
@@ -365,6 +380,7 @@ def resource_busy_seconds(
     availability_intervals: Optional[Mapping[str, Iterable[tuple]]] = None,
     activity_prefixes: Optional[Iterable[str]] = None,
     evaluation_window: Optional[tuple[pd.Timestamp, pd.Timestamp]] = None,
+    instances: Optional[pd.DataFrame] = None,
 ) -> pd.Series:
     """Total busy seconds per resource (sum of paired running sessions).
     Legacy logs have one start→complete session per instance; active logs also
@@ -381,7 +397,7 @@ def resource_busy_seconds(
     `activity_prefixes` supports sensitivity views such as fitted work only
     (`("W_",)`). It does not alter the resource availability denominator.
     """
-    inst = paired_instances(df)
+    inst = paired_instances(df) if instances is None else instances
     inst = _filter_activity_prefixes(inst, activity_prefixes)
     inst = inst[inst["resource"].notna() & (inst["resource"] != "")]
     busy = _instance_busy_seconds(
@@ -399,6 +415,7 @@ def average_resource_occupation(
     availability_intervals: Optional[Mapping[str, Iterable[tuple]]] = None,
     activity_prefixes: Optional[Iterable[str]] = None,
     evaluation_window: Optional[tuple[pd.Timestamp, pd.Timestamp]] = None,
+    instances: Optional[pd.DataFrame] = None,
 ) -> dict:
     """Mean share the resources are working during their availabilities.
 
@@ -424,12 +441,14 @@ def average_resource_occupation(
         df,
         activity_prefixes=activity_prefixes,
         evaluation_window=evaluation_window,
+        instances=instances,
     )
     busy = resource_busy_seconds(
         df,
         availability_intervals=availability_intervals,
         activity_prefixes=activity_prefixes,
         evaluation_window=evaluation_window,
+        instances=instances,
     )
     if availability_seconds is not None:
         avail = pd.Series(dict(availability_seconds), dtype=float)
@@ -587,7 +606,9 @@ def time_to_decision(
     return _milestone_times(df, {"A_Pending", "A_Denied", "A_Cancelled"}, arrival_times)
 
 
-def handover_rate(df: pd.DataFrame) -> dict:
+def handover_rate(
+    df: pd.DataFrame, instances: Optional[pd.DataFrame] = None,
+) -> dict:
     """Share of consecutive same-case activity steps that switch resource
     (lower = more work stays with the same person -- familiarity /
     continuity; higher = more context-switching / handover overhead).
@@ -596,7 +617,8 @@ def handover_rate(df: pd.DataFrame) -> dict:
     steps with no assigned resource (unpermitted activities) are dropped
     from the comparison since "switch" is undefined against no one.
     """
-    inst = paired_instances(df).sort_values(["case_id", "start"])
+    inst = (paired_instances(df) if instances is None else instances).sort_values(
+        ["case_id", "start"])
     inst = inst[inst["resource"].notna() & (inst["resource"] != "")]
 
     same_case = inst["case_id"] == inst["case_id"].shift(1)
@@ -615,6 +637,7 @@ def resource_activity_switch_rate(
     df: pd.DataFrame,
     activity_prefixes: Optional[Iterable[str]] = None,
     evaluation_window: Optional[tuple[pd.Timestamp, pd.Timestamp]] = None,
+    instances: Optional[pd.DataFrame] = None,
 ) -> dict:
     """Share of consecutive sessions handled by a resource whose activity changes.
 
@@ -623,7 +646,7 @@ def resource_activity_switch_rate(
     The case-level handover metric answers a different question and should not
     be used as evidence that activity piling works.
     """
-    inst = paired_instances(df)
+    inst = paired_instances(df) if instances is None else instances
     inst = _filter_activity_prefixes(inst, activity_prefixes)
     inst = inst.sort_values(["resource", "start", "complete"])
     inst = inst[inst["resource"].notna() & (inst["resource"] != "")]
@@ -648,6 +671,7 @@ def rolling_workload_balance(
     resource_subset: Optional[Iterable[str]] = None,
     activity_prefixes: Optional[Iterable[str]] = None,
     evaluation_window: Optional[tuple[pd.Timestamp, pd.Timestamp]] = None,
+    instances: Optional[pd.DataFrame] = None,
 ) -> dict:
     """Std of per-resource occupation WITHIN each rolling window, averaged
     across windows -- catches "fair on average, unfair in bursts", which
@@ -664,7 +688,7 @@ def rolling_workload_balance(
     citing the absolute occupation numbers, the std comparison across
     windows is still meaningful.
     """
-    inst = paired_instances(df)
+    inst = paired_instances(df) if instances is None else instances
     inst = _filter_activity_prefixes(inst, activity_prefixes)
     inst = inst[inst["resource"].notna() & (inst["resource"] != "")]
     if evaluation_window is not None:
@@ -737,12 +761,21 @@ def evaluate(
         df_completed = df[df["case:concept:name"].isin(set(completed_case_ids))]
 
     resource_events = df if resource_df is None else resource_df
+    # Active-lifecycle pairing is intentionally strict but relatively
+    # expensive on a 60-day log.  Build each distinct view once and reuse it
+    # across occupation, switch-rate, handover and rolling-balance metrics;
+    # previously the identical resource view was reconstructed four times.
+    resource_instances = paired_instances(resource_events)
+    process_instances = (
+        resource_instances if resource_events is df else paired_instances(df)
+    )
     occ = average_resource_occupation(
         resource_events,
         availability_seconds,
         resource_subset,
         availability_intervals=availability_intervals,
         evaluation_window=evaluation_window,
+        instances=resource_instances,
     )
     return {
         "cycle_time": average_cycle_time(df_completed, arrival_times),
@@ -751,12 +784,14 @@ def evaluate(
         "custom_metrics": {
             "time_to_first_offer": time_to_first_offer(df, arrival_times),
             "time_to_decision": time_to_decision(df, arrival_times),
-            "handover_rate": handover_rate(df),
+            "handover_rate": handover_rate(df, instances=process_instances),
             "resource_activity_switch_rate": resource_activity_switch_rate(
-                resource_events, evaluation_window=evaluation_window),
+                resource_events, evaluation_window=evaluation_window,
+                instances=resource_instances),
             "rolling_workload_balance": rolling_workload_balance(
                 resource_events, resource_subset=resource_subset,
-                evaluation_window=evaluation_window),
+                evaluation_window=evaluation_window,
+                instances=resource_instances),
         },
         "case_filter": {
             "n_cases_in_log": int(n_total),

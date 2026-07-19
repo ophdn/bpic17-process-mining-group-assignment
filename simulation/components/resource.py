@@ -452,6 +452,13 @@ class ResourceComponent:
         # releases; the shift-open drain stays FIFO (a few events per day
         # vs. thousands of releases — documented simplification).
         self._pull = pull
+        # Allocation policies repeatedly compare the same finite set of
+        # (activity, resource) pairs. Their duration API receives no changing
+        # case context here, so each prediction is a deterministic constant
+        # for the lifetime of this component. Cache those exact values:
+        # without this, a 60-day run performs millions of identical one-row
+        # sklearn predictions while producing the same allocation order.
+        self._duration_cache: Dict[tuple[str, Optional[str]], float] = {}
 
         # Instance-level resource removal (scenario experiments: "outage",
         # the management "fire two employees" question). Excluded resources
@@ -823,14 +830,24 @@ class ResourceComponent:
                     resource, waiting.activity, case_type=ct, when=when):
                 continue
             if self._pull == "spt":
-                key = self._duration_model.expected_duration(
-                    waiting.activity, resource)
+                key = self._expected_duration(waiting.activity, resource)
             else:  # "laf"
                 key = self._case_first_seen.get(
                     waiting.case_id, waiting.timestamp)
             if best_key is None or key < best_key:
                 best_key, best_i = key, i
         return best_i
+
+    def _expected_duration(
+        self, activity: str, resource: Optional[str],
+    ) -> float:
+        """Return the context-free policy estimate, cached exactly by input."""
+        duration_key = (activity, resource)
+        value = self._duration_cache.get(duration_key)
+        if value is None:
+            value = self._duration_model.expected_duration(activity, resource)
+            self._duration_cache[duration_key] = value
+        return value
 
     def _pull_drain(self, engine, resources=None) -> None:
         """Let free resources pull preferred items until no match remains."""
@@ -1295,7 +1312,7 @@ class ResourceComponent:
             ct, when = self._context(engine, req)
             for j, r in enumerate(free):
                 if self._permissions.permits(r, req.activity, case_type=ct, when=when):
-                    cost[i, j] = self._duration_model.expected_duration(req.activity, r)
+                    cost[i, j] = self._expected_duration(req.activity, r)
 
         row_ind, col_ind = linear_sum_assignment(cost)
 
@@ -1361,7 +1378,7 @@ class ResourceComponent:
                 # resource sits reserved for DAYS while a long validation
                 # runs — measured: cases completed collapsed 158 -> 15 on a
                 # 5-day run before the gate existed.
-                eta = begun_at + self._duration_model.expected_duration(activity, None)
+                eta = begun_at + self._expected_duration(activity, None)
                 if eta - engine.now > PARKSONG_LOOKAHEAD_SECONDS:
                     continue
                 # Unscheduled pseudo-event: exists only to carry the
@@ -1388,7 +1405,7 @@ class ResourceComponent:
             penalty = phantom_penalty[i - n_real] if i >= n_real else 1.0
             for j, r in enumerate(free):
                 if self._permissions.permits(r, req.activity, case_type=ct, when=when):
-                    cost[i, j] = penalty * self._duration_model.expected_duration(req.activity, r)
+                    cost[i, j] = penalty * self._expected_duration(req.activity, r)
 
         # Phantom spread gate (D1): reserving a resource for predicted work
         # only pays if that resource is a strictly BETTER fit than the

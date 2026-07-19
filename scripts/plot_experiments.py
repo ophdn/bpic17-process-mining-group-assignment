@@ -98,6 +98,11 @@ def make_boxplots(df: pd.DataFrame, scenario: str, out_dir: Path) -> list:
         ax.boxplot(data, tick_labels=policies, showmeans=True)
         ax.set_ylabel(label)
         ax.set_xlabel("Allocation policy")
+        if col in {"avg_cycle_time_s", "p95_cycle_time_s"}:
+            # Batching policies are an order of magnitude slower. A log scale
+            # keeps those results visible without flattening the five policies
+            # clustered around the random baseline.
+            ax.set_yscale("log")
         ax.tick_params(axis="x", rotation=30)
         ax.grid(axis="y", alpha=0.3)
         fig.tight_layout()
@@ -111,8 +116,10 @@ def make_boxplots(df: pd.DataFrame, scenario: str, out_dir: Path) -> list:
 def make_pareto(df: pd.DataFrame, agg: pd.DataFrame | None, scenario: str,
                 out_dir: Path) -> Path:
     policies = ordered_policies(df)
-    fig, ax = plt.subplots(figsize=(5.2, 4.2))
-    for p in policies:
+    fig, ax = plt.subplots(figsize=(7.6, 4.4))
+    colors = plt.colormaps["tab20"].resampled(len(policies))
+    means = []
+    for policy_index, p in enumerate(policies):
         sub = df[df["policy"] == p]
         x = sub["avg_cycle_time_s"].mean() / DAY
         y = sub["resource_fairness"].mean()
@@ -122,11 +129,42 @@ def make_pareto(df: pd.DataFrame, agg: pd.DataFrame | None, scenario: str,
             if not row.empty:
                 xerr = row["avg_cycle_time_s_ci95_halfwidth"].iloc[0] / DAY
                 yerr = row["resource_fairness_ci95_halfwidth"].iloc[0]
-        ax.errorbar(x, y, xerr=xerr, yerr=yerr, fmt="o", capsize=3, markersize=6)
-        ax.annotate(p, (x, y), textcoords="offset points", xytext=(6, 4), fontsize=8)
+        ax.errorbar(
+            x, y, xerr=xerr, yerr=yerr, fmt="o", capsize=3,
+            markersize=6, color=colors(policy_index), label=p,
+        )
+        means.append((p, x, y))
+
+    # A policy is Pareto-efficient if no other policy is at least as good on
+    # both lower-is-better axes and strictly better on one. Connect the
+    # efficient means to make the frontier explicit rather than leaving the
+    # reader to infer it from a cloud of labeled points.
+    frontier = []
+    for candidate in means:
+        _, x, y = candidate
+        dominated = any(
+            (other_x <= x and other_y <= y)
+            and (other_x < x or other_y < y)
+            for _, other_x, other_y in means
+        )
+        if not dominated:
+            frontier.append(candidate)
+    frontier.sort(key=lambda item: item[1])
+    if len(frontier) > 1:
+        ax.plot(
+            [item[1] for item in frontier],
+            [item[2] for item in frontier],
+            linestyle="--", color="0.45", linewidth=1.0,
+            label="Pareto frontier (policy means)",
+        )
     ax.set_xlabel("Mean cycle time (days) — lower is better")
     ax.set_ylabel("Resource fairness — lower is fairer")
+    ax.set_xscale("log")
     ax.grid(alpha=0.3)
+    ax.legend(
+        fontsize=8, ncol=1, loc="upper left", bbox_to_anchor=(1.01, 1.0),
+        borderaxespad=0.0,
+    )
     fig.tight_layout()
     path = out_dir / f"pareto_{scenario}.png"
     fig.savefig(path, dpi=DPI)

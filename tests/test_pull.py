@@ -102,6 +102,27 @@ def test_spt_pull_prefers_short_expected_duration_over_fifo():
     assert _release_and_capture(rc, r) == ["case_short"]
 
 
+def test_spt_reuses_deterministic_duration_predictions():
+    rc = ResourceComponent(seed=SEED, pull="spt", capacity_per_resource=1)
+    r = _find_permitted_resource(rc, SHORT_ACT, LONG_ACT)
+    rc._waiting.extend([
+        _request("case_long", LONG_ACT, ts=0.0),
+        _request("case_short", SHORT_ACT, ts=1.0),
+    ])
+    calls = []
+    original = rc._duration_model.expected_duration
+
+    def counted(activity, resource):
+        calls.append((activity, resource))
+        return original(activity, resource)
+
+    rc._duration_model.expected_duration = counted
+    eng = SimulationEngine(sim_duration=10, start_datetime=START, verbose=False)
+    assert rc._pull_best_index(eng, r) == 1
+    assert rc._pull_best_index(eng, r) == 1
+    assert calls == [(LONG_ACT, r), (SHORT_ACT, r)]
+
+
 def test_laf_pull_prefers_oldest_case_over_fifo():
     rc = ResourceComponent(seed=SEED, pull="laf", capacity_per_resource=1)
     r = _find_permitted_resource(rc, SHORT_ACT, LONG_ACT)

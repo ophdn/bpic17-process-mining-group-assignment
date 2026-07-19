@@ -50,6 +50,7 @@ Output (in --out, default output/experiments/):
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import hashlib
 import json
 import random as _random
@@ -930,16 +931,117 @@ def aggregate_and_report(results: pd.DataFrame, policies: list, out_dir: Path, s
                 "baseline": baseline, "policy": policy, "metric": m,
                 "n_paired_seeds": len(a),
                 "mean_delta": float(np.mean(b - a)),
+                "mean_delta_pct": (
+                    float(100.0 * np.mean(b - a) / np.mean(a))
+                    if np.mean(a) != 0 else float("nan")
+                ),
                 "t_stat": float(t_stat),
                 "p_value": float(p_value),
             })
     pt = pd.DataFrame(pt_rows)
+    if not pt.empty:
+        # Each metric is a separate family of policy-vs-baseline hypotheses.
+        # Holm's step-down adjustment keeps the family-wise error rate at 5%
+        # without assuming independent tests.  Retain the raw p-value as well
+        # so the CSV remains useful for exploratory analysis.
+        pt["p_value_holm"] = float("nan")
+        for _, idx in pt.groupby("metric").groups.items():
+            family = pt.loc[idx, "p_value"].sort_values()
+            m = len(family)
+            adjusted = []
+            running_max = 0.0
+            for rank, (_, p_value) in enumerate(family.items()):
+                running_max = max(running_max, (m - rank) * float(p_value))
+                adjusted.append(min(running_max, 1.0))
+            pt.loc[family.index, "p_value_holm"] = adjusted
     pt_path = out_dir / f"paired_tests_{scenario}.csv"
     pt.to_csv(pt_path, index=False)
     if not pt.empty:
         print(f"\n=== Paired t-tests vs '{baseline}' ({scenario}) ===")
         print(pt.to_string(index=False))
     print(f"Saved -> {pt_path}")
+
+
+def _execute_run_job(job: dict) -> dict:
+    """Run and evaluate one replication in a worker-safe function.
+
+    The returned payload contains only JSON/CSV-friendly values, so workers do
+    not have to pickle the event log or simulation components back to the main
+    process.  This keeps parallel runs memory-bounded and leaves all checkpoint
+    writes in the parent process.
+    """
+    policy = job["policy"]
+    seed = job["seed"]
+    try:
+        df, meta = run_once(
+            policy, seed, job["days"], job["scenario"], job["crn"],
+            job["process_model"], job["branching_mode"],
+            lifecycle_mode=job["lifecycle_mode"],
+            processing_time_mode=job["processing_time_mode"],
+            permissions=job["permissions"],
+            roster_seed=job["roster_seed"],
+            capacity=job["capacity"],
+            atomic_duration_scale=job["atomic_duration_scale"],
+            drl_model_path=job["drl_model_path"],
+        )
+        resource_df = df
+        df, meta = apply_warmup(df, meta, job["warmup_days"])
+        meta["configuration"] = dict(
+            meta["configuration"], warmup_days=job["warmup_days"])
+        if df.empty:
+            return {
+                "policy": policy,
+                "seed": seed,
+                "error": "empty log after warm-up filter",
+            }
+        m = opt_metrics.evaluate(
+            df,
+            arrival_times=meta["arrival_times"],
+            availability_seconds=meta["availability_seconds"],
+            availability_intervals=meta["availability_intervals"],
+            fairness_weights=meta["availability_seconds"],
+            completed_case_ids=meta["completed_case_ids"],
+            resource_subset=meta["resource_subset"],
+            resource_df=resource_df,
+            evaluation_window=meta["evaluation_window"],
+        )
+        meta["diagnostics"] = validate_resource_diagnostics(
+            resource_df,
+            meta["resource_stats"],
+            m["occupation"]["per_resource"],
+            meta["configuration"]["capacity"],
+        )
+        ct = m["cycle_time"]
+        return {
+            "policy": policy,
+            "seed": seed,
+            "row": flatten_result(policy, seed, job["scenario"], m, meta),
+            "summary": (
+                f"  [{policy:>13} seed={seed:>2}] "
+                f"cycle_time={ct['avg_cycle_time_s']/86400:.2f}d "
+                f"occupation={m['occupation']['avg_resource_occupation']:.3f} "
+                f"fairness={m['fairness']['resource_fairness']:.3f} "
+                f"(n={ct['n_cases']})"
+            ),
+        }
+    except Exception as exc:  # noqa: BLE001 — report all failed replications
+        return {
+            "policy": policy,
+            "seed": seed,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def _write_checkpoint(rows: list[dict], path: Path, policy_order: dict) -> None:
+    """Atomically replace the completed-run checkpoint in deterministic order."""
+    if not rows:
+        return
+    frame = pd.DataFrame(rows)
+    frame["_policy_order"] = frame["policy"].map(policy_order)
+    frame = frame.sort_values(["_policy_order", "seed"]).drop(columns="_policy_order")
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    frame.to_csv(temporary, index=False)
+    temporary.replace(path)
 
 
 # ---------------------------------------------------------------------
@@ -953,6 +1055,9 @@ def parse_args():
                         f"or 'kbatchN' for k-Batching with k=N, e.g. "
                         f"kbatch1,kbatch2,kbatch5,kbatch10,kbatch20 for a k-sweep).")
     p.add_argument("--seeds", type=int, default=10, help="Number of seeds (uses 1..N).")
+    p.add_argument("--jobs", type=int, default=1,
+                   help="Independent replications to run in parallel (default: 1). "
+                        "Completed runs are checkpointed and reused on restart.")
     p.add_argument("--days", type=int, default=30, help="Simulation horizon in days.")
     p.add_argument("--warmup-days", type=float, default=0.0,
                    help="Exclude cases arriving before this cutoff (see --report-wip).")
@@ -1035,6 +1140,9 @@ def main():
     if args.warmup_days < 0 or args.warmup_days >= args.days:
         print("--warmup-days must satisfy 0 <= warmup-days < days.", file=sys.stderr)
         sys.exit(1)
+    if args.jobs < 1:
+        print("--jobs must be >= 1.", file=sys.stderr)
+        sys.exit(1)
 
     if args.report_wip:
         report_wip(
@@ -1084,6 +1192,7 @@ def main():
         "capacity": args.capacity if args.capacity is not None else capacity_for_mode(
             args.lifecycle_mode),
         "arrival_model": "mdn" if USE_MDN_ARRIVALS else "parametric",
+        "jobs": args.jobs,
         "drl_model": str(Path(args.drl_model).resolve()) if args.drl_model else None,
         "provenance_sha256": evaluation_provenance_hashes(),
     }
@@ -1110,58 +1219,72 @@ def main():
             encoding="utf-8",
         )
 
+    policy_order = {policy: index for index, policy in enumerate(policies)}
+    checkpoint_path = out_dir / f"checkpoint_{args.scenario}.csv"
     rows = []
-    for policy in policies:
-        for seed in seeds:
-            df, meta = run_once(
-                policy, seed, args.days, args.scenario, args.crn,
-                args.process_model, args.branching_mode,
-                lifecycle_mode=args.lifecycle_mode,
-                processing_time_mode=args.processing_time_mode,
-                permissions=args.permissions,
-                roster_seed=roster_seed,
-                capacity=args.capacity,
-                atomic_duration_scale=args.atomic_duration_scale,
-                drl_model_path=args.drl_model,
-            )
-            resource_df = df
-            df, meta = apply_warmup(df, meta, args.warmup_days)
-            meta["configuration"] = dict(
-                meta["configuration"], warmup_days=args.warmup_days)
-            if df.empty:
-                print(f"WARNING: policy={policy} seed={seed}: empty log after "
-                      f"warm-up filter, skipping this run.")
+    if checkpoint_path.exists():
+        checkpoint = pd.read_csv(checkpoint_path)
+        rows = checkpoint.to_dict("records")
+        print(f"Resuming from {checkpoint_path}: {len(rows)} completed run(s).")
+
+    completed = {(str(row["policy"]), int(row["seed"])) for row in rows}
+    jobs = [
+        {
+            "policy": policy,
+            "seed": seed,
+            "days": args.days,
+            "scenario": args.scenario,
+            "crn": args.crn,
+            "process_model": args.process_model,
+            "branching_mode": args.branching_mode,
+            "lifecycle_mode": args.lifecycle_mode,
+            "processing_time_mode": args.processing_time_mode,
+            "permissions": args.permissions,
+            "roster_seed": roster_seed,
+            "capacity": args.capacity,
+            "atomic_duration_scale": args.atomic_duration_scale,
+            "drl_model_path": args.drl_model,
+            "warmup_days": args.warmup_days,
+        }
+        for policy in policies for seed in seeds
+        if (policy, seed) not in completed
+    ]
+
+    failures = []
+    if args.jobs == 1:
+        outcomes = map(_execute_run_job, jobs)
+        for outcome in outcomes:
+            if "error" in outcome:
+                failures.append(outcome)
+                print(f"WARNING: policy={outcome['policy']} seed={outcome['seed']}: "
+                      f"{outcome['error']}", file=sys.stderr)
                 continue
-            # One failing run must not abort a multi-hour grid: log and skip.
-            try:
-                m = opt_metrics.evaluate(
-                    df,
-                    arrival_times=meta["arrival_times"],
-                    availability_seconds=meta["availability_seconds"],
-                    availability_intervals=meta["availability_intervals"],
-                    fairness_weights=meta["availability_seconds"],
-                    completed_case_ids=meta["completed_case_ids"],
-                    resource_subset=meta["resource_subset"],
-                    resource_df=resource_df,
-                    evaluation_window=meta["evaluation_window"],
-                )
-                meta["diagnostics"] = validate_resource_diagnostics(
-                    resource_df,
-                    meta["resource_stats"],
-                    m["occupation"]["per_resource"],
-                    meta["configuration"]["capacity"],
-                )
-            except Exception as e:  # noqa: BLE001 — resilience over precision here
-                print(f"WARNING: policy={policy} seed={seed}: evaluate() failed "
-                      f"({type(e).__name__}: {e}), skipping this run.", file=sys.stderr)
-                continue
-            rows.append(flatten_result(policy, seed, args.scenario, m, meta))
-            ct = m["cycle_time"]
-            print(f"  [{policy:>7} seed={seed:>2}] "
-                  f"cycle_time={ct['avg_cycle_time_s']/86400:.2f}d "
-                  f"occupation={m['occupation']['avg_resource_occupation']:.3f} "
-                  f"fairness={m['fairness']['resource_fairness']:.3f} "
-                  f"(n={ct['n_cases']})")
+            rows.append(outcome["row"])
+            print(outcome["summary"])
+            _write_checkpoint(rows, checkpoint_path, policy_order)
+    else:
+        with ProcessPoolExecutor(max_workers=args.jobs) as executor:
+            future_to_job = {
+                executor.submit(_execute_run_job, job): job for job in jobs
+            }
+            for future in as_completed(future_to_job):
+                outcome = future.result()
+                if "error" in outcome:
+                    failures.append(outcome)
+                    print(f"WARNING: policy={outcome['policy']} seed={outcome['seed']}: "
+                          f"{outcome['error']}", file=sys.stderr)
+                    continue
+                rows.append(outcome["row"])
+                print(outcome["summary"])
+                _write_checkpoint(rows, checkpoint_path, policy_order)
+
+    expected = {(policy, seed) for policy in policies for seed in seeds}
+    successful = {(str(row["policy"]), int(row["seed"])) for row in rows}
+    missing = sorted(expected - successful, key=lambda pair: (policy_order[pair[0]], pair[1]))
+    if missing:
+        print(f"Grid incomplete: {len(missing)} replication(s) missing: {missing}",
+              file=sys.stderr)
+        sys.exit(1)
 
     if not rows:
         print("No successful runs -- nothing to report.", file=sys.stderr)
