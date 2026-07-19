@@ -109,11 +109,19 @@ def _quiet():
 
 
 def prepare_log(df: pd.DataFrame) -> pd.DataFrame:
-    """The paper's preprocessing: completion events only (see module docstring)."""
+    """The paper's preprocessing: completion events only (see module docstring).
+
+    `case:RequestedAmount` is carried alongside the other case attributes so the
+    exploratory `CT+AT+TT(amt)` variant can bin it. Nothing in the existing three
+    variants reads it — OrdinoR's miners take the case-type column by name and
+    `derive_resource_log` emits only (resource, case_type, activity_type,
+    time_type) — so it is an extra column and nothing else.
+    """
     el = df[df["lifecycle:transition"] == "complete"].copy()
     return el[[
         "case:concept:name", "concept:name", "org:resource",
         "time:timestamp", "case:LoanGoal", "case:ApplicationType",
+        "case:RequestedAmount",
     ]]
 
 
@@ -196,6 +204,45 @@ def trace_clustering_partition(el: pd.DataFrame, path: str | Path,
     return path
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# Exploratory — case types from the requested amount (notebook §11)
+# ──────────────────────────────────────────────────────────────────────────
+#
+# Not deployed and not part of the sweep. The deployed model takes its case types
+# from `case:LoanGoal`; §11 of the notebook tests whether the *loan size* would
+# have been the better dimension, i.e. whether large applications route to a
+# distinct (perhaps more senior) group. These two helpers exist so that question
+# can be answered with the same machinery as the rest of the section rather than
+# with a one-off in the notebook.
+
+AMOUNT_COL = "case:RequestedAmount"
+AMOUNT_TYPE_COL = "case:AmountQuartile"        # derived, not in the log
+COMPOSITE_TYPE_COL = "case:LoanGoalXAmount"    # derived, not in the log
+N_AMOUNT_BINS = 4
+
+
+def amount_quartiles(el: pd.DataFrame, n_bins: int = N_AMOUNT_BINS) -> pd.Series:
+    """Bin `case:RequestedAmount` into quantile labels "AMT.Q1".."AMT.Qn".
+
+    Cut on the *case* distribution rather than the event distribution, so each bin
+    holds a quarter of the cases and not a quarter of the events — otherwise long
+    cases would drag the edges around.
+
+    Quantiles, not fixed thresholds. Requested amounts are heavily right-skewed
+    (median EUR 12,500, q75 21,000, q90 35,000, q99 73,000, max 450,000), so a
+    round-number cut like "above EUR 100k = large" would isolate 20 of 31,509
+    cases and leave the other bin holding everything.
+
+    Returns an event-aligned Series of labels.
+    """
+    per_case = el.groupby("case:concept:name")[AMOUNT_COL].first()
+    # `duplicates="drop"` in case a quantile edge repeats; label from the codes
+    # afterwards so the label count always matches the bins actually produced.
+    codes = pd.qcut(per_case, n_bins, labels=False, duplicates="drop")
+    binned = codes.map(lambda k: f"AMT.Q{int(k) + 1}")
+    return el["case:concept:name"].map(binned)
+
+
 def build_resource_log(el: pd.DataFrame, contexts: str,
                        partition_file: Optional[str | Path] = None):
     """Learn execution contexts and derive the resource log (paper §5.1.1).
@@ -207,6 +254,12 @@ def build_resource_log(el: pd.DataFrame, contexts: str,
                   used loan purpose), activity types = activity labels, time types
                   = the seven week days.
       "CT+AT+TT(tc)"  — as above, but case types from trace clustering.
+
+    Exploratory (notebook §11, not deployed and not in the sweep):
+      "CT+AT+TT(amt)"     — case types from `case:RequestedAmount`, quartile-binned.
+      "CT+AT+TT(ca*amt)"  — case types from loan goal x amount quartile, to see
+                  whether the two attributes carry additive information.
+    Both need `case:RequestedAmount` on the log, which `prepare_log` keeps.
     """
     from ordinor.execution_context import (
         ATonlyMiner, FullMiner, TraceClusteringFullMiner)
@@ -216,6 +269,23 @@ def build_resource_log(el: pd.DataFrame, contexts: str,
             miner = ATonlyMiner(el)
         elif contexts == "CT+AT+TT(ca)":
             miner = FullMiner(el, case_attr_name="case:LoanGoal",
+                              resolution=TIME_RESOLUTION)
+        elif contexts in ("CT+AT+TT(amt)", "CT+AT+TT(ca*amt)"):
+            if AMOUNT_COL not in el.columns:
+                raise ValueError(
+                    f"{contexts} needs {AMOUNT_COL!r} on the log; "
+                    "prepare_log() keeps it")
+            amt = amount_quartiles(el)
+            if contexts == "CT+AT+TT(amt)":
+                col, values = AMOUNT_TYPE_COL, amt
+            else:
+                col = COMPOSITE_TYPE_COL
+                values = el["case:LoanGoal"].astype(str) + " x " + amt
+            # Assign onto a copy: the caller's frame is left untouched, and the
+            # extra column is invisible to `derive_resource_log`, which emits only
+            # (resource, case_type, activity_type, time_type).
+            el = el.assign(**{col: values})
+            miner = FullMiner(el, case_attr_name=col,
                               resolution=TIME_RESOLUTION)
         elif contexts == "CT+AT+TT(tc)":
             if partition_file is None:
